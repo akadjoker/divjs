@@ -7,6 +7,36 @@ export class Parser {
     this.pos = 0;
   }
 
+  peek(offset = 1) {
+    const idx = this.pos + offset;
+    if (idx >= this.tokens.length) {
+      return this.tokens[this.tokens.length - 1];
+    }
+    return this.tokens[idx];
+  }
+
+  isIdentifierLike(token) {
+    if (!token) {
+      return false;
+    }
+
+    return token.type === TokenType.IDENTIFIER ||
+      token.type === TokenType.VAR ||
+      token.type === TokenType.TO ||
+      token.type === TokenType.STEP;
+  }
+
+  readIdentifierLike(message = 'Expected identifier') {
+    const token = this.current();
+    if (!this.isIdentifierLike(token)) {
+      this.expect(TokenType.IDENTIFIER, message);
+      return this.previous().value;
+    }
+
+    this.pos++;
+    return token.value;
+  }
+
   // Get current token
   current() {
     if (this.pos >= this.tokens.length) {
@@ -92,8 +122,7 @@ export class Parser {
   // Parse global
   parseGlobal() {
     this.pos++; // consume GLOBAL
-    const name = this.current().value;
-    this.pos++;
+    const name = this.readIdentifierLike('Expected global name');
 
     let value = null;
     if (this.match(TokenType.EQUALS)) {
@@ -108,8 +137,7 @@ export class Parser {
   // Parse function
   parseFunction() {
     this.pos++; // consume FUNCTION
-    const name = this.current().value;
-    this.pos++;
+    const name = this.readIdentifierLike('Expected function name');
 
     // Params
     const params = [];
@@ -117,8 +145,7 @@ export class Parser {
 
     if (!this.is(TokenType.RPAREN)) {
       do {
-        const paramName = this.current().value;
-        this.pos++;
+        const paramName = this.readIdentifierLike('Expected function param name');
         params.push(paramName);
       } while (this.match(TokenType.COMMA));
     }
@@ -135,8 +162,7 @@ export class Parser {
   // Parse process
   parseProcess() {
     this.pos++; // consume PROCESS
-    const name = this.current().value;
-    this.pos++;
+    const name = this.readIdentifierLike('Expected process name');
 
     // Params
     const params = [];
@@ -144,8 +170,7 @@ export class Parser {
 
     if (!this.is(TokenType.RPAREN)) {
       do {
-        const paramName = this.current().value;
-        this.pos++;
+        const paramName = this.readIdentifierLike('Expected process param name');
         params.push(paramName);
       } while (this.match(TokenType.COMMA));
     }
@@ -169,8 +194,7 @@ export class Parser {
 
   // Parse private
   parsePrivate() {
-    const name = this.current().value;
-    this.pos++;
+    const name = this.readIdentifierLike('Expected private name');
 
     let value = null;
     if (this.match(TokenType.EQUALS)) {
@@ -251,7 +275,8 @@ export class Parser {
     }
 
     // Var
-    if (this.match(TokenType.VAR)) {
+    if (this.is(TokenType.VAR) && this.isIdentifierLike(this.peek(1))) {
+      this.pos++;
       return this.parseVar();
     }
 
@@ -298,8 +323,7 @@ export class Parser {
 
   // Parse for
   parseFor() {
-    const varName = this.current().value;
-    this.pos++;
+    const varName = this.readIdentifierLike('Expected FOR variable name');
 
     this.expect(TokenType.EQUALS, 'Expected = after FOR var');
 
@@ -353,8 +377,7 @@ export class Parser {
 
   // Parse var
   parseVar() {
-    const name = this.current().value;
-    this.pos++;
+    const name = this.readIdentifierLike('Expected variable name after VAR');
 
     let value = new ast.Number(0);
     if (this.match(TokenType.EQUALS)) {
@@ -388,7 +411,7 @@ export class Parser {
     let left = this.parseAnd();
 
     while (this.match(TokenType.OR)) {
-      const operator = this.previous().value;
+      const operator = '||';
       const right = this.parseAnd();
       left = new ast.Binary(left, operator, right);
     }
@@ -401,7 +424,7 @@ export class Parser {
     let left = this.parseEquality();
 
     while (this.match(TokenType.AND)) {
-      const operator = this.previous().value;
+      const operator = '&&';
       const right = this.parseEquality();
       left = new ast.Binary(left, operator, right);
     }
@@ -466,12 +489,16 @@ export class Parser {
   parseUnary() {
     if (this.match(TokenType.TYPE)) {
       const token = this.current();
-      this.expect(TokenType.IDENTIFIER, 'Expected process name after TYPE');
+      if (!this.isIdentifierLike(token)) {
+        this.expect(TokenType.IDENTIFIER, 'Expected process name after TYPE');
+        return new ast.TypeOperator(this.previous().value);
+      }
+      this.pos++;
       return new ast.TypeOperator(token.value);
     }
 
     if (this.match(TokenType.MINUS) || this.match(TokenType.NOT)) {
-      const operator = this.previous().value;
+      const operator = this.previous().type === TokenType.NOT ? '!' : this.previous().value;
       const right = this.parseUnary();
       return new ast.Unary(operator, right);
     }
@@ -492,7 +519,12 @@ export class Parser {
 
       if (this.match(TokenType.DOT)) {
         const propertyToken = this.current();
-        this.expect(TokenType.IDENTIFIER, 'Expected property name after .');
+        if (!this.isIdentifierLike(propertyToken)) {
+          this.expect(TokenType.IDENTIFIER, 'Expected property name after .');
+          expr = new ast.MemberAccess(expr, this.previous().value);
+          continue;
+        }
+        this.pos++;
         expr = new ast.MemberAccess(expr, propertyToken.value);
         continue;
       }
@@ -538,7 +570,7 @@ export class Parser {
     }
 
     // Identifier
-    if (this.match(TokenType.IDENTIFIER)) {
+    if (this.match(TokenType.IDENTIFIER) || this.match(TokenType.VAR) || this.match(TokenType.TO) || this.match(TokenType.STEP)) {
       return new ast.Identifier(this.previous().value);
     }
 

@@ -360,6 +360,106 @@ async function testXAdvanceMovesByAngle() {
   assert(approx(process.locals[1], 0), `y esperado 0 apos xadvance, obtido ${process.locals[1]}`);
 }
 
+async function testKeywordLogicalOperatorsCompileAndRun() {
+  const source = `program logical_keywords;
+
+process p(x, y);
+begin
+  if (1 and not 0) x = x + 1; end
+  if (0 or 1) y = y + 2; end
+  frame;
+end
+
+begin
+  p(0, 0);
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  const runtime = createRuntime(vm);
+  runtime.beginFrame(1 / 60);
+  vm.tick();
+
+  const p = vm.processManager.getAll()[0];
+  assert(!!p, 'processo nao criado');
+  assert(p.x === 1, `x esperado 1 com and/not, obtido ${p.x}`);
+  assert(p.y === 2, `y esperado 2 com or, obtido ${p.y}`);
+}
+
+async function testVoidNativeDoesNotUnderflowStack() {
+  const source = `program void_native;
+
+process p();
+begin
+  void_native();
+  frame;
+end
+
+begin
+  p();
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  const runtime = createRuntime(vm);
+  vm.registerNative('void_native', () => {});
+
+  const warnings = [];
+  const oldWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    runtime.beginFrame(1 / 60);
+    vm.tick();
+  } finally {
+    console.warn = oldWarn;
+  }
+
+  const stackUnderflows = warnings.filter((w) => /Stack underflow/i.test(w));
+  assert(stackUnderflows.length === 0, `nao devia haver underflow com native void, obtido ${stackUnderflows.length}`);
+}
+
+async function testNestedFunctionReturnsDoNotLeakStack() {
+  const source = `program nested_return;
+
+function one();
+begin
+  return 1;
+end
+
+function wrap();
+begin
+  return one();
+end
+
+process p(x, y);
+begin
+  x = wrap();
+  y = wrap();
+  frame;
+end
+
+begin
+  p(0, 0);
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  const runtime = createRuntime(vm);
+  runtime.beginFrame(1 / 60);
+  vm.tick();
+
+  const p = vm.processManager.getAll()[0];
+  assert(!!p, 'processo nao criado');
+  assert(p.x === 1 && p.y === 1, `retornos aninhados esperados x=1,y=1; obtido x=${p.x}, y=${p.y}`);
+  assert(p.stack.length === 0, `stack do processo devia ficar vazia, size=${p.stack.length}`);
+}
+
 async function testSpawnSetsParentId() {
   const source = `program spawn_parent;
 
@@ -476,7 +576,10 @@ export async function runAllTests() {
     ['__get_path/__set_path scroll state', testPathNativesScrollState],
     ['out_of_region / out_of_screen', testOutOfRegionAndScreen],
     ['load_graphic / load_tile direct ids', testLoadGraphicAndTileDirectIds],
-    ['xadvance movement', testXAdvanceMovesByAngle]
+    ['xadvance movement', testXAdvanceMovesByAngle],
+    ['keyword and/or/not operators', testKeywordLogicalOperatorsCompileAndRun],
+    ['void native stack underflow guard', testVoidNativeDoesNotUnderflowStack],
+    ['nested function return stack safety', testNestedFunctionReturnsDoNotLeakStack]
   ];
 
   const results = [];

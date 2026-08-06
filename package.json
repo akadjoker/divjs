@@ -1,0 +1,8 @@
+{
+  "name": "divjs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:pipeline": "node test.mjs"
+  }
+}

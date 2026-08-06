@@ -399,11 +399,9 @@ export class VM {
         break;
 
       case OpCodes.RETURN:
-        // Get return value (if any on stack)
-        let returnValue = null;
-        if (this.stack.length > 0 && this.callStack.length > 0) {
-          returnValue = this.peek();
-        }
+        // Function calls push [returnAddress, previousLocals] onto callStack.
+        const returningToCaller = this.callStack.length >= 2;
+        const returnValue = this.stack.length > 0 ? this.pop() : 0;
 
         // Restore locals
         if (this.callStack.length > 0) {
@@ -423,7 +421,7 @@ export class VM {
         }
 
         // Push return value back if needed (for function calls)
-        if (returnValue !== null && this.callStack.length > 0) {
+        if (returningToCaller) {
           this.push(returnValue);
         }
         break;
@@ -440,9 +438,7 @@ export class VM {
         const nativeFn = this.natives.get(nativeName);
         if (nativeFn) {
           const result = nativeFn(...nativeArgs);
-          if (result !== undefined) {
-            this.push(result);
-          }
+          this.push(result === undefined ? 0 : result);
         } else {
           console.warn(`Native function not found: ${nativeName}`);
           this.push(0);
