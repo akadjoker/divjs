@@ -345,41 +345,14 @@ export class CanvasEngineRuntime {
       return null;
     }
 
+    // O compiler publica todos os slots (fixos, params, privates e locals
+    // implícitos) em processTable.locals para cada processo compilado — ver
+    // compileProcess() em compiler/compiler.js. Não há caminho de código em
+    // que um processo válido chegue aqui sem essa entrada, por isso não
+    // existe fallback: uma tabela em falta ou incompleta é um bug do
+    // compiler, não algo para o runtime tentar adivinhar.
     if (info.locals && Object.prototype.hasOwnProperty.call(info.locals, localName)) {
       return info.locals[localName];
-    }
-
-    const fixedSlots = {
-      x: 0,
-      y: 1,
-      width: 2,
-      height: 3,
-      ctype: 4,
-      c_type: 4,
-      id: 5,
-      region: 6,
-      angle: 7
-    };
-
-    if (Object.prototype.hasOwnProperty.call(fixedSlots, localName)) {
-      return fixedSlots[localName];
-    }
-
-    let slot = 8;
-    for (const param of info.params || []) {
-      if (!Object.prototype.hasOwnProperty.call(fixedSlots, param)) {
-        if (param === localName) {
-          return slot;
-        }
-        slot += 1;
-      }
-    }
-
-    for (const priv of info.privates || []) {
-      if (priv.name === localName) {
-        return slot;
-      }
-      slot += 1;
     }
 
     return null;

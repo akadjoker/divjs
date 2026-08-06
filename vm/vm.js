@@ -56,7 +56,7 @@ export class VM {
     this.mainFinished = false;
 
     // Debug mode
-    this.debug = true;
+    this.debug = false;
 
     // Last frame return/progress value (default DIV behavior: 100)
     this.frameValue = 100;
