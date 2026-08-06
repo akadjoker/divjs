@@ -444,6 +444,80 @@ async function testLoadGlobalPreservesFalsyValues() {
   assert(vm.mainStack[vm.mainStack.length - 1] === false, `LOAD_GLOBAL devia preservar false, obtido ${vm.mainStack[vm.mainStack.length - 1]}`);
 }
 
+async function testMutualRecursionAndForwardCallsResolveCorrectly() {
+  // compileCall() decides CALL vs SPAWN_PROCESS vs CALL_NATIVE at compile
+  // time by checking whether the callee name is *already* registered in
+  // functionTable/processTable at the moment that call site is compiled.
+  // Functions and processes were each compiled in a single top-to-bottom
+  // pass with no pre-registration step, so a call to one declared later in
+  // the same list silently fell through to CALL_NATIVE instead of
+  // CALL/SPAWN_PROCESS — there is no declaration order that resolves both
+  // directions of mutual recursion between two functions, so it was
+  // unconditionally broken; any function calling a process (or vice
+  // versa) declared later in the source hit the same failure.
+  const mutualSource = `program mutual_recursion;
+
+function isEven(n);
+begin
+  if (n == 0)
+    return 1;
+  end
+  return isOdd(n - 1);
+end
+
+function isOdd(n);
+begin
+  if (n == 0)
+    return 0;
+  end
+  return isEven(n - 1);
+end
+
+begin
+  print(isEven(10));
+  print(isOdd(10));
+  frame;
+end`;
+
+  const mutualBytecode = compileSource(mutualSource);
+  const mutualVm = new VM();
+  mutualVm.load(mutualBytecode);
+  const mutualSeen = [];
+  mutualVm.registerNative('print', (v) => { mutualSeen.push(v); return 0; });
+  mutualVm.tick();
+  assert(JSON.stringify(mutualSeen) === JSON.stringify([1, 0]),
+    `recursao mutua isEven(10)/isOdd(10) esperava [1,0], obtido ${JSON.stringify(mutualSeen)}`);
+
+  // A function calling a process declared after it in the source is the
+  // same failure mode across categories, not just within one.
+  const crossCategorySource = `program forward_cross_category;
+
+function spawner();
+begin
+  var id = helper(1, 2);
+  return id;
+end
+
+process helper(x, y);
+begin
+  frame;
+end
+
+begin
+  print(spawner());
+  frame;
+end`;
+
+  const crossBytecode = compileSource(crossCategorySource);
+  const crossVm = new VM();
+  crossVm.load(crossBytecode);
+  const crossSeen = [];
+  crossVm.registerNative('print', (v) => { crossSeen.push(v); return 0; });
+  crossVm.tick();
+  assert(crossSeen.length === 1 && crossSeen[0] > 0,
+    `funcao a chamar processo declarado depois devia devolver um id de processo > 0, obtido ${JSON.stringify(crossSeen)}`);
+}
+
 async function testMissingFunctionCallDoesNotLeakCallStack() {
   const vm = new VM();
   vm.load({
@@ -1060,6 +1134,7 @@ export async function runAllTests() {
     ['logical short-circuit skips side effects', testLogicalShortCircuitSkipsSideEffects],
     ['LOAD_GLOBAL preserves falsy', testLoadGlobalPreservesFalsyValues],
     ['missing CALL does not leak stack', testMissingFunctionCallDoesNotLeakCallStack],
+    ['mutual recursion and cross-category forward calls resolve correctly', testMutualRecursionAndForwardCallsResolveCorrectly],
     ['missing SPAWN fails gracefully', testMissingSpawnProcessFailsGracefully],
     ['void native stack underflow guard', testVoidNativeDoesNotUnderflowStack],
     ['nested function return stack safety', testNestedFunctionReturnsDoNotLeakStack],

@@ -26,6 +26,28 @@ export class Compiler {
     this.loopStack = [];
     this.nextLocalSlot = 0;
 
+    // Pre-register every function and process name — with a placeholder
+    // address, patched once its body is actually compiled below — before
+    // compiling any bodies. Without this, compileCall() below decides
+    // CALL vs SPAWN_PROCESS vs CALL_NATIVE by checking whether the callee
+    // is *already* in functionTable/processTable at the moment that call
+    // site is compiled. Since functions and processes are each compiled
+    // in a single top-to-bottom pass, a call to one declared later in the
+    // same list (or a call to a process from an earlier function) would
+    // find nothing registered yet and silently fall through to
+    // CALL_NATIVE instead of CALL/SPAWN_PROCESS — breaking mutual
+    // recursion between two functions outright (there is no declaration
+    // order that resolves both directions) and any forward reference
+    // within the same category. A prior pass over globals/main already
+    // worked correctly only because main is always compiled *after* every
+    // function and process, never interleaved with them.
+    for (const func of program.functions) {
+      this.functionTable.set(func.name, { addr: -1, params: func.params });
+    }
+    for (const proc of program.processes) {
+      this.processTable.set(proc.name, { addr: -1, params: proc.params, privates: proc.privates, locals: {} });
+    }
+
     // Compile globals first
     for (const global of program.globals) {
       this.compileGlobal(global);
