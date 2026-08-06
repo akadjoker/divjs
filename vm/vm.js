@@ -175,9 +175,19 @@ export class VM {
     process.locals = this.locals;
     process.callStack = this.callStack;
 
-    // Sincronizar x/y com locals[0/1] (unilateral: locals → process.x/y)
-    process.x = this.locals[0] ?? process.x;
-    process.y = this.locals[1] ?? process.y;
+    // Sync all 8 canonical fields (x, y, width, height, ctype, id, region,
+    // angle) from locals right after this process yields — not just x/y.
+    // The previous code only synced x/y here and left the other six for
+    // ProcessManager.sweep() to sync once, after every process in the tick
+    // has already run. That made x/y "live" within the same frame (visible
+    // to any process that runs later in this tick) while width/height/
+    // ctype/region/angle stayed a full frame stale for the same readers —
+    // e.g. a process that grows its own hitbox mid-frame wouldn't have
+    // that reflected in collision() checks against it until the next
+    // frame. Process.sync() already implements all 8 fields consistently;
+    // calling it here (instead of duplicating two of the eight by hand)
+    // removes both the duplication and the asymmetry in one line.
+    process.sync();
   }
 
   // Execute instruction

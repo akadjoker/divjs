@@ -940,6 +940,71 @@ async function testCollisionByType() {
   assert(collidingId === enemy.id, `collision TYPE esperado id ${enemy.id}, obtido ${collidingId}`);
 }
 
+async function testCrossProcessFixedSlotsAreLiveWithinSameFrame() {
+  // vm.js's runProcess() used to sync only x/y from locals back onto the
+  // Process object right after each process yields, while width, height,
+  // ctype, region, and angle were left to ProcessManager.sweep() — which
+  // runs once, after every process in the tick has already executed. That
+  // made x/y "live" within the same frame (visible to any process that
+  // runs later in the same tick) but left the other five canonical fields
+  // a full frame stale for the same readers: a process that grows its own
+  // hitbox mid-frame wouldn't have that reflected in a collision() check
+  // made against it later in that same tick — only on the next one.
+  //
+  // Reproduce it end-to-end: "grower" (spawned first, so it runs first
+  // each tick) sets its own width/height to 200 starting on frame 1;
+  // "watcher" (spawned second, so it runs right after in the same tick)
+  // is a small fixed process positioned inside where grower's *new*
+  // bounds would land, but outside its *old* 10x10 bounds. If width/height
+  // are live, watcher sees the collision on frame 1. If they lag a frame
+  // (the bug), watcher only sees it starting on frame 2.
+  const source = `program cross_process_live_slots;
+
+process grower(x, y);
+begin
+  width = 10;
+  height = 10;
+  loop
+    width = 200;
+    height = 200;
+    frame;
+  end
+end
+
+process watcher(x, y);
+begin
+  width = 5;
+  height = 5;
+  loop
+    if (collision(TYPE grower))
+      print(1);
+    else
+      print(0);
+    end
+    frame;
+  end
+end
+
+begin
+  grower(0, 0);
+  watcher(50, 50);
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  const runtime = createRuntime(vm);
+  const seen = [];
+  vm.registerNative('print', (v) => { seen.push(v); return 0; });
+
+  runtime.beginFrame(1 / 60);
+  vm.tick();
+
+  assert(seen[0] === 1,
+    `width/height deviam estar atualizados no mesmo frame em que grower os muda; watcher devia ver colisao ja no frame 1, obtido seen=${JSON.stringify(seen)}`);
+}
+
 async function testLetMeAloneKillsOthers() {
   const vm = new VM();
   const runtime = createRuntime(vm);
@@ -985,6 +1050,7 @@ export async function runAllTests() {
     ['signal(id, s_kill) semantics', testSignalKillByIdUsesDivSemantics],
     ['ctype=c_scroll persists after frame', testCTypeScrollAssignmentPersistsAfterFrame],
     ['collision by TYPE', testCollisionByType],
+    ['cross-process fixed slots (width/height/ctype/region/angle) are live within the same frame', testCrossProcessFixedSlotsAreLiveWithinSameFrame],
     ['let_me_alone kills others', testLetMeAloneKillsOthers],
     ['__get_path/__set_path scroll state', testPathNativesScrollState],
     ['out_of_region / out_of_screen', testOutOfRegionAndScreen],
