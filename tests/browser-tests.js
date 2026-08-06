@@ -835,6 +835,73 @@ end`;
   assert(threw, 'atribuicao encadeada (x = y = 5) devia falhar a compilar, nao compilou');
 }
 
+async function testMainDoesNotInheritLastProcessLocalScope() {
+  // compile() reset localMap to a fresh Map at the start of every function
+  // and every process, but never reset it again before compiling the main
+  // block. That left main compiling against whatever localMap the *last*
+  // function or process (if any) had populated: any name used there as a
+  // param/private/var would make compileIdentifier() resolve that same
+  // name inside main via LOAD_LOCAL/STORE_LOCAL — reading/writing an index
+  // in main's own locals array that main never touched — instead of
+  // LOAD_GLOBAL/STORE_GLOBAL against the actual global of the same name.
+  // Not a rare-name edge case: "x", "y", "id", "speed", "score" are
+  // exactly the names likely to be both a GLOBAL and a process param.
+  const processSource = `program main_scope_process;
+
+global score = 100;
+
+process p(score);
+begin
+  print(score);
+  frame;
+end
+
+begin
+  p(5);
+  print(score);
+  frame;
+end`;
+
+  const processBytecode = compileSource(processSource);
+  const processVm = new VM();
+  processVm.load(processBytecode);
+  const processSeen = [];
+  processVm.registerNative('print', (v) => { processSeen.push(v); return 0; });
+  processVm.tick();
+  // Execution order within a tick is main first, then newly spawned
+  // processes, so main's print(score) is seen before p's.
+  assert(processSeen[0] === 100,
+    `main devia ler o GLOBAL score (100) mesmo apos PROCESS p(score) ter sido compilado, obtido ${JSON.stringify(processSeen)}`);
+  assert(processSeen[1] === 5,
+    `processo p devia ler o seu proprio parametro score (5), obtido ${JSON.stringify(processSeen)}`);
+
+  // Same failure mode when the last declared entity is a FUNCTION instead
+  // of a PROCESS (a program with no processes at all).
+  const functionSource = `program main_scope_function;
+
+global speed = 42;
+
+function f(speed);
+begin
+  return speed * 2;
+end
+
+begin
+  print(f(9));
+  print(speed);
+  frame;
+end`;
+
+  const functionBytecode = compileSource(functionSource);
+  const functionVm = new VM();
+  functionVm.load(functionBytecode);
+  const functionSeen = [];
+  functionVm.registerNative('print', (v) => { functionSeen.push(v); return 0; });
+  functionVm.tick();
+  assert(JSON.stringify(functionSeen) === JSON.stringify([18, 42]),
+    `esperava [18,42] (f(9) usa o parametro local, print(speed) le o GLOBAL), obtido ${JSON.stringify(functionSeen)}`);
+}
+
 async function testCollisionExcludesSelf() {
   // ProcessManager.collision() looked up every process of the requested
   // TYPE and tested collidesWith() without ever excluding the calling
@@ -1143,6 +1210,7 @@ export async function runAllTests() {
     ['if/else parses and runs both branches (+ chained else if)', testIfElseBothBranchesParseAndRun],
     ['for with negative step counts down', testForNegativeStepCountsDown],
     ['chained assignment (a = b = c) is a compile error', testChainedAssignmentIsCompileError],
+    ['main does not inherit the last process/function local scope', testMainDoesNotInheritLastProcessLocalScope],
     ['collision(TYPE x) excludes the calling process itself', testCollisionExcludesSelf]
   ];
 

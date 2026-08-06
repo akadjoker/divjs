@@ -70,6 +70,19 @@ export class Compiler {
     // Compile main block
     const mainAddr = this.instructions.length;
     this.instructions[jumpToMain].operands[0] = mainAddr;
+    // localMap is left over from whichever function or process was
+    // compiled last (each of them starts with its own fresh Map, but
+    // nothing ever resets it afterwards). Without this reset, any name
+    // used as a param/private/var in that last process or function
+    // silently shadows a same-named GLOBAL for the rest of main:
+    // compileIdentifier() checks localMap before globalMap, finds the
+    // stale entry, and emits LOAD_LOCAL/STORE_LOCAL against an index in
+    // *main's own* locals array that main never wrote to — reading back
+    // 0 (or corrupting whatever unrelated value main had stored there)
+    // instead of the actual global. This isn't a rare-name edge case:
+    // "x", "y", "id", "speed" are exactly the names likely to be both a
+    // GLOBAL and a process param in a real program.
+    this.localMap = new Map();
     this.compileBlock({ statements: program.mainBlock });
 
     // Main without an explicit loop should still stop cleanly.
