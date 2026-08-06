@@ -1,6 +1,6 @@
 /**
  * DivLang Process Manager
- * Gerencia processos concorrentes com índices
+ * Cada processo tem seu próprio contexto (ip, stack, locals)
  */
 
 // Hash function
@@ -31,7 +31,7 @@ export class Process {
     this.id = params.id || 0;
     this.type = hashCode(name); // Tipo = hash do nome
     
-    // Position
+    // Position (locals especiais)
     this.x = params.x || 0;
     this.y = params.y || 0;
     this.width = params.width || 32;
@@ -43,10 +43,13 @@ export class Process {
     // State
     this.active = true;
     this.suspended = false;
+    this.finished = false;
+    this.dead = false; // Marked for removal
     
-    // VM state
-    this.stack = [];
-    this.locals = [];
+    // VM context (coroutine)
+    this.ip = 0;           // Instruction pointer
+    this.stack = [];       // Stack próprio
+    this.locals = [];      // Locais próprios
   }
   
   // Get bounds (for collision)
@@ -78,6 +81,12 @@ export class Process {
   // Set property
   set(name, value) {
     this.privates[name] = value;
+  }
+  
+  // Kill process
+  kill() {
+    this.dead = true;
+    this.active = false;
   }
 }
 
@@ -117,11 +126,6 @@ export class ProcessManager {
     return this.processes.find(p => p.id === id);
   }
   
-  // Get process by index in array
-  getByIndex(index) {
-    return this.processes[index - 1]; // -1 porque IDs começam em 1
-  }
-  
   // Get all processes
   getAll() {
     return this.processes;
@@ -148,18 +152,27 @@ export class ProcessManager {
     return this.processes.filter(p => p.active);
   }
   
-  // Remove process
+  // Remove process (mark as dead, sweep later)
   remove(id) {
-    const index = this.processes.findIndex(p => p.id === id);
-    if (index !== -1) {
-      const process = this.processes[index];
-      
-      // Remove from indexes
-      this.byType.get(process.type)?.delete(id);
-      this.byName.get(process.name)?.delete(id);
-      
-      // Remove from array
-      this.processes.splice(index, 1);
+    const process = this.get(id);
+    if (process) {
+      process.kill();
+    }
+  }
+  
+  // Sweep dead processes (call after frame)
+  sweep() {
+    // Remove dead processes
+    for (let i = this.processes.length - 1; i >= 0; i--) {
+      const process = this.processes[i];
+      if (process.dead || process.finished) {
+        // Remove from indexes
+        this.byType.get(process.type)?.delete(process.id);
+        this.byName.get(process.name)?.delete(process.id);
+        
+        // Remove from array
+        this.processes.splice(i, 1);
+      }
     }
   }
   
@@ -169,7 +182,6 @@ export class ProcessManager {
   }
   
   // collision(type) - Returns ID of colliding process or 0
-  // O(n) where n = processes of this type (not all processes!)
   collision(currentProcess, typeCode) {
     const processIds = this.byType.get(typeCode);
     if (!processIds) return 0;
@@ -184,7 +196,7 @@ export class ProcessManager {
     return 0; // No collision
   }
   
-  // Update all processes
+  // Update all processes (not used with scheduler)
   update(dt) {
     for (const process of this.processes) {
       if (process.active && !process.suspended) {

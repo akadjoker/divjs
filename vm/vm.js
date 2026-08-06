@@ -1,6 +1,6 @@
 /**
- * DivLang Virtual Machine
- * Executa bytecode Div
+ * DivLang Virtual Machine - Reentrant
+ * Cada processo tem seu próprio contexto (ip, stack, locals)
  */
 
 import { OpCodes, OpCodeNames } from '../compiler/bytecode.js';
@@ -8,41 +8,36 @@ import { ProcessManager } from './process.js';
 
 export class VM {
   constructor() {
-    // Stack
-    this.stack = [];
-    this.stackSize = 1024;
-    
-    // Call stack
-    this.callStack = [];
-    
-    // Locals
-    this.locals = [];
-    
-    // Globals
-    this.globals = new Map();
-    
     // Constants
     this.constants = [];
     
-    // Instruction pointer
-    this.ip = 0;
+    // Bytecode (shared)
+    this.bytecode = [];
     
-    // Running state
-    this.running = false;
-    this.halted = false;
+    // Globals
+    this.globals = new Map();
     
     // Native functions
     this.natives = new Map();
     
     // Process manager
     this.processManager = new ProcessManager();
+    
+    // Current process being executed
     this.currentProcess = null;
     
-    // Frame system
+    // VM state (for current process)
+    this.ip = 0;
+    this.stack = [];
+    this.locals = [];
     this.frameYield = false;
     
     // Delta time
     this.dt = 1 / 60;
+    
+    // Running state
+    this.running = false;
+    this.halted = false;
   }
   
   // Register native function
@@ -56,26 +51,48 @@ export class VM {
     this.bytecode = bytecode.instructions;
   }
   
-  // Run VM
-  run() {
+  // Run VM for one frame (scheduler)
+  tick() {
     this.running = true;
     this.halted = false;
-    this.ip = 0;
     
-    while (this.running && !this.halted) {
-      this.step();
+    // Get snapshot of processes (new spawns only enter next frame)
+    const snapshot = [...this.processManager.processes];
+    
+    // Execute each process until FRAME or finished
+    for (const process of snapshot) {
+      if (process.active && !process.suspended && !process.finished) {
+        this.runProcess(process);
+      }
     }
+    
+    // Remove dead processes (sweep)
+    this.processManager.sweep();
   }
   
-  // Step (execute one instruction)
-  step() {
-    if (this.ip >= this.bytecode.length) {
-      this.halted = true;
-      return;
+  // Run ONE process until FRAME or finished
+  runProcess(process) {
+    this.currentProcess = process;
+    this.ip = process.ip;
+    this.stack = process.stack;
+    this.locals = process.locals;
+    this.frameYield = false;
+    
+    // Execute until FRAME or finished
+    while (!this.frameYield && !process.finished) {
+      if (this.ip >= this.bytecode.length) {
+        process.finished = true;
+        break;
+      }
+      
+      const instr = this.bytecode[this.ip];
+      this.execute(instr);
     }
     
-    const instr = this.bytecode[this.ip];
-    this.execute(instr);
+    // Save state back to process
+    process.ip = this.ip;
+    process.stack = this.stack;
+    process.locals = this.locals;
   }
   
   // Execute instruction
@@ -118,11 +135,6 @@ export class VM {
       
       case OpCodes.STORE_GLOBAL:
         this.globals.set(operands[0], this.pop());
-        this.ip++;
-        break;
-      
-      case OpCodes.LOAD_PARAM:
-        this.push(this.params[operands[0]]);
         this.ip++;
         break;
       
@@ -346,17 +358,11 @@ export class VM {
   
   // Push value
   push(value) {
-    if (this.stack.length >= this.stackSize) {
-      throw new Error('Stack overflow');
-    }
     this.stack.push(value);
   }
   
   // Pop value
   pop() {
-    if (this.stack.length === 0) {
-      throw new Error('Stack underflow');
-    }
     return this.stack.pop();
   }
   
@@ -370,24 +376,14 @@ export class VM {
   
   // Reset VM
   reset() {
-    this.stack = [];
-    this.callStack = [];
-    this.locals = [];
-    this.globals = new Map();
     this.constants = [];
+    this.bytecode = [];
+    this.globals = new Map();
     this.ip = 0;
+    this.stack = [];
+    this.locals = [];
     this.running = false;
     this.halted = false;
     this.frameYield = false;
-  }
-  
-  // Set current process
-  setCurrentProcess(process) {
-    this.currentProcess = process;
-  }
-  
-  // Get current process
-  getCurrentProcess() {
-    return this.currentProcess;
   }
 }
