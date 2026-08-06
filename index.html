@@ -32,8 +32,24 @@
 
     // Input
     const keys = {};
+    let debugMode = true;
+    const debugMessages = [];
+    const maxDebugMessages = 10;
+    const drawCommands = [];
+    let currentDrawColor = '#00ff00';
+
+    function pushDebugMessage(message) {
+      debugMessages.push(String(message));
+      if (debugMessages.length > maxDebugMessages) {
+        debugMessages.shift();
+      }
+    }
 
     window.addEventListener('keydown', (e) => {
+      if (e.key === 'F3') {
+        e.preventDefault();
+        debugMode = !debugMode;
+      }
       keys[e.key] = true;
     });
 
@@ -41,8 +57,86 @@
       keys[e.key] = false;
     });
 
+    window.addEventListener('blur', () => {
+      for (const key of Object.keys(keys)) {
+        keys[key] = false;
+      }
+    });
+
     function keyDown(key) {
-      return keys[key] === true;
+      const aliases = {
+        left: ['left', 'arrowleft'],
+        right: ['right', 'arrowright'],
+        up: ['up', 'arrowup'],
+        down: ['down', 'arrowdown'],
+        space: ['space', ' ', 'spacebar']
+      };
+
+      const requested = String(key).toLowerCase();
+      const candidates = aliases[requested] || [requested];
+
+      for (const candidate of candidates) {
+        for (const pressedKey of Object.keys(keys)) {
+          if (pressedKey === 'F3' || pressedKey === 'Meta' || pressedKey === 'Control' || pressedKey === 'Alt' || pressedKey === 'Shift') {
+            continue;
+          }
+          if (pressedKey.toLowerCase() === candidate && keys[pressedKey] === true) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    }
+
+    function printNative(...values) {
+      const text = values.map((value) => String(value)).join(' ');
+      pushDebugMessage(text);
+      return 0;
+    }
+
+    function logNative(...values) {
+      console.log('[DSL]', ...values);
+      return 0;
+    }
+
+    function clearNative() {
+      drawCommands.length = 0;
+      return 0;
+    }
+
+    function setColorNative(color) {
+      currentDrawColor = String(color);
+      return 0;
+    }
+
+    function circleNative(x, y, radius) {
+      drawCommands.push({
+        type: 'circle',
+        x: Number(x),
+        y: Number(y),
+        radius: Math.max(0, Number(radius)),
+        color: currentDrawColor
+      });
+      return 0;
+    }
+
+    function textNative(x, y, text) {
+      drawCommands.push({
+        type: 'text',
+        x: Number(x),
+        y: Number(y),
+        text: String(text),
+        color: currentDrawColor
+      });
+      return 0;
+    }
+
+    function collisionNative(typeCode) {
+      if (!vm.currentProcess) {
+        return 0;
+      }
+      return vm.processManager.collision(vm.currentProcess, Number(typeCode));
     }
 
     // Load Div source
@@ -51,47 +145,106 @@
 GLOBAL player_speed = 200;
 GLOBAL gravity = 500;
 GLOBAL jump_force = 300;
+GLOBAL bullet_speed = 520;
+
+PROCESS bullet(x, y, dir);
+PRIVATE
+  vx = 0;
+BEGIN
+  width = 10;
+  height = 10;
+
+  LOOP
+    vx = dir * bullet_speed;
+    x = x + vx * get_delta();
+
+    IF (collision(type parede) > 0)
+      print('HIT parede');
+      RETURN;
+    END
+
+    IF (x < -20 || x > 820 || y < -20 || y > 620)
+      RETURN;
+    END
+
+    set_color('#ff6633');
+    circle(x, y, 5);
+
+    FRAME;
+  END
+END
+
+PROCESS parede(x, y);
+BEGIN
+  width = 80;
+  height = 80;
+
+  LOOP
+    set_color('#4a9eff');
+    circle(x + 40, y + 40, 40);
+    text(x + 10, y + 30, 'parede');
+    FRAME;
+  END
+END
 
 PROCESS player(x, y);
 PRIVATE
   vx = 0;
   vy = 0;
   on_ground = 0;
+  shoot_cd = 0;
 BEGIN
-  vx = 0;
-  vy = vy + gravity * 0.016;
+  LOOP
+    vx = 0;
+    vy = vy + gravity * get_delta();
+    shoot_cd = shoot_cd - get_delta();
 
-  IF (key_down('left'))
-    vx = -player_speed;
+    IF (key_down(_left))
+      vx = -player_speed;
+    //  log('vy=', vy, 'vx=', vx, 'x=', x, ' dt=', get_delta());
+    END
+
+    IF (key_down(_right))
+      vx = player_speed;
+    END
+
+    IF (key_down(_space) && on_ground)
+      vy = -jump_force;
+      on_ground = 0;
+    END
+
+    IF (key_down(_fire) && shoot_cd <= 0)
+      bullet(x + 20, y + 16, 1);
+      shoot_cd = 0.15;
+    END
+
+    x = x + vx * get_delta();
+    y = y + vy * get_delta();
+
+    IF (y > 550)
+      y = 550;
+      vy = 0;
+      on_ground = 1;
+    END
+
+    set_color('#ffcc00');
+    text(x + 20, y, 'player');
+
+
+    FRAME;
+
   END
 
-  IF (key_down('right'))
-    vx = player_speed;
-  END
-
-  IF (key_down('space') && on_ground)
-    vy = -jump_force;
-    on_ground = 0;
-  END
-
-  x = x + vx * 0.016;
-  y = y + vy * 0.016;
-
-  IF (y > 550)
-    y = 550;
-    vy = 0;
-    on_ground = 1;
-  END
-
-  FRAME;
 END
 
 BEGIN
-  player(100, 400);
+ 
+  player(300, 200);
+  parede(620, 500);
 
-  REPEAT
+  loop
     FRAME;
-  UNTIL (0);
+  end
 END
 `;
 
@@ -113,19 +266,118 @@ END
     const vm = new VM();
     vm.load(bytecode);
 
+    let totalTime = 0;
+
     // Register natives
     vm.registerNative('key_down', keyDown);
+    vm.registerNative('get_time', () => totalTime);
+    vm.registerNative('get_delta', () => vm.dt);
+    vm.registerNative('print', printNative);
+    vm.registerNative('log', logNative);
+    vm.registerNative('clear', clearNative);
+    vm.registerNative('set_color', setColorNative);
+    vm.registerNative('set_colro', setColorNative);
+    vm.registerNative('circle', circleNative);
+    vm.registerNative('text', textNative);
+    vm.registerNative('collision', collisionNative);
 
     // Game loop
     let lastTime = 0;
+    let fps = 0;
+
+    function drawDebugOverlay(dt) {
+      const processes = vm.processManager.getAll();
+
+      ctx.save();
+      ctx.font = '12px monospace';
+      ctx.textBaseline = 'top';
+
+      const panelX = 10;
+      const panelY = 10;
+      const panelW = 760;
+      const processRows = Math.min(processes.length, 8);
+      const logRows = debugMessages.length;
+      const panelH = Math.min(560, 74 + processRows * 16 + (logRows > 0 ? 20 + logRows * 16 : 0));
+
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(panelX, panelY, panelW, panelH);
+      ctx.strokeStyle = '#00ff66';
+      ctx.strokeRect(panelX, panelY, panelW, panelH);
+
+      let y = panelY + 8;
+      ctx.fillStyle = '#00ff66';
+      ctx.fillText('DEBUG MODE [F3]', panelX + 8, y);
+      y += 18;
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(`FPS: ${fps.toFixed(1)} | dt: ${dt.toFixed(4)}s`, panelX + 8, y);
+      y += 16;
+      ctx.fillText(`Processes: ${processes.length} | VM ip: ${vm.ip}`, panelX + 8, y);
+      y += 18;
+
+      for (const process of processes.slice(0, 8)) {
+        const vx = process.locals?.[4] ?? 0;
+        const vy = process.locals?.[5] ?? 0;
+        const line = `#${process.id} ${process.name} x:${process.x.toFixed(1)} y:${process.y.toFixed(1)} vx:${Number(vx).toFixed(1)} vy:${Number(vy).toFixed(1)}`;
+        ctx.fillText(line, panelX + 8, y);
+        y += 16;
+      }
+
+      if (debugMessages.length > 0) {
+        y += 4;
+        ctx.fillStyle = '#00ff66';
+        ctx.fillText('PRINT BUFFER:', panelX + 8, y);
+        y += 16;
+
+        ctx.fillStyle = '#ffd166';
+        for (const message of debugMessages) {
+          ctx.fillText(message, panelX + 8, y);
+          y += 16;
+        }
+      }
+
+      ctx.restore();
+    }
+
+    function drawCommandStack() {
+      ctx.save();
+      ctx.font = '14px monospace';
+      ctx.textBaseline = 'top';
+      
+
+      for (const command of drawCommands) {
+        ctx.fillStyle = command.color;
+        ctx.strokeStyle = command.color;
+
+        if (command.type === 'circle') {
+          ctx.beginPath();
+          ctx.arc(command.x, command.y, command.radius, 0, Math.PI * 2);
+          ctx.fill();
+          continue;
+        }
+
+        if (command.type === 'text') {
+          ctx.fillText(command.text, command.x, command.y);
+        }
+      }
+
+      ctx.restore();
+
+      // Consume commands after drawing; next frame must enqueue again.
+      drawCommands.length = 0;
+    }
 
     function gameLoop(timestamp) {
       requestAnimationFrame(gameLoop);
 
       const dt = (timestamp - lastTime) / 1000;
       lastTime = timestamp;
+      if (dt > 0) {
+        fps = 1 / dt;
+      }
 
       vm.dt = dt;
+      totalTime += dt;
 
       // Update
       vm.tick();
@@ -133,11 +385,30 @@ END
       // Render
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
 
       // Draw processes
       for (const process of vm.processManager.getAll()) {
+        const radius = Math.min(process.width, process.height) * 0.5;
+        const cx = process.x + process.width * 0.5;
+        const cy = process.y + process.height * 0.5;
+
         ctx.fillStyle = '#0f0';
-        ctx.fillRect(process.x, process.y, 32, 32);
+        //ctx.beginPath();
+        //ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        //ctx.fill();
+
+        if (debugMode) {
+          ctx.strokeStyle = '#00ffff';
+          ctx.strokeRect(process.x, process.y, process.width, process.height);
+        }
+      }
+
+      // Draw user-level primitive command stack at the end of frame.
+      drawCommandStack();
+
+      if (debugMode) {
+        drawDebugOverlay(dt);
       }
     }
 

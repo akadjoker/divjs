@@ -48,6 +48,13 @@ export class VM {
     this.running = false;
     this.halted = false;
 
+    // Main context (separate from process contexts)
+    this.mainIp = 0;
+    this.mainStack = [];
+    this.mainLocals = [];
+    this.mainCallStack = [];
+    this.mainFinished = false;
+
     // Debug mode
     this.debug = true;
   }
@@ -63,12 +70,25 @@ export class VM {
     this.bytecode = bytecode.instructions;
     this.processTable = bytecode.processTable || new Map();
     this.functionTable = bytecode.functionTable || new Map();
+
+    // Start from bytecode bootstrap so GLOBAL initializers run once,
+    // then control jumps to main entry.
+    this.mainIp = 0;
+    this.mainStack = [];
+    this.mainLocals = [];
+    this.mainCallStack = [];
+    this.mainFinished = false;
   }
 
   // Run VM for one frame (scheduler)
   tick() {
     this.running = true;
     this.halted = false;
+
+    // Run MAIN script first (can spawn processes).
+    if (!this.mainFinished) {
+      this.runMain();
+    }
 
     // Get snapshot of processes (new spawns only enter next frame)
     const snapshot = [...this.processManager.processes];
@@ -82,6 +102,38 @@ export class VM {
 
     // Remove dead processes (sweep)
     this.processManager.sweep();
+  }
+
+  // Run MAIN until FRAME or finish
+  runMain() {
+    this.currentProcess = null;
+    this.ip = this.mainIp;
+    this.stack = this.mainStack;
+    this.locals = this.mainLocals;
+    this.frameYield = false;
+    this.callStack = this.mainCallStack;
+
+    let budget = 100000;
+    while (!this.frameYield && !this.mainFinished && !this.halted) {
+      if (--budget <= 0) {
+        console.error('MAIN: no FRAME in loop');
+        this.mainFinished = true;
+        break;
+      }
+
+      if (this.ip >= this.bytecode.length) {
+        this.mainFinished = true;
+        break;
+      }
+
+      const instr = this.bytecode[this.ip];
+      this.execute(instr);
+    }
+
+    this.mainIp = this.ip;
+    this.mainStack = this.stack;
+    this.mainLocals = this.locals;
+    this.mainCallStack = this.callStack;
   }
 
   // Run ONE process until FRAME or finished
@@ -149,7 +201,7 @@ export class VM {
 
       // Load/Store
       case OpCodes.LOAD_LOCAL:
-        this.push(this.locals[operands[0]]);
+        this.push(this.locals[operands[0]] ?? 0);
         this.ip++;
         break;
 
@@ -256,21 +308,21 @@ export class VM {
       // Logical
       case OpCodes.NOT:
         const val1 = this.pop();
-        this.push(val1 === 0 ? 1 : 0);
+        this.push(this.isTruthy(val1) ? 0 : 1);
         this.ip++;
         break;
 
       case OpCodes.AND:
         const b12 = this.pop();
         const a12 = this.pop();
-        this.push((a12 !== 0 && b12 !== 0) ? 1 : 0);
+        this.push((this.isTruthy(a12) && this.isTruthy(b12)) ? 1 : 0);
         this.ip++;
         break;
 
       case OpCodes.OR:
         const b13 = this.pop();
         const a13 = this.pop();
-        this.push((a13 !== 0 || b13 !== 0) ? 1 : 0);
+        this.push((this.isTruthy(a13) || this.isTruthy(b13)) ? 1 : 0);
         this.ip++;
         break;
 
@@ -281,7 +333,7 @@ export class VM {
 
       case OpCodes.JUMP_IF_FALSE:
         const cond1 = this.pop();
-        if (cond1 === 0) {
+        if (!this.isTruthy(cond1)) {
           this.ip = operands[0];
         } else {
           this.ip++;
@@ -290,7 +342,7 @@ export class VM {
 
       case OpCodes.JUMP_IF_TRUE:
         const cond2 = this.pop();
-        if (cond2 !== 0) {
+        if (this.isTruthy(cond2)) {
           this.ip = operands[0];
         } else {
           this.ip++;
@@ -359,8 +411,12 @@ export class VM {
         if (this.callStack.length > 0) {
           this.ip = this.callStack.pop();
         } else {
-          // End of process/function
-          this.currentProcess.finished = true;
+          // End of process/function/main
+          if (this.currentProcess) {
+            this.currentProcess.finished = true;
+          } else {
+            this.mainFinished = true;
+          }
         }
 
         // Push return value back if needed (for function calls)
@@ -413,6 +469,31 @@ export class VM {
 
         const newProcess = this.processManager.create(processName, params);
         newProcess.ip = this.processTable.get(processName).addr;
+
+        // Initialize local slots for process params (x/y/width/height are fixed slots).
+        if (processInfo && processInfo.params) {
+          const fixedSlots = {
+            x: 0,
+            y: 1,
+            width: 2,
+            height: 3
+          };
+
+          let nextLocal = 4;
+          for (let i = 0; i < processInfo.params.length; i++) {
+            const paramName = processInfo.params[i];
+            const paramValue = processArgs[i];
+
+            if (Object.prototype.hasOwnProperty.call(fixedSlots, paramName)) {
+              newProcess.locals[fixedSlots[paramName]] = paramValue;
+            } else {
+              newProcess.locals[nextLocal++] = paramValue;
+            }
+          }
+        }
+
+        // Process calls behave like expressions; return spawned process id.
+        this.push(newProcess.id);
 
         this.ip++;
         break;
@@ -473,6 +554,11 @@ export class VM {
     return this.stack[this.stack.length - 1];
   }
 
+  // VM truthiness: false, 0, null, undefined => false; everything else => true
+  isTruthy(value) {
+    return !(value === 0 || value === false || value === null || value === undefined);
+  }
+
   // Reset VM
   reset() {
     this.constants = [];
@@ -484,6 +570,11 @@ export class VM {
     this.stack = [];
     this.locals = [];
     this.callStack = [];
+    this.mainIp = 0;
+    this.mainStack = [];
+    this.mainLocals = [];
+    this.mainCallStack = [];
+    this.mainFinished = false;
     this.running = false;
     this.halted = false;
     this.frameYield = false;

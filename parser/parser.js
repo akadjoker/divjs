@@ -40,7 +40,18 @@ export class Parser {
   // Expect token
   expect(type, message) {
     if (!this.is(type)) {
-      throw new Error(message || `Expected ${TokenType[type]} at ${this.current().line}:${this.current().col}`);
+      const token = this.current();
+      const where = ` at ${token.line}:${token.col}`;
+
+      if (message) {
+        // Avoid duplicating location if caller already includes it.
+        if (/ at \d+:\d+$/.test(message)) {
+          throw new Error(message);
+        }
+        throw new Error(`${message}${where}`);
+      }
+
+      throw new Error(`Expected ${type}${where}`);
     }
     this.pos++;
   }
@@ -68,11 +79,8 @@ export class Parser {
         processes.push(this.parseProcess());
       } else if (this.is(TokenType.BEGIN)) {
         // Main block
-        this.pos++;
-        while (!this.is(TokenType.EOF) && !this.is(TokenType.END)) {
-          mainBlock.push(this.parseStatement());
-        }
-        this.expect(TokenType.END, 'Expected END after main block');
+        const block = this.parseBeginEndBlock('Expected BEGIN before main block', 'Expected END after main block');
+        mainBlock.push(...block.statements);
       } else {
         throw new Error(`Unexpected token ${this.current().value} at ${this.current().line}:${this.current().col}`);
       }
@@ -119,7 +127,7 @@ export class Parser {
     this.expect(TokenType.SEMICOLON, 'Expected ; after function header');
 
     // Body
-    const body = this.parseBlock();
+    const body = this.parseBeginEndBlock('Expected BEGIN before function body', 'Expected END after function body');
 
     return new ast.Function(name, params, body);
   }
@@ -145,14 +153,16 @@ export class Parser {
     this.expect(TokenType.RPAREN, 'Expected ) after process params');
     this.expect(TokenType.SEMICOLON, 'Expected ; after process header');
 
-    // Parse privates
+    // Parse private section (PRIVATE ... declarations ... BEGIN)
     const privates = [];
-    while (this.match(TokenType.PRIVATE)) {
-      privates.push(this.parsePrivate());
+    if (this.match(TokenType.PRIVATE)) {
+      while (!this.is(TokenType.BEGIN) && !this.is(TokenType.EOF)) {
+        privates.push(this.parsePrivate());
+      }
     }
 
     // Body
-    const body = this.parseBlock();
+    const body = this.parseBeginEndBlock('Expected BEGIN before process body', 'Expected END after process body');
 
     return new ast.Process(name, params, privates, body);
   }
@@ -184,6 +194,20 @@ export class Parser {
     }
 
     this.expect(TokenType.END, 'Expected END after block');
+
+    return new ast.Block(statements);
+  }
+
+  // Parse BEGIN ... END block
+  parseBeginEndBlock(beginMessage, endMessage) {
+    this.expect(TokenType.BEGIN, beginMessage || 'Expected BEGIN');
+
+    const statements = [];
+    while (!this.is(TokenType.EOF) && !this.is(TokenType.END)) {
+      statements.push(this.parseStatement());
+    }
+
+    this.expect(TokenType.END, endMessage || 'Expected END after block');
 
     return new ast.Block(statements);
   }
@@ -228,7 +252,10 @@ export class Parser {
 
     // Return
     if (this.match(TokenType.RETURN)) {
-      const value = this.parseExpression();
+      let value = null;
+      if (!this.is(TokenType.SEMICOLON)) {
+        value = this.parseExpression();
+      }
       this.expect(TokenType.SEMICOLON, 'Expected ; after RETURN');
       return new ast.Return(value);
     }
@@ -297,7 +324,12 @@ export class Parser {
 
   // Parse repeat
   parseRepeat() {
-    const body = this.parseBlock();
+    const statements = [];
+    while (!this.is(TokenType.EOF) && !this.is(TokenType.UNTIL)) {
+      statements.push(this.parseStatement());
+    }
+
+    const body = new ast.Block(statements);
 
     this.expect(TokenType.UNTIL, 'Expected UNTIL after REPEAT body');
 
@@ -427,6 +459,12 @@ export class Parser {
 
   // Parse unary
   parseUnary() {
+    if (this.match(TokenType.TYPE)) {
+      const token = this.current();
+      this.expect(TokenType.IDENTIFIER, 'Expected process name after TYPE');
+      return new ast.TypeOperator(token.value);
+    }
+
     if (this.match(TokenType.MINUS) || this.match(TokenType.NOT)) {
       const operator = this.previous().value;
       const right = this.parseUnary();

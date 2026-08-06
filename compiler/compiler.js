@@ -1,5 +1,15 @@
 import { OpCodes } from './bytecode.js';
 
+function hashCode(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash);
+}
+
 export class Compiler {
   constructor() {
     this.constants = [];
@@ -26,6 +36,10 @@ export class Compiler {
       this.compileGlobal(global);
     }
 
+    // Skip declarations at runtime and jump to main entry.
+    this.emit(OpCodes.JUMP, 0);
+    const jumpToMain = this.instructions.length - 1;
+
     // Compile functions
     for (const func of program.functions) {
       this.compileFunction(func);
@@ -37,13 +51,19 @@ export class Compiler {
     }
 
     // Compile main block
+    const mainAddr = this.instructions.length;
+    this.instructions[jumpToMain].operands[0] = mainAddr;
     this.compileBlock({ statements: program.mainBlock });
+
+    // Main without an explicit loop should still stop cleanly.
+    this.emit(OpCodes.HALT);
 
     return {
       constants: this.constants,
       instructions: this.instructions,
       processTable: this.processTable,
-      functionTable: this.functionTable
+      functionTable: this.functionTable,
+      mainAddr
     };
   }
 
@@ -117,12 +137,25 @@ export class Compiler {
     // Add params as locals (start at slot 4)
     let localIdx = 4;
     for (const param of stmt.params) {
-      this.localMap.set(param, localIdx++);
+      // Keep canonical process fields in fixed slots (x=0, y=1, width=2, height=3).
+      if (!this.localMap.has(param)) {
+        this.localMap.set(param, localIdx++);
+      }
     }
 
     // Add privates as locals
     for (const priv of stmt.privates) {
       this.localMap.set(priv.name, localIdx++);
+    }
+
+    // Initialize private locals once when process starts.
+    for (const priv of stmt.privates) {
+      if (priv.value) {
+        this.compileExpression(priv.value);
+      } else {
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(0));
+      }
+      this.emit(OpCodes.STORE_LOCAL, this.localMap.get(priv.name));
     }
 
     // Compile body
@@ -203,8 +236,13 @@ export class Compiler {
         break;
 
       case 'expression':
-        this.compileExpression(stmt.expression);
-        this.emit(OpCodes.POP);
+        // Assignments don't leave a value on stack in this VM.
+        if (stmt.expression.type === 'assign') {
+          this.compileAssignment(stmt.expression);
+        } else {
+          this.compileExpression(stmt.expression);
+          this.emit(OpCodes.POP);
+        }
         break;
 
       case 'assign':
@@ -357,6 +395,10 @@ export class Compiler {
         this.compileCall(expr);
         break;
 
+      case 'type_operator':
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(hashCode(expr.processName)));
+        break;
+
       case 'assign':
         this.compileAssignment(expr);
         break;
@@ -370,6 +412,16 @@ export class Compiler {
   compileIdentifier(expr) {
     const name = expr.name;
 
+    // Builtin constants available without GLOBAL declarations.
+    const builtinConstants = {
+      _left: 'left',
+      _right: 'right',
+      _up: 'up',
+      _down: 'down',
+      _space: 'space',
+      _fire: 'z'
+    };
+
     // Check if local
     if (this.localMap.has(name)) {
       this.emit(OpCodes.LOAD_LOCAL, this.localMap.get(name));
@@ -377,6 +429,10 @@ export class Compiler {
     // Check if global
     else if (this.globalMap.has(name)) {
       this.emit(OpCodes.LOAD_GLOBAL, this.globalMap.get(name));
+    }
+    // Check builtin constants
+    else if (Object.prototype.hasOwnProperty.call(builtinConstants, name)) {
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(builtinConstants[name]));
     }
     else {
       throw new Error(`Unknown variable: ${name}`);

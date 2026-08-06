@@ -189,3 +189,10 @@ export class Identifier {
     this.name = name;
   }
 }
+
+export class TypeOperator {
+  constructor(processName) {
+    this.type = 'type_operator';
+    this.processName = processName;
+  }
+}

@@ -44,6 +44,28 @@ export const Runtime = {
   // Draw rectangle
   draw_rect(x, y, width, height, color) {
     // TODO: implement rectangle drawing
+  },
+
+  // Print message to runtime output (fallback: console)
+  print(...values) {
+    console.log('[PRINT]', ...values);
+    return 0;
+  },
+
+  // Log message to console
+  log(...values) {
+    console.log('[LOG]', ...values);
+    return 0;
+  },
+
+  // Get elapsed time in seconds
+  get_time() {
+    return performance.now() / 1000;
+  },
+
+  // Get frame delta in seconds (fallback)
+  get_delta() {
+    return 1 / 60;
   }
 };
 
@@ -56,4 +78,8 @@ export function registerRuntime(vm) {
   vm.registerNative('draw', Runtime.draw);
   vm.registerNative('draw_text', Runtime.draw_text);
   vm.registerNative('draw_rect', Runtime.draw_rect);
+  vm.registerNative('print', Runtime.print);
+  vm.registerNative('log', Runtime.log);
+  vm.registerNative('get_time', Runtime.get_time);
+  vm.registerNative('get_delta', Runtime.get_delta);
 }

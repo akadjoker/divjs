@@ -30,6 +30,7 @@ export const TokenType = {
   NOT: 'NOT',
   AND: 'AND',
   OR: 'OR',
+  TYPE: 'TYPE',
 
   // Operators
   EQUALS: 'EQUALS',     // = (assignment)
@@ -90,7 +91,8 @@ const KEYWORDS = {
   'CONTINUE': TokenType.CONTINUE,
   'NOT': TokenType.NOT,
   'AND': TokenType.AND,
-  'OR': TokenType.OR
+  'OR': TokenType.OR,
+  'TYPE': TokenType.TYPE
 };
 
 // Lexer class
@@ -165,13 +167,26 @@ export class Lexer {
 
   // Read string
   readString() {
+    const quote = this.current();
     this.advance(); // consume opening quote
+
     let str = '';
-    while (this.current() && this.current() !== '"') {
+    while (this.current()) {
+      if (this.current() === '\\' && this.peek() === quote) {
+        this.advance();
+        str += this.advance();
+        continue;
+      }
+
+      if (this.current() === quote) {
+        this.advance(); // consume closing quote
+        return str;
+      }
+
       str += this.advance();
     }
-    this.advance(); // consume closing quote
-    return str;
+
+    throw new Error(`Unterminated string at line ${this.line}, col ${this.col}`);
   }
 
   // Read identifier or keyword
@@ -212,7 +227,7 @@ export class Lexer {
       }
 
       // String
-      if (char === '"') {
+      if (char === '"' || char === "'") {
         const str = this.readString();
         this.tokens.push(new Token(TokenType.STRING, str, line, col));
         continue;
@@ -221,7 +236,7 @@ export class Lexer {
       // Identifier or keyword
       if (/[a-zA-Z_]/.test(char)) {
         const id = this.readIdentifier();
-        const keyword = KEYWORDS[id];
+        const keyword = KEYWORDS[id.toUpperCase()];
         if (keyword) {
           this.tokens.push(new Token(keyword, id, line, col));
         } else {
