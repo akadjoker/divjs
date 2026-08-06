@@ -501,6 +501,52 @@ end`;
   assert(runtime.getCurrentGraphId() === 7, `getCurrentGraphId esperado 7, obtido ${runtime.getCurrentGraphId()}`);
 }
 
+async function testForLocalDoesNotCollideWithImplicitLocals() {
+  const source = `program for_slot_collision;
+
+process p(x, y);
+begin
+  for i = 0 to 3
+  end
+  graph = 111;
+  size = 222;
+  frame;
+end
+
+begin
+  p(0, 0);
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const procMeta = bytecode.processTable.get('p');
+  assert(!!procMeta, 'process meta p nao encontrado');
+  assert(!!procMeta.locals, 'locals metadata do process p nao encontrado');
+
+  const slotI = procMeta.locals.i;
+  const slotGraph = procMeta.locals.graph;
+  const slotSize = procMeta.locals.size;
+
+  assert(Number.isInteger(slotI), 'slot i invalido');
+  assert(Number.isInteger(slotGraph), 'slot graph invalido');
+  assert(Number.isInteger(slotSize), 'slot size invalido');
+  assert(slotI !== slotGraph, `slot i e graph colidiram: ${slotI}`);
+  assert(slotI !== slotSize, `slot i e size colidiram: ${slotI}`);
+  assert(slotGraph !== slotSize, `slot graph e size colidiram: ${slotGraph}`);
+
+  const vm = new VM();
+  vm.load(bytecode);
+  const runtime = createRuntime(vm);
+  runtime.beginFrame(1 / 60);
+  vm.tick();
+
+  const p = vm.processManager.getAll()[0];
+  assert(!!p, 'processo nao criado');
+  assert(p.locals[slotI] === 4, `i esperado 4 apos for, obtido ${p.locals[slotI]}`);
+  assert(p.locals[slotGraph] === 111, `graph esperado 111, obtido ${p.locals[slotGraph]}`);
+  assert(p.locals[slotSize] === 222, `size esperado 222, obtido ${p.locals[slotSize]}`);
+}
+
 async function testSpawnSetsParentId() {
   const source = `program spawn_parent;
 
@@ -621,7 +667,8 @@ export async function runAllTests() {
     ['keyword and/or/not operators', testKeywordLogicalOperatorsCompileAndRun],
     ['void native stack underflow guard', testVoidNativeDoesNotUnderflowStack],
     ['nested function return stack safety', testNestedFunctionReturnsDoNotLeakStack],
-    ['implicit process locals graph/size slots', testImplicitProcessLocalsGraphAndSize]
+    ['implicit process locals graph/size slots', testImplicitProcessLocalsGraphAndSize],
+    ['for local slot does not collide with implicit locals', testForLocalDoesNotCollideWithImplicitLocals]
   ];
 
   const results = [];

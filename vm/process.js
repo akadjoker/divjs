@@ -3,26 +3,17 @@
  * Cada processo tem seu próprio contexto (ip, stack, locals)
  */
 
-// Hash function
-function hashCode(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32bit integer
-  }
-  return Math.abs(hash);
-}
+import { hashCode } from '../utils/hash.js';
 
-export const Signal = {
-  S_KILL: 0,
-  S_WAKEUP: 1,
-  S_SLEEP: 2,
-  S_FREEZE: 3,
-  S_KILL_TREE: 100,
-  S_WAKEUP_TREE: 101,
-  S_SLEEP_TREE: 102,
-  S_FREEZE_TREE: 103
+// Process types (constants)
+export const ProcessType = {
+  NONE: 0,
+  SOLID: 1,
+  SENSOR: 2,
+  PLATFORM: 3,
+  ONEWAY: 4,
+  SHOT: 5,
+  DANGER: 6
 };
 
 export class Process {
@@ -30,16 +21,13 @@ export class Process {
     this.name = name;
     this.id = params.id || 0;
     this.type = hashCode(name); // Tipo = hash do nome
+    this.parentId = params.parentId || 0;
     
     // Position (locals especiais - slots fixos)
     this.x = params.x || 0;
     this.y = params.y || 0;
     this.width = params.width || 32;
     this.height = params.height || 32;
-    this.ctype = params.ctype ?? params.c_type ?? 0;
-    this.region = params.region ?? 0;
-    this.angle = params.angle ?? 0;
-    this.parentId = params.parentId ?? 0;
     
     // Private variables
     this.privates = params;
@@ -49,22 +37,17 @@ export class Process {
     this.suspended = false;
     this.finished = false;
     this.dead = false; // Marked for removal
-    this.frameValue = 100;
     
     // VM context (coroutine)
     this.ip = 0;           // Instruction pointer
     this.stack = [];       // Stack próprio
     this.locals = [];      // Locais próprios
     
-    // Sincronizar com locals (slots fixos: 0=x, 1=y, 2=width, 3=height, 4=ctype, 5=id, 6=region, 7=angle)
+    // Sincronizar x, y com locals (slots fixos: 0=x, 1=y, 2=width, 3=height)
     this.locals[0] = this.x;
     this.locals[1] = this.y;
     this.locals[2] = this.width;
     this.locals[3] = this.height;
-    this.locals[4] = this.ctype;
-    this.locals[5] = this.id;
-    this.locals[6] = this.region;
-    this.locals[7] = this.angle;
   }
   
   // Get bounds (for collision)
@@ -110,10 +93,6 @@ export class Process {
     this.y = this.locals[1] ?? this.y;
     this.width = this.locals[2] ?? this.width;
     this.height = this.locals[3] ?? this.height;
-    this.ctype = this.locals[4] ?? this.ctype;
-    this.locals[5] = this.id;
-    this.region = this.locals[6] ?? this.region;
-    this.angle = this.locals[7] ?? this.angle;
   }
 }
 
@@ -129,9 +108,6 @@ export class ProcessManager {
   create(name, params = {}) {
     const process = new Process(name, params);
     process.id = this.nextId++;
-    process.locals[5] = process.id;
-    process.locals[6] = process.region;
-    process.locals[7] = process.angle;
     
     this.processes.push(process);
     
@@ -233,85 +209,62 @@ export class ProcessManager {
     return 0; // No collision
   }
 
-  getChildrenOf(parentId) {
-    return this.processes.filter((p) => p.parentId === parentId);
-  }
-
-  getDescendantsOf(rootId) {
-    const out = [];
-    const queue = [rootId];
-
-    while (queue.length > 0) {
-      const currentId = queue.shift();
-      const children = this.getChildrenOf(currentId);
-      for (const child of children) {
-        out.push(child);
-        queue.push(child.id);
-      }
-    }
-
-    return out;
-  }
-
   applySignal(process, signalCode) {
-    if (!process || process.dead || process.finished) {
-      return false;
+    if (!process || process.dead) {
+      return 0;
     }
 
     switch (signalCode) {
-      case Signal.S_KILL:
-        process.kill();
-        return true;
-      case Signal.S_WAKEUP:
-        process.suspended = false;
-        process.active = true;
-        return true;
-      case Signal.S_SLEEP:
-      case Signal.S_FREEZE:
+      case 0: // suspend
         process.suspended = true;
-        return true;
+        return 1;
+      case 1: // wake up
+        process.suspended = false;
+        return 1;
+      case 100: // kill tree / s_kill_tree
+        process.kill();
+        return 1;
       default:
-        return false;
+        return 0;
     }
   }
 
   signalById(targetId, signalCode) {
-    const target = this.get(Number(targetId) || 0);
+    const target = this.get(targetId);
     if (!target) {
       return 0;
     }
 
-    if (signalCode === Signal.S_KILL_TREE || signalCode === Signal.S_WAKEUP_TREE || signalCode === Signal.S_SLEEP_TREE || signalCode === Signal.S_FREEZE_TREE) {
-      const baseSignal = signalCode - 100;
-      let changed = 0;
-      if (this.applySignal(target, baseSignal)) {
-        changed += 1;
-      }
-
-      const descendants = this.getDescendantsOf(target.id);
-      for (const process of descendants) {
-        if (this.applySignal(process, baseSignal)) {
-          changed += 1;
-        }
-      }
-
-      return changed;
+    if (signalCode !== 100) {
+      return this.applySignal(target, signalCode);
     }
 
-    return this.applySignal(target, signalCode) ? 1 : 0;
+    // Kill whole subtree rooted at target.
+    let affected = 0;
+    const stack = [target.id];
+    while (stack.length > 0) {
+      const id = stack.pop();
+      const process = this.get(id);
+      if (!process || process.dead) {
+        continue;
+      }
+
+      affected += this.applySignal(process, signalCode);
+      for (const candidate of this.processes) {
+        if (candidate.parentId === id && !candidate.dead) {
+          stack.push(candidate.id);
+        }
+      }
+    }
+    return affected;
   }
 
   signalByType(typeCode, signalCode) {
-    const list = this.getByType(Number(typeCode) || 0);
-    if (list.length === 0) {
-      return 0;
+    let affected = 0;
+    for (const process of this.getByType(typeCode)) {
+      affected += this.applySignal(process, signalCode);
     }
-
-    let changed = 0;
-    for (const process of list) {
-      changed += this.signalById(process.id, signalCode);
-    }
-    return changed;
+    return affected;
   }
 
   letMeAlone(currentProcess) {
@@ -321,15 +274,12 @@ export class ProcessManager {
 
     let removed = 0;
     for (const process of this.processes) {
-      if (process.id === currentProcess.id) {
+      if (process.id === currentProcess.id || process.dead) {
         continue;
       }
-      if (!process.dead && !process.finished) {
-        process.kill();
-        removed += 1;
-      }
+      process.kill();
+      removed += 1;
     }
-
     return removed;
   }
   

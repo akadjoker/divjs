@@ -1,14 +1,5 @@
 import { OpCodes } from './bytecode.js';
-
-function hashCode(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return Math.abs(hash);
-}
+import { hashCode } from '../utils/hash.js';
 
 export class Compiler {
   constructor() {
@@ -350,7 +341,7 @@ export class Compiler {
 
   // Compile for
   compileFor(stmt) {
-    const varIdx = this.localMap.size;
+    const varIdx = this.nextLocalSlot++;
     this.localMap.set(stmt.varName, varIdx);
 
     this.compileExpression(stmt.start);
