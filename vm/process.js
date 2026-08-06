@@ -1,15 +1,35 @@
 /**
  * DivLang Process Manager
- * Gerencia processos concorrentes
+ * Gerencia processos concorrentes com índices
  */
+
+// Hash function
+function hashCode(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return Math.abs(hash);
+}
+
+// Process types (constants)
+export const ProcessType = {
+  NONE: 0,
+  SOLID: 1,
+  SENSOR: 2,
+  PLATFORM: 3,
+  ONEWAY: 4,
+  SHOT: 5,
+  DANGER: 6
+};
 
 export class Process {
   constructor(name, params = {}) {
     this.name = name;
-    this.params = params;
-    this.privates = {};
-    this.type = 0; // SOLID = 0, SENSOR = 1, etc.
-    this.graph = null;
+    this.id = params.id || 0;
+    this.type = hashCode(name); // Tipo = hash do nome
     
     // Position
     this.x = params.x || 0;
@@ -17,13 +37,14 @@ export class Process {
     this.width = params.width || 32;
     this.height = params.height || 32;
     
+    // Private variables
+    this.privates = params;
+    
     // State
     this.active = true;
     this.suspended = false;
     
     // VM state
-    this.vm = null;
-    this.ip = 0;
     this.stack = [];
     this.locals = [];
   }
@@ -48,14 +69,24 @@ export class Process {
            a.y < b.y + b.height &&
            a.y + a.height > b.y;
   }
+  
+  // Get property
+  get(name) {
+    return this.privates[name];
+  }
+  
+  // Set property
+  set(name, value) {
+    this.privates[name] = value;
+  }
 }
 
 export class ProcessManager {
-  constructor(vm) {
-    this.vm = vm;
-    this.processes = [];
-    this.processMap = new Map();
-    this.nextId = 0;
+  constructor() {
+    this.processes = [];           // Array de todos os processos
+    this.byType = new Map();       // Map<type, Set<processId>>
+    this.byName = new Map();       // Map<name, Set<processId>>
+    this.nextId = 1;               // IDs começam em 1 (0 = null)
   }
   
   // Create process
@@ -64,23 +95,31 @@ export class ProcessManager {
     process.id = this.nextId++;
     
     this.processes.push(process);
-    this.processMap.set(process.id, process);
+    
+    // Index por tipo
+    if (!this.byType.has(process.type)) {
+      this.byType.set(process.type, new Set());
+    }
+    this.byType.get(process.type).add(process.id);
+    
+    // Index por nome
+    if (!this.byName.has(name)) {
+      this.byName.set(name, new Set());
+    }
+    this.byName.get(name).add(process.id);
     
     return process;
   }
   
   // Get process by ID
   get(id) {
-    return this.processMap.get(id);
+    if (id === 0) return null; // 0 = null
+    return this.processes.find(p => p.id === id);
   }
   
-  // Remove process
-  remove(id) {
-    const index = this.processes.findIndex(p => p.id === id);
-    if (index !== -1) {
-      this.processes.splice(index, 1);
-      this.processMap.delete(id);
-    }
+  // Get process by index in array
+  getByIndex(index) {
+    return this.processes[index - 1]; // -1 porque IDs começam em 1
   }
   
   // Get all processes
@@ -88,14 +127,61 @@ export class ProcessManager {
     return this.processes;
   }
   
-  // Get processes by type
-  getByType(type) {
-    return this.processes.filter(p => p.type === type);
+  // Get processes by type (O(1) lookup)
+  getByType(typeCode) {
+    const ids = this.byType.get(typeCode);
+    if (!ids) return [];
+    
+    return Array.from(ids).map(id => this.get(id));
+  }
+  
+  // Get processes by name
+  getByName(name) {
+    const ids = this.byName.get(name);
+    if (!ids) return [];
+    
+    return Array.from(ids).map(id => this.get(id));
   }
   
   // Get active processes
   getActive() {
     return this.processes.filter(p => p.active);
+  }
+  
+  // Remove process
+  remove(id) {
+    const index = this.processes.findIndex(p => p.id === id);
+    if (index !== -1) {
+      const process = this.processes[index];
+      
+      // Remove from indexes
+      this.byType.get(process.type)?.delete(id);
+      this.byName.get(process.name)?.delete(id);
+      
+      // Remove from array
+      this.processes.splice(index, 1);
+    }
+  }
+  
+  // TYPE operator (O(1))
+  getTypeCode(name) {
+    return hashCode(name);
+  }
+  
+  // collision(type) - Returns ID of colliding process or 0
+  // O(n) where n = processes of this type (not all processes!)
+  collision(currentProcess, typeCode) {
+    const processIds = this.byType.get(typeCode);
+    if (!processIds) return 0;
+    
+    for (const id of processIds) {
+      const other = this.get(id);
+      if (other && other.active && currentProcess.collidesWith(other)) {
+        return id; // Returns ID of colliding process
+      }
+    }
+    
+    return 0; // No collision
   }
   
   // Update all processes
@@ -107,33 +193,16 @@ export class ProcessManager {
     }
   }
   
-  // Collision detection
-  checkCollisions() {
-    const active = this.getActive();
-    const collisions = [];
-    
-    for (let i = 0; i < active.length; i++) {
-      for (let j = i + 1; j < active.length; j++) {
-        const a = active[i];
-        const b = active[j];
-        
-        if (a.collidesWith(b)) {
-          collisions.push({ a, b });
-        }
-      }
-    }
-    
-    return collisions;
+  // Get process count
+  count() {
+    return this.processes.length;
+  }
+  
+  // Clear all processes
+  clear() {
+    this.processes = [];
+    this.byType.clear();
+    this.byName.clear();
+    this.nextId = 1;
   }
 }
-
-// Process types
-export const ProcessType = {
-  NONE: 0,
-  SOLID: 1,
-  SENSOR: 2,
-  PLATFORM: 3,
-  ONEWAY: 4,
-  SHOT: 5,
-  DANGER: 6
-};

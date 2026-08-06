@@ -4,6 +4,7 @@
  */
 
 import { OpCodes, OpCodeNames } from '../compiler/bytecode.js';
+import { ProcessManager } from './process.js';
 
 export class VM {
   constructor() {
@@ -33,9 +34,9 @@ export class VM {
     // Native functions
     this.natives = new Map();
     
-    // Processes
-    this.processes = [];
-    this.activeProcess = null;
+    // Process manager
+    this.processManager = new ProcessManager();
+    this.currentProcess = null;
     
     // Frame system
     this.frameYield = false;
@@ -378,5 +379,15 @@ export class VM {
     this.running = false;
     this.halted = false;
     this.frameYield = false;
+  }
+  
+  // Set current process
+  setCurrentProcess(process) {
+    this.currentProcess = process;
+  }
+  
+  // Get current process
+  getCurrentProcess() {
+    return this.currentProcess;
   }
 }
