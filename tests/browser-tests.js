@@ -1185,6 +1185,51 @@ end`;
   assert(threw, 'SWITCH sem nenhum CASE devia falhar a compilar, nao compilou');
 }
 
+async function testCompileErrorsIncludeSourceLocation() {
+  // None of the compiler's own errors (as opposed to the parser's syntax
+  // errors, which always had this) carried a source location before —
+  // "BREAK used outside loop" or "Unknown variable: x" gave no indication
+  // of *where*, forcing a manual search through the whole file. The
+  // parser now stamps every statement and expression node with .line/
+  // .col (parseStatement/parsePrimary/parsePostfix/parseAssignment), and
+  // the compiler appends "at L:C" via a shared locSuffix() helper. Spot-
+  // check a representative handful rather than all fourteen call sites:
+  // one per AST shape the parser stamps (statement, expression, and the
+  // three different top-level declaration kinds).
+  const cases = [
+    {
+      label: 'BREAK outside loop (statement location)',
+      // line 4: "  break;"
+      source: `program loc_break;\n\nbegin\n  break;\n  frame;\nend`,
+      expectedLine: 4
+    },
+    {
+      label: 'unknown variable (expression location)',
+      // line 4: "  print(does_not_exist);"
+      source: `program loc_unknown_var;\n\nbegin\n  print(does_not_exist);\n  frame;\nend`,
+      expectedLine: 4
+    },
+    {
+      label: 'duplicate PROCESS (declaration location)',
+      // line 8: the second "process p(x, y);"
+      source: `program loc_dup_process;\n\nprocess p(x, y);\nbegin\n  frame;\nend\n\nprocess p(x, y);\nbegin\n  frame;\nend\n\nbegin\n  frame;\nend`,
+      expectedLine: 8
+    }
+  ];
+
+  for (const { label, source, expectedLine } of cases) {
+    let message = null;
+    try {
+      compileSource(source);
+    } catch (error) {
+      message = error.message;
+    }
+    assert(message !== null, `${label}: devia ter falhado a compilar`);
+    assert(new RegExp(`at ${expectedLine}:\\d+$`).test(message),
+      `${label}: mensagem devia terminar em "at ${expectedLine}:N", obtido ${JSON.stringify(message)}`);
+  }
+}
+
 async function testCollisionExcludesSelf() {
   // ProcessManager.collision() looked up every process of the requested
   // TYPE and tested collidesWith() without ever excluding the calling
@@ -1500,6 +1545,7 @@ export async function runAllTests() {
     ['switch/case has no fallthrough', testSwitchCaseHasNoFallthrough],
     ['switch subject evaluated once; break/continue pass through to enclosing loop', testSwitchSubjectEvaluatedOnceAndBreakPassesThroughToLoop],
     ['switch with zero cases is a compile error', testSwitchWithZeroCasesIsCompileError],
+    ['compile errors include a source location', testCompileErrorsIncludeSourceLocation],
     ['collision(TYPE x) excludes the calling process itself', testCollisionExcludesSelf]
   ];
 

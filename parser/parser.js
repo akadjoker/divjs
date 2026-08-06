@@ -101,12 +101,22 @@ export class Parser {
 
     // Parse all top-level declarations
     while (!this.is(TokenType.EOF)) {
+      const declToken = this.current();
       if (this.is(TokenType.GLOBAL)) {
-        globals.push(this.parseGlobal());
+        const global = this.parseGlobal();
+        global.line = declToken.line;
+        global.col = declToken.col;
+        globals.push(global);
       } else if (this.is(TokenType.FUNCTION)) {
-        functions.push(this.parseFunction());
+        const func = this.parseFunction();
+        func.line = declToken.line;
+        func.col = declToken.col;
+        functions.push(func);
       } else if (this.is(TokenType.PROCESS)) {
-        processes.push(this.parseProcess());
+        const process = this.parseProcess();
+        process.line = declToken.line;
+        process.col = declToken.col;
+        processes.push(process);
       } else if (this.is(TokenType.BEGIN)) {
         // Main block
         const block = this.parseBeginEndBlock('Expected BEGIN before main block', 'Expected END after main block');
@@ -253,6 +263,25 @@ export class Parser {
 
   // Parse statement
   parseStatement() {
+    // Every statement kind is parsed by parseStatementInner() below; this
+    // wrapper just records where the statement started and stamps it onto
+    // whatever node comes back, in one place, so every statement-shaped
+    // AST node carries a location without touching each individual
+    // parseIf/parseFor/parseSwitch/etc. The compiler uses this to point
+    // at *where* a compile-time error happened (duplicate name, BREAK
+    // outside a loop, invalid assignment target, ...) instead of just
+    // *what* went wrong — previously none of those errors had any
+    // location at all, only parse-time syntax errors did.
+    const startToken = this.current();
+    const stmt = this.parseStatementInner();
+    if (stmt && stmt.line === undefined) {
+      stmt.line = startToken.line;
+      stmt.col = startToken.col;
+    }
+    return stmt;
+  }
+
+  parseStatementInner() {
     // If
     if (this.match(TokenType.IF)) {
       return this.parseIf();
@@ -461,11 +490,15 @@ export class Parser {
 
   // Parse assignment
   parseAssignment() {
+    const startToken = this.current();
     const left = this.parseOr();
 
     if (this.match(TokenType.EQUALS)) {
       const right = this.parseAssignment();
-      return new ast.Assign(left, right);
+      const assign = new ast.Assign(left, right);
+      assign.line = startToken.line;
+      assign.col = startToken.col;
+      return assign;
     }
 
     return left;
@@ -573,12 +606,15 @@ export class Parser {
 
   // Parse postfix operators (call, member, index)
   parsePostfix() {
+    const startToken = this.current();
     let expr = this.parsePrimary();
 
     while (true) {
       if (this.match(TokenType.LPAREN)) {
         const args = this.parseArgs();
         expr = new ast.Call(expr, args);
+        expr.line = startToken.line;
+        expr.col = startToken.col;
         continue;
       }
 
@@ -587,10 +623,14 @@ export class Parser {
         if (!this.isIdentifierLike(propertyToken)) {
           this.expect(TokenType.IDENTIFIER, 'Expected property name after .');
           expr = new ast.MemberAccess(expr, this.previous().value);
+          expr.line = startToken.line;
+          expr.col = startToken.col;
           continue;
         }
         this.pos++;
         expr = new ast.MemberAccess(expr, propertyToken.value);
+        expr.line = startToken.line;
+        expr.col = startToken.col;
         continue;
       }
 
@@ -598,6 +638,8 @@ export class Parser {
         const indexExpr = this.parseExpression();
         this.expect(TokenType.RBRACKET, 'Expected ] after index expression');
         expr = new ast.IndexAccess(expr, indexExpr);
+        expr.line = startToken.line;
+        expr.col = startToken.col;
         continue;
       }
 
@@ -622,8 +664,23 @@ export class Parser {
     return args;
   }
 
-  // Parse primary
+  // Parse primary. Wrapped the same way as parseStatement(): capture the
+  // starting token's location and stamp it onto the returned node (unless
+  // it already has one, e.g. a parenthesized sub-expression that already
+  // got its own, more precise location from its own parsePrimary call).
+  // Compiler errors like "Unknown variable" key off Identifier nodes, so
+  // without this they'd have no location to report.
   parsePrimary() {
+    const startToken = this.current();
+    const expr = this.parsePrimaryInner();
+    if (expr && expr.line === undefined) {
+      expr.line = startToken.line;
+      expr.col = startToken.col;
+    }
+    return expr;
+  }
+
+  parsePrimaryInner() {
     // Number
     if (this.match(TokenType.NUMBER)) {
       return new ast.Number(parseFloat(this.previous().value));

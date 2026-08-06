@@ -14,6 +14,21 @@ export class Compiler {
     this.nextLocalSlot = 0;
   }
 
+  // Every compile-time error below is keyed off an AST node (a statement
+  // or an expression). The parser now stamps every statement and every
+  // expression node with .line/.col — this just formats it consistently
+  // with how the parser's own syntax errors already read ("... at L:C"),
+  // and degrades gracefully to no suffix for the handful of
+  // compiler-synthesized nodes (e.g. the hidden FOR-step/SWITCH-subject
+  // comparison expressions built directly in compileFor/compileSwitch)
+  // that were never parsed from source and so never had a location.
+  locSuffix(node) {
+    if (node && node.line !== undefined && node.col !== undefined) {
+      return ` at ${node.line}:${node.col}`;
+    }
+    return '';
+  }
+
   // Compile program
   compile(program) {
     this.constants = [];
@@ -51,19 +66,19 @@ export class Compiler {
     // un-updated name is exactly the kind of mistake this used to hide.
     for (const func of program.functions) {
       if (this.functionTable.has(func.name)) {
-        throw new Error(`Duplicate FUNCTION name: "${func.name}" is declared more than once.`);
+        throw new Error(`Duplicate FUNCTION name: "${func.name}" is declared more than once.${this.locSuffix(func)}`);
       }
       if (this.processTable.has(func.name)) {
-        throw new Error(`"${func.name}" is declared as both a FUNCTION and a PROCESS; pick one name for each.`);
+        throw new Error(`"${func.name}" is declared as both a FUNCTION and a PROCESS; pick one name for each.${this.locSuffix(func)}`);
       }
       this.functionTable.set(func.name, { addr: -1, params: func.params });
     }
     for (const proc of program.processes) {
       if (this.processTable.has(proc.name)) {
-        throw new Error(`Duplicate PROCESS name: "${proc.name}" is declared more than once.`);
+        throw new Error(`Duplicate PROCESS name: "${proc.name}" is declared more than once.${this.locSuffix(proc)}`);
       }
       if (this.functionTable.has(proc.name)) {
-        throw new Error(`"${proc.name}" is declared as both a PROCESS and a FUNCTION; pick one name for each.`);
+        throw new Error(`"${proc.name}" is declared as both a PROCESS and a FUNCTION; pick one name for each.${this.locSuffix(proc)}`);
       }
       this.processTable.set(proc.name, { addr: -1, params: proc.params, privates: proc.privates, locals: {} });
     }
@@ -120,7 +135,7 @@ export class Compiler {
   // Compile global
   compileGlobal(stmt) {
     if (this.globalMap.has(stmt.name)) {
-      throw new Error(`Duplicate GLOBAL name: "${stmt.name}" is declared more than once.`);
+      throw new Error(`Duplicate GLOBAL name: "${stmt.name}" is declared more than once.${this.locSuffix(stmt)}`);
     }
     const idx = this.globalMap.size;
     this.globalMap.set(stmt.name, idx);
@@ -306,11 +321,11 @@ export class Compiler {
         break;
 
       case 'break':
-        this.compileBreak();
+        this.compileBreak(stmt);
         break;
 
       case 'continue':
-        this.compileContinue();
+        this.compileContinue(stmt);
         break;
 
       case 'expression':
@@ -328,7 +343,7 @@ export class Compiler {
         break;
 
       default:
-        throw new Error(`Unknown statement type: ${stmt.type}`);
+        throw new Error(`Unknown statement type: ${stmt.type}${this.locSuffix(stmt)}`);
     }
   }
 
@@ -359,20 +374,20 @@ export class Compiler {
     }
   }
 
-  compileBreak() {
+  compileBreak(stmt) {
     const loopCtx = this.currentLoopContext();
     if (!loopCtx) {
-      throw new Error('BREAK used outside loop');
+      throw new Error(`BREAK used outside loop${this.locSuffix(stmt)}`);
     }
 
     this.emit(OpCodes.JUMP, 0);
     loopCtx.breakJumps.push(this.instructions.length - 1);
   }
 
-  compileContinue() {
+  compileContinue(stmt) {
     const loopCtx = this.currentLoopContext();
     if (!loopCtx) {
-      throw new Error('CONTINUE used outside loop');
+      throw new Error(`CONTINUE used outside loop${this.locSuffix(stmt)}`);
     }
 
     this.emit(OpCodes.JUMP, 0);
@@ -615,7 +630,7 @@ export class Compiler {
       return;
     }
 
-    throw new Error(`Invalid assignment target: ${stmt.target.type}`);
+    throw new Error(`Invalid assignment target: ${stmt.target.type}${this.locSuffix(stmt)}`);
   }
 
   // Compile expression
@@ -665,11 +680,11 @@ export class Compiler {
         // error. Reject it at compile time instead.
         throw new Error(
           `Assignment cannot be used as a sub-expression (found "${expr.target?.name || '?'} = ..." nested inside another expression). ` +
-          `Write it as its own statement instead, e.g. "${expr.target?.name || 'x'} = value;" on its own line.`
+          `Write it as its own statement instead, e.g. "${expr.target?.name || 'x'} = value;" on its own line.${this.locSuffix(expr)}`
         );
 
       default:
-        throw new Error(`Unknown expression type: ${expr.type}`);
+        throw new Error(`Unknown expression type: ${expr.type}${this.locSuffix(expr)}`);
     }
   }
 
@@ -727,7 +742,7 @@ export class Compiler {
       this.emit(OpCodes.LOAD_CONST, this.addConstant(builtinConstants[name]));
     }
     else {
-      throw new Error(`Unknown variable: ${name}`);
+      throw new Error(`Unknown variable: ${name}${this.locSuffix(expr)}`);
     }
   }
 
@@ -815,7 +830,7 @@ export class Compiler {
         this.emit(OpCodes.GTE);
         break;
       default:
-        throw new Error(`Unknown binary operator: ${expr.operator}`);
+        throw new Error(`Unknown binary operator: ${expr.operator}${this.locSuffix(expr)}`);
     }
   }
 
@@ -831,7 +846,7 @@ export class Compiler {
         this.emit(OpCodes.NOT);
         break;
       default:
-        throw new Error(`Unknown unary operator: ${expr.operator}`);
+        throw new Error(`Unknown unary operator: ${expr.operator}${this.locSuffix(expr)}`);
     }
   }
 
@@ -872,7 +887,7 @@ export class Compiler {
     }
 
     if (current.type !== 'identifier') {
-      throw new Error('Unsupported access target');
+      throw new Error(`Unsupported access target${this.locSuffix(current)}`);
     }
 
     return {
