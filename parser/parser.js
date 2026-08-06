@@ -206,8 +206,10 @@ export class Parser {
     return new ast.Private(name, value);
   }
 
-  // Parse block
-  parseBlock() {
+  // Parse statements up to (but not consuming) END/UNTIL/ELSE. Shared by
+  // parseBlock (which owns closing on END) and parseIf (which needs to
+  // decide between ELSE and END itself before closing).
+  parseBlockStatements() {
     const statements = [];
 
     while (!this.is(TokenType.EOF) &&
@@ -216,6 +218,13 @@ export class Parser {
            !this.is(TokenType.ELSE)) {
       statements.push(this.parseStatement());
     }
+
+    return statements;
+  }
+
+  // Parse block
+  parseBlock() {
+    const statements = this.parseBlockStatements();
 
     this.expect(TokenType.END, 'Expected END after block');
 
@@ -311,12 +320,17 @@ export class Parser {
   // Parse if
   parseIf() {
     const condition = this.parseExpression();
-    const thenBranch = this.parseBlock();
+    // The then-branch is closed by ELSE or END; parseBlock() would try to
+    // consume END unconditionally and fail on "IF (c) ... ELSE ... END",
+    // so read statements without a terminator and let parseIf decide.
+    const thenBranch = new ast.Block(this.parseBlockStatements());
 
     let elseBranch = null;
     if (this.match(TokenType.ELSE)) {
-      elseBranch = this.parseBlock();
+      elseBranch = new ast.Block(this.parseBlockStatements());
     }
+
+    this.expect(TokenType.END, 'Expected END after IF/ELSE');
 
     return new ast.If(condition, thenBranch, elseBranch);
   }
