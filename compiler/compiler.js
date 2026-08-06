@@ -7,7 +7,8 @@ export class Compiler {
     this.stringMap = new Map();
     this.localMap = new Map();
     this.globalMap = new Map();
-    this.processTable = new Map(); // Process table
+    this.processTable = new Map();
+    this.functionTable = new Map();
   }
 
   // Compile program
@@ -18,6 +19,7 @@ export class Compiler {
     this.localMap = new Map();
     this.globalMap = new Map();
     this.processTable = new Map();
+    this.functionTable = new Map();
     
     // Compile globals first
     for (const stmt of program.statements) {
@@ -36,7 +38,8 @@ export class Compiler {
     return {
       constants: this.constants,
       instructions: this.instructions,
-      processTable: this.processTable
+      processTable: this.processTable,
+      functionTable: this.functionTable
     };
   }
 
@@ -47,11 +50,9 @@ export class Compiler {
     
     if (stmt.value) {
       this.compileExpression(stmt.value);
-      this.emit(OpCodes.LOAD_CONST, this.addConstant(stmt.name));
       this.emit(OpCodes.STORE_GLOBAL, idx);
     } else {
       this.emit(OpCodes.LOAD_CONST, 0);
-      this.emit(OpCodes.LOAD_CONST, this.addConstant(stmt.name));
       this.emit(OpCodes.STORE_GLOBAL, idx);
     }
   }
@@ -410,15 +411,24 @@ export class Compiler {
 
   // Compile call
   compileCall(expr) {
-    // Compile args
-    for (const arg of expr.args) {
-      this.compileExpression(arg);
+    // Check if process call
+    if (expr.callee.type === 'identifier' && this.processTable.has(expr.callee.name)) {
+      // Compile args
+      for (const arg of expr.args) {
+        this.compileExpression(arg);
+      }
+      
+      // Emit SPAWN_PROCESS
+      this.emit(OpCodes.SPAWN_PROCESS, expr.callee.name, expr.args.length);
     }
-    
     // Check if native
-    if (expr.callee.type === 'identifier') {
-      const name = expr.callee.name;
-      this.emit(OpCodes.CALL_NATIVE, name, expr.args.length);
+    else if (expr.callee.type === 'identifier') {
+      // Compile args
+      for (const arg of expr.args) {
+        this.compileExpression(arg);
+      }
+      
+      this.emit(OpCodes.CALL_NATIVE, expr.callee.name, expr.args.length);
     }
   }
 

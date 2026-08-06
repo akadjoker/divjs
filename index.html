@@ -117,14 +117,6 @@ END
     // Register natives
     vm.registerNative('key_down', keyDown);
     
-    // Create initial process
-    const processTable = bytecode.processTable;
-    if (processTable.has('player')) {
-      const playerInfo = processTable.get('player');
-      const player = vm.processManager.create('player', { x: 100, y: 400 });
-      player.ip = playerInfo.addr; // Set IP to process start
-    }
-    
     // Game loop
     let lastTime = 0;
     

@@ -341,7 +341,27 @@ export class VM {
       
       // Process
       case OpCodes.SPAWN_PROCESS:
-        // TODO: spawn process
+        const processName = operands[0];
+        const processArgc = operands[1];
+        const processArgs = [];
+        
+        for (let i = 0; i < processArgc; i++) {
+          processArgs.unshift(this.pop());
+        }
+        
+        // Create process with params
+        const params = {};
+        const processInfo = this.processTable.get(processName);
+        if (processInfo) {
+          // Map args to param names
+          for (let i = 0; i < processInfo.params.length; i++) {
+            params[processInfo.params[i]] = processArgs[i];
+          }
+        }
+        
+        const newProcess = this.processManager.create(processName, params);
+        newProcess.ip = this.processTable.get(processName).addr;
+        
         this.ip++;
         break;
       
