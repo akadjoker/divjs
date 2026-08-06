@@ -33,34 +33,20 @@
   
   <script type="module">
     // Import DivLang modules
-    import { Lexer } from './parser/lexer.js';
-    import { Parser } from './parser/parser.js';
-    import { Compiler } from './compiler/compiler.js';
-    import { VM } from './vm/vm.js';
-    import { ProcessManager } from './vm/process.js';
-    import { CanvasRenderer } from './graph/canvas2d.js';
-    import { Graphics, loadGraphic } from './graph/graphics.js';
-    import { Input, keyDown, keyPressed } from './graph/input.js';
-    
-    // Load DivLang code
-    const code = await fetch('platformer.div').then(r => r.text());
-    
-    // Compile
-    const lexer = new Lexer(code);
-    const tokens = lexer.tokenize();
-    
-    const parser = new Parser(tokens);
-    const ast = parser.parse();
-    
-    const compiler = new Compiler();
-    const bytecode = compiler.compile(ast);
-    
-    // Setup VM
-    const vm = new VM();
-    vm.load(bytecode);
+    import { Lexer } from '../parser/lexer.js';
+    import { Parser } from '../parser/parser.js';
+    import { Compiler } from '../compiler/compiler.js';
+    import { VM } from '../vm/vm.js';
+    import { ProcessManager, Process } from '../vm/process.js';
+    import { CanvasRenderer } from '../graph/canvas2d.js';
+    import { Graphics, loadGraphic } from '../graph/graphics.js';
+    import { Input, keyDown, keyPressed } from '../graph/input.js';
     
     // Setup renderer
     const renderer = new CanvasRenderer('gameCanvas');
+    
+    // Setup VM
+    const vm = new VM();
     
     // Register native functions
     vm.registerNative('load_graphic', loadGraphic);
@@ -75,6 +61,12 @@
     
     // Create processes
     const player = vm.processManager.create('player', { x: 100, y: 400, width: 32, height: 32 });
+    player.privates.speed = 200;
+    player.privates.jump_force = -400;
+    player.privates.gravity = 500;
+    player.privates.vy = 0;
+    player.privates.grounded = false;
+    
     const ground = vm.processManager.create('ground', { x: 0, y: 550, width: 800, height: 50 });
     
     // Game loop
@@ -97,25 +89,24 @@
       for (const process of vm.processManager.getAll()) {
         vm.currentProcess = process;
         
-        // Execute process logic
         if (process.name === 'player') {
           // Player logic
-          if (keyDown('right')) process.x += process.speed * vm.dt;
-          if (keyDown('left')) process.x -= process.speed * vm.dt;
-          if (keyDown('space') && process.grounded) {
-            process.vy = process.jump_force;
-            process.grounded = false;
+          if (keyDown('right')) process.x += process.privates.speed * vm.dt;
+          if (keyDown('left')) process.x -= process.privates.speed * vm.dt;
+          if (keyDown('space') && process.privates.grounded) {
+            process.privates.vy = process.privates.jump_force;
+            process.privates.grounded = false;
           }
           
           // Physics
-          process.vy += process.gravity * vm.dt;
-          process.y += process.vy * vm.dt;
+          process.privates.vy += process.privates.gravity * vm.dt;
+          process.y += process.privates.vy * vm.dt;
           
           // Collision
           if (process.collidesWith(ground)) {
-            process.vy = 0;
+            process.privates.vy = 0;
             process.y = ground.y - process.height;
-            process.grounded = true;
+            process.privates.grounded = true;
           }
           
           // Bounds
@@ -124,7 +115,7 @@
           if (process.y > 600) {
             process.x = 100;
             process.y = 400;
-            process.vy = 0;
+            process.privates.vy = 0;
           }
           
           // Draw
