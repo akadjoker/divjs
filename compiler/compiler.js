@@ -257,6 +257,10 @@ export class Compiler {
         this.compileIf(stmt);
         break;
 
+      case 'switch':
+        this.compileSwitch(stmt);
+        break;
+
       case 'for':
         this.compileFor(stmt);
         break;
@@ -394,6 +398,57 @@ export class Compiler {
       this.instructions[jumpToEnd].operands[0] = this.instructions.length;
     } else {
       this.instructions[jumpToElse].operands[0] = this.instructions.length;
+    }
+  }
+
+  // Compile switch. Unlike C, there's no fallthrough: each case is really
+  // just a chain of "if subject == value" tests, and a case that matches
+  // jumps straight past every remaining case (and DEFAULT) to the end —
+  // BREAK is never needed to keep cases from running into each other.
+  // The subject is evaluated once into a hidden local (matching the
+  // pattern used for FOR's step in compileFor) so a subject expression
+  // with side effects — a function call, say — doesn't re-run once per
+  // case comparison.
+  compileSwitch(stmt) {
+    this.switchDepth = (this.switchDepth || 0) + 1;
+    const subjectVarName = `__switch_subject_${this.switchDepth}`;
+    const subjectIdx = this.nextLocalSlot++;
+    this.localMap.set(subjectVarName, subjectIdx);
+
+    this.compileExpression(stmt.subject);
+    this.emit(OpCodes.STORE_LOCAL, subjectIdx);
+
+    const endJumps = [];
+    let nextCaseJump = null;
+
+    for (const switchCase of stmt.cases) {
+      if (nextCaseJump !== null) {
+        this.instructions[nextCaseJump].operands[0] = this.instructions.length;
+      }
+
+      this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
+      this.compileExpression(switchCase.value);
+      this.emit(OpCodes.EQ);
+      this.emit(OpCodes.JUMP_IF_FALSE, 0); // Placeholder, patched to next case/DEFAULT/end
+      nextCaseJump = this.instructions.length - 1;
+
+      this.compileBlock(switchCase.body);
+
+      this.emit(OpCodes.JUMP, 0); // Placeholder, patched to end
+      endJumps.push(this.instructions.length - 1);
+    }
+
+    // The last failed comparison's JUMP_IF_FALSE lands here, whether
+    // that's the start of DEFAULT or (with no DEFAULT) the very end.
+    this.instructions[nextCaseJump].operands[0] = this.instructions.length;
+
+    if (stmt.defaultBody) {
+      this.compileBlock(stmt.defaultBody);
+    }
+
+    const switchEnd = this.instructions.length;
+    for (const jumpIdx of endJumps) {
+      this.instructions[jumpIdx].operands[0] = switchEnd;
     }
   }
 

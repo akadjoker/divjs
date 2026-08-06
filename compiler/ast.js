@@ -62,6 +62,21 @@ export class If {
   }
 }
 
+// A SWITCH has no fallthrough between cases by design: each CASE body
+// runs and then control jumps straight to the end of the SWITCH, so BREAK
+// is never needed to keep cases separate (unlike C's switch). BREAK still
+// works normally *inside* a case body, but — like inside an IF — it
+// refers to whatever loop the SWITCH itself is nested in, if any; SWITCH
+// doesn't open its own loop context.
+export class Switch {
+  constructor(subject, cases, defaultBody) {
+    this.type = 'switch';
+    this.subject = subject;
+    this.cases = cases; // Array<{ value: Expr, body: Block }>
+    this.defaultBody = defaultBody; // Block | null
+  }
+}
+
 export class For {
   constructor(varName, start, end, step, body) {
     this.type = 'for';

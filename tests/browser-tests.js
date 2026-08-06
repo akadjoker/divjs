@@ -1026,6 +1026,165 @@ end`;
     `frame(50) ao longo de 40 ticks esperava entre 15 e 25 execucoes, obtido ${throttledCount}`);
 }
 
+async function testSwitchCaseHasNoFallthrough() {
+  // SWITCH is designed with no C-style fallthrough: each CASE runs its
+  // own statements and control jumps straight to the end of the SWITCH,
+  // so BREAK is never required to keep cases separate. Verify a matching
+  // case runs only its own body (not the ones after it), a non-matching
+  // subject with no DEFAULT runs nothing, and DEFAULT only runs when no
+  // CASE matched.
+  const noFallthroughSource = `program switch_no_fallthrough;
+
+begin
+  var x = 1;
+  switch (x)
+    case 1
+      print(1);
+    case 2
+      print(2);
+    case 3
+      print(3);
+  end
+  frame;
+end`;
+
+  const noFallthroughBytecode = compileSource(noFallthroughSource);
+  const noFallthroughVm = new VM();
+  noFallthroughVm.load(noFallthroughBytecode);
+  const noFallthroughSeen = [];
+  noFallthroughVm.registerNative('print', (v) => { noFallthroughSeen.push(v); return 0; });
+  noFallthroughVm.tick();
+  assert(JSON.stringify(noFallthroughSeen) === JSON.stringify([1]),
+    `case 1 devia correr sozinho sem cair para os seguintes, obtido ${JSON.stringify(noFallthroughSeen)}`);
+
+  const noMatchSource = `program switch_no_match;
+
+begin
+  var x = 99;
+  switch (x)
+    case 1
+      print(1);
+    case 2
+      print(2);
+  end
+  print(999);
+  frame;
+end`;
+
+  const noMatchBytecode = compileSource(noMatchSource);
+  const noMatchVm = new VM();
+  noMatchVm.load(noMatchBytecode);
+  const noMatchSeen = [];
+  noMatchVm.registerNative('print', (v) => { noMatchSeen.push(v); return 0; });
+  noMatchVm.tick();
+  assert(JSON.stringify(noMatchSeen) === JSON.stringify([999]),
+    `sem CASE correspondente e sem DEFAULT nada dentro do switch devia correr, obtido ${JSON.stringify(noMatchSeen)}`);
+
+  const defaultSource = `program switch_default;
+
+begin
+  var x = 99;
+  switch (x)
+    case 1
+      print(1);
+    default
+      print(777);
+  end
+  frame;
+end`;
+
+  const defaultBytecode = compileSource(defaultSource);
+  const defaultVm = new VM();
+  defaultVm.load(defaultBytecode);
+  const defaultSeen = [];
+  defaultVm.registerNative('print', (v) => { defaultSeen.push(v); return 0; });
+  defaultVm.tick();
+  assert(JSON.stringify(defaultSeen) === JSON.stringify([777]),
+    `DEFAULT devia correr quando nenhum CASE bate, obtido ${JSON.stringify(defaultSeen)}`);
+}
+
+async function testSwitchSubjectEvaluatedOnceAndBreakPassesThroughToLoop() {
+  // Two things worth locking down together: the subject expression is
+  // evaluated exactly once (stored in a hidden local) even though it's
+  // compared against every CASE value, and BREAK/CONTINUE inside a CASE
+  // body are transparent to SWITCH — they refer to whatever loop the
+  // SWITCH itself is nested in, since SWITCH doesn't open its own loop
+  // context (matching how IF already behaves).
+  const subjectSource = `program switch_subject_once;
+
+function mark(tag);
+begin
+  print(tag);
+  return tag;
+end
+
+begin
+  switch (mark(1))
+    case 1
+      print(100);
+    case 2
+      print(200);
+  end
+  frame;
+end`;
+
+  const subjectBytecode = compileSource(subjectSource);
+  const subjectVm = new VM();
+  subjectVm.load(subjectBytecode);
+  const subjectSeen = [];
+  subjectVm.registerNative('print', (v) => { subjectSeen.push(v); return 0; });
+  subjectVm.tick();
+  assert(JSON.stringify(subjectSeen) === JSON.stringify([1, 100]),
+    `mark(1) so devia imprimir uma vez (subject avaliado 1x), obtido ${JSON.stringify(subjectSeen)}`);
+
+  const breakSource = `program switch_break_passthrough;
+
+begin
+  for i = 0 to 5
+    switch (i)
+      case 2
+        break;
+      default
+        print(i);
+    end
+  end
+  print(999);
+  frame;
+end`;
+
+  const breakBytecode = compileSource(breakSource);
+  const breakVm = new VM();
+  breakVm.load(breakBytecode);
+  const breakSeen = [];
+  breakVm.registerNative('print', (v) => { breakSeen.push(v); return 0; });
+  breakVm.tick();
+  assert(JSON.stringify(breakSeen) === JSON.stringify([0, 1, 999]),
+    `BREAK dentro de um CASE devia quebrar o FOR envolvente (nao so o switch), obtido ${JSON.stringify(breakSeen)}`);
+}
+
+async function testSwitchWithZeroCasesIsCompileError() {
+  // A SWITCH with no CASE at all is almost certainly a mistake (an empty
+  // shell that can never do anything, DEFAULT included — DEFAULT without
+  // at least one CASE to fall back from isn't a meaningful construct
+  // either), so the parser rejects it rather than silently compiling to
+  // a no-op.
+  const source = `program switch_empty;
+
+begin
+  switch (1)
+  end
+  frame;
+end`;
+
+  let threw = false;
+  try {
+    compileSource(source);
+  } catch (error) {
+    threw = true;
+  }
+  assert(threw, 'SWITCH sem nenhum CASE devia falhar a compilar, nao compilou');
+}
+
 async function testCollisionExcludesSelf() {
   // ProcessManager.collision() looked up every process of the requested
   // TYPE and tested collidesWith() without ever excluding the calling
@@ -1338,6 +1497,9 @@ export async function runAllTests() {
     ['string escape sequences (\\n, \\t, \\\\, \\")', testStringEscapeSequences],
     ['duplicate PROCESS/FUNCTION/GLOBAL names are compile errors', testDuplicateDeclarationsAreCompileErrors],
     ['frame(n) throttles execution frequency', testFrameValueThrottlesExecutionFrequency],
+    ['switch/case has no fallthrough', testSwitchCaseHasNoFallthrough],
+    ['switch subject evaluated once; break/continue pass through to enclosing loop', testSwitchSubjectEvaluatedOnceAndBreakPassesThroughToLoop],
+    ['switch with zero cases is a compile error', testSwitchWithZeroCasesIsCompileError],
     ['collision(TYPE x) excludes the calling process itself', testCollisionExcludesSelf]
   ];
 

@@ -206,16 +206,22 @@ export class Parser {
     return new ast.Private(name, value);
   }
 
-  // Parse statements up to (but not consuming) END/UNTIL/ELSE. Shared by
-  // parseBlock (which owns closing on END) and parseIf (which needs to
-  // decide between ELSE and END itself before closing).
+  // Parse statements up to (but not consuming) END/UNTIL/ELSE/CASE/
+  // DEFAULT. Shared by parseBlock (which owns closing on END), parseIf
+  // (which needs to decide between ELSE and END itself before closing),
+  // and parseSwitch (each CASE/DEFAULT arm stops here without consuming
+  // the next arm's own keyword). CASE and DEFAULT are reserved keywords,
+  // so no ordinary block outside a SWITCH could legitimately contain one
+  // as a statement — adding them to this shared set is safe everywhere.
   parseBlockStatements() {
     const statements = [];
 
     while (!this.is(TokenType.EOF) &&
            !this.is(TokenType.END) &&
            !this.is(TokenType.UNTIL) &&
-           !this.is(TokenType.ELSE)) {
+           !this.is(TokenType.ELSE) &&
+           !this.is(TokenType.CASE) &&
+           !this.is(TokenType.DEFAULT)) {
       statements.push(this.parseStatement());
     }
 
@@ -250,6 +256,11 @@ export class Parser {
     // If
     if (this.match(TokenType.IF)) {
       return this.parseIf();
+    }
+
+    // Switch
+    if (this.match(TokenType.SWITCH)) {
+      return this.parseSwitch();
     }
 
     // For
@@ -333,6 +344,46 @@ export class Parser {
     this.expect(TokenType.END, 'Expected END after IF/ELSE');
 
     return new ast.If(condition, thenBranch, elseBranch);
+  }
+
+  // Parse switch. Grammar:
+  //   SWITCH (expr)
+  //     CASE value
+  //       statements...
+  //     CASE value
+  //       statements...
+  //     DEFAULT
+  //       statements...
+  //   END
+  // No colons (consistent with the rest of the language, which has none
+  // anywhere) and no fallthrough between cases: each CASE's statements
+  // run and control goes straight to END, so BREAK is never required to
+  // separate cases. At least one CASE is required; DEFAULT is optional
+  // and — if present — must be the last arm.
+  parseSwitch() {
+    this.expect(TokenType.LPAREN, 'Expected ( after SWITCH');
+    const subject = this.parseExpression();
+    this.expect(TokenType.RPAREN, 'Expected ) after SWITCH subject');
+
+    const cases = [];
+    while (this.match(TokenType.CASE)) {
+      const value = this.parseExpression();
+      const body = new ast.Block(this.parseBlockStatements());
+      cases.push({ value, body });
+    }
+
+    if (cases.length === 0) {
+      throw new Error(`Expected at least one CASE in SWITCH at ${this.current().line}:${this.current().col}`);
+    }
+
+    let defaultBody = null;
+    if (this.match(TokenType.DEFAULT)) {
+      defaultBody = new ast.Block(this.parseBlockStatements());
+    }
+
+    this.expect(TokenType.END, 'Expected END after SWITCH');
+
+    return new ast.Switch(subject, cases, defaultBody);
   }
 
   // Parse for
