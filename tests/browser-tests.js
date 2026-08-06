@@ -3,7 +3,7 @@ import { Parser } from '../parser/parser.js';
 import { Compiler } from '../compiler/compiler.js';
 import { OpCodes } from '../compiler/bytecode.js';
 import { VM } from '../vm/vm.js';
-import { CanvasEngineRuntime } from '../vm/runtime.js';
+import { CanvasEngineRuntime, CType } from '../vm/runtime.js';
 
 const tinyPngDataUrl =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7WvYQAAAAASUVORK5CYII=';
@@ -603,6 +603,48 @@ async function testSignalKillTreeAndWakeupByType() {
   assert(e1.suspended === false && e2.suspended === false, 'wakeup por TYPE devia acordar enemies');
 }
 
+async function testSignalKillByIdUsesDivSemantics() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  const victim = vm.processManager.create('victim', { x: 10, y: 20 });
+  const changed = runtime.signalNative(victim.id, 0);
+
+  assert(changed === 1, `signal(id, s_kill) esperado 1, obtido ${changed}`);
+  assert(victim.dead === true, 'signal(id, s_kill) devia matar processo');
+  assert(victim.suspended === false, 'processo morto nao devia ficar apenas suspended');
+}
+
+async function testCTypeScrollAssignmentPersistsAfterFrame() {
+  const source = `program ctype_sync;
+
+process p();
+begin
+  ctype = c_scroll;
+  frame;
+end
+
+begin
+  p();
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  const runtime = createRuntime(vm);
+
+  runtime.beginFrame(1 / 60);
+  vm.tick();
+
+  const p = vm.processManager.getAll()[0];
+  assert(!!p, 'processo nao criado');
+  assert(p.ctype === CType.C_SCROLL, `ctype esperado ${CType.C_SCROLL}, obtido ${p.ctype}`);
+
+  vm.currentProcess = p;
+  assert(runtime.getCurrentCType() === CType.C_SCROLL, `getCurrentCType esperado ${CType.C_SCROLL}, obtido ${runtime.getCurrentCType()}`);
+}
+
 async function testCollisionByType() {
   const vm = new VM();
   const runtime = createRuntime(vm);
@@ -658,6 +700,8 @@ export async function runAllTests() {
     ['break outside loop compile error', testBreakOutsideLoopCompileError],
     ['spawn parent -> child parentId', testSpawnSetsParentId],
     ['signal tree + signal by TYPE wakeup', testSignalKillTreeAndWakeupByType],
+    ['signal(id, s_kill) semantics', testSignalKillByIdUsesDivSemantics],
+    ['ctype=c_scroll persists after frame', testCTypeScrollAssignmentPersistsAfterFrame],
     ['collision by TYPE', testCollisionByType],
     ['let_me_alone kills others', testLetMeAloneKillsOthers],
     ['__get_path/__set_path scroll state', testPathNativesScrollState],
