@@ -25,7 +25,6 @@
     import { Parser } from './compiler/parser.js';
     import { Compiler } from './compiler/compiler.js';
     import { VM } from './vm/vm.js';
-    import { ProcessManager } from './vm/process.js';
     
     // Setup canvas
     const canvas = document.getElementById('game');
@@ -52,6 +51,11 @@
 GLOBAL player_speed = 200;
 GLOBAL gravity = 500;
 GLOBAL jump_force = 300;
+
+FUNCTION add(a, b);
+BEGIN
+  RETURN (a + b);
+END
 
 PROCESS player(x, y);
 PRIVATE
@@ -109,6 +113,7 @@ END
     const bytecode = compiler.compile(ast);
     console.log('BYTECODE:', bytecode.instructions.length, 'instructions');
     console.log('PROCESS TABLE:', bytecode.processTable);
+    console.log('FUNCTION TABLE:', bytecode.functionTable);
     
     // VM
     const vm = new VM();

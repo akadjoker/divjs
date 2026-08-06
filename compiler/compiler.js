@@ -28,6 +28,13 @@ export class Compiler {
       }
     }
     
+    // Compile functions
+    for (const stmt of program.statements) {
+      if (stmt.type === 'function') {
+        this.compileFunction(stmt);
+      }
+    }
+    
     // Compile processes
     for (const stmt of program.statements) {
       if (stmt.type === 'process') {
@@ -55,6 +62,40 @@ export class Compiler {
       this.emit(OpCodes.LOAD_CONST, 0);
       this.emit(OpCodes.STORE_GLOBAL, idx);
     }
+  }
+
+  // Compile function
+  compileFunction(stmt) {
+    const startAddr = this.instructions.length;
+    
+    // Store function in table
+    this.functionTable.set(stmt.name, {
+      addr: startAddr,
+      params: stmt.params
+    });
+    
+    // Reset locals for this function
+    const savedLocals = new Map(this.localMap);
+    this.localMap = new Map();
+    
+    // Add params as locals
+    for (let i = 0; i < stmt.params.length; i++) {
+      this.localMap.set(stmt.params[i], i);
+    }
+    
+    // Compile body
+    this.compileBlock(stmt.body);
+    
+    // Emit RETURN if not present
+    if (this.instructions.length === 0 || 
+        this.instructions[this.instructions.length - 1].opcode !== OpCodes.RETURN) {
+      this.emit(OpCodes.RETURN);
+    }
+    
+    // Restore locals
+    this.localMap = savedLocals;
+    
+    return startAddr;
   }
 
   // Compile process
@@ -420,6 +461,16 @@ export class Compiler {
       
       // Emit SPAWN_PROCESS
       this.emit(OpCodes.SPAWN_PROCESS, expr.callee.name, expr.args.length);
+    }
+    // Check if function call
+    else if (expr.callee.type === 'identifier' && this.functionTable.has(expr.callee.name)) {
+      // Compile args
+      for (const arg of expr.args) {
+        this.compileExpression(arg);
+      }
+      
+      // Emit CALL
+      this.emit(OpCodes.CALL, expr.callee.name, expr.args.length);
     }
     // Check if native
     else if (expr.callee.type === 'identifier') {

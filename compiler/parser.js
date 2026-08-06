@@ -58,6 +58,11 @@ export class Parser {
 
   // Parse statement
   parseStatement() {
+    // Function
+    if (this.match(TokenType.FUNCTION)) {
+      return this.parseFunction();
+    }
+    
     // Process
     if (this.match(TokenType.PROCESS)) {
       return this.parseProcess();
@@ -70,6 +75,32 @@ export class Parser {
     
     // Statement
     return this.parseStatementBody();
+  }
+
+  // Parse function
+  parseFunction() {
+    const name = this.current().value;
+    this.pos++;
+    
+    // Params
+    const params = [];
+    this.expect(TokenType.LPAREN, 'Expected ( after function name');
+    
+    if (!this.is(TokenType.RPAREN)) {
+      do {
+        const paramName = this.current().value;
+        this.pos++;
+        params.push(paramName);
+      } while (this.match(TokenType.COMMA));
+    }
+    
+    this.expect(TokenType.RPAREN, 'Expected ) after function params');
+    this.expect(TokenType.SEMICOLON, 'Expected ; after function header');
+    
+    // Body
+    const body = this.parseBlock();
+    
+    return new ast.Function(name, params, body);
   }
 
   // Parse process

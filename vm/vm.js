@@ -26,6 +26,9 @@ export class VM {
     // Process table
     this.processTable = new Map();
     
+    // Function table
+    this.functionTable = new Map();
+    
     // Current process being executed
     this.currentProcess = null;
     
@@ -34,6 +37,9 @@ export class VM {
     this.stack = [];
     this.locals = [];
     this.frameYield = false;
+    
+    // Call stack (for functions)
+    this.callStack = [];
     
     // Delta time
     this.dt = 1 / 60;
@@ -56,6 +62,7 @@ export class VM {
     this.constants = bytecode.constants;
     this.bytecode = bytecode.instructions;
     this.processTable = bytecode.processTable || new Map();
+    this.functionTable = bytecode.functionTable || new Map();
   }
   
   // Run VM for one frame (scheduler)
@@ -84,6 +91,7 @@ export class VM {
     this.stack = process.stack;
     this.locals = process.locals;
     this.frameYield = false;
+    this.callStack = process.callStack || [];
     
     // Budget de instrucoes (previne loops infinitos)
     let budget = 100000;
@@ -108,7 +116,9 @@ export class VM {
     
     // Save state back to process
     process.ip = this.ip;
-    // Stack/locals ja sao referencias, nao precisa copiar
+    process.stack = this.stack;
+    process.locals = this.locals;
+    process.callStack = this.callStack;
   }
   
   // Execute instruction
@@ -299,16 +309,60 @@ export class VM {
       
       // Call
       case OpCodes.CALL:
-        const name = operands[0];
-        const argc = operands[1];
-        const args = [];
+        const funcName = operands[0];
+        const funcArgc = operands[1];
+        const funcArgs = [];
         
-        for (let i = 0; i < argc; i++) {
-          args.unshift(this.pop());
+        for (let i = 0; i < funcArgc; i++) {
+          funcArgs.unshift(this.pop());
         }
         
-        // TODO: call function
-        this.ip++;
+        // Save return address
+        this.callStack.push(this.ip + 1);
+        
+        // Jump to function
+        const funcInfo = this.functionTable.get(funcName);
+        if (funcInfo) {
+          this.ip = funcInfo.addr;
+          
+          // Save current locals and create new frame for function
+          this.callStack.push(this.locals);
+          this.locals = [];
+          
+          // Map args to locals
+          for (let i = 0; i < funcInfo.params.length; i++) {
+            this.locals[i] = funcArgs[i];
+          }
+        } else {
+          console.error(`Function not found: ${funcName}`);
+          this.ip++;
+        }
+        break;
+      
+      case OpCodes.RETURN:
+        // Get return value (if any)
+        let returnValue = null;
+        if (this.stack.length > 0 && this.callStack.length > 0) {
+          returnValue = this.peek();
+        }
+        
+        // Restore locals
+        if (this.callStack.length > 0) {
+          this.locals = this.callStack.pop();
+        }
+        
+        // Restore return address
+        if (this.callStack.length > 0) {
+          this.ip = this.callStack.pop();
+        } else {
+          // End of process/function
+          this.currentProcess.finished = true;
+        }
+        
+        // Push return value back if needed
+        if (returnValue !== null) {
+          this.push(returnValue);
+        }
         break;
       
       case OpCodes.CALL_NATIVE:
@@ -334,12 +388,6 @@ export class VM {
         this.ip++;
         break;
       
-      case OpCodes.RETURN:
-        // TODO: implement return
-        this.ip++;
-        break;
-      
-      // Process
       case OpCodes.SPAWN_PROCESS:
         const processName = operands[0];
         const processArgc = operands[1];
@@ -427,9 +475,11 @@ export class VM {
     this.bytecode = [];
     this.globals = new Map();
     this.processTable = new Map();
+    this.functionTable = new Map();
     this.ip = 0;
     this.stack = [];
     this.locals = [];
+    this.callStack = [];
     this.running = false;
     this.halted = false;
     this.frameYield = false;
