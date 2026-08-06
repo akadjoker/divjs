@@ -32,103 +32,68 @@
   </div>
   
   <script type="module">
-    // Import DivLang modules
-    import { Lexer } from '../parser/lexer.js';
-    import { Parser } from '../parser/parser.js';
-    import { Compiler } from '../compiler/compiler.js';
-    import { VM } from '../vm/vm.js';
-    import { ProcessManager, Process } from '../vm/process.js';
-    import { CanvasRenderer } from '../graph/canvas2d.js';
-    import { Graphics, loadGraphic } from '../graph/graphics.js';
-    import { Input, keyDown, keyPressed } from '../graph/input.js';
-    
-    // Setup renderer
-    const renderer = new CanvasRenderer('gameCanvas');
-    
-    // Setup VM
-    const vm = new VM();
-    
-    // Register native functions
-    vm.registerNative('load_graphic', loadGraphic);
-    vm.registerNative('key_down', keyDown);
-    vm.registerNative('key_pressed', keyPressed);
-    vm.registerNative('draw_rect', (x, y, w, h, color) => {
-      renderer.drawRect(x, y, w, h, color);
-    });
-    vm.registerNative('collision', (type) => {
-      return vm.processManager.collision(vm.currentProcess, type);
-    });
-    
-    // Create processes
-    const player = vm.processManager.create('player', { x: 100, y: 400, width: 32, height: 32 });
-    player.privates.speed = 200;
-    player.privates.jump_force = -400;
-    player.privates.gravity = 500;
-    player.privates.vy = 0;
-    player.privates.grounded = false;
-    
-    const ground = vm.processManager.create('ground', { x: 0, y: 550, width: 800, height: 50 });
-    
-    // Game loop
-    let lastTime = performance.now();
-    
-    function gameLoop() {
-      requestAnimationFrame(gameLoop);
-      
-      const now = performance.now();
-      vm.dt = (now - lastTime) / 1000;
-      lastTime = now;
-      
-      // Update input
-      Input.update();
-      
-      // Clear screen
-      renderer.clear('#000');
-      
-      // Update processes
-      for (const process of vm.processManager.getAll()) {
-        vm.currentProcess = process;
-        
-        if (process.name === 'player') {
-          // Player logic
-          if (keyDown('right')) process.x += process.privates.speed * vm.dt;
-          if (keyDown('left')) process.x -= process.privates.speed * vm.dt;
-          if (keyDown('space') && process.privates.grounded) {
-            process.privates.vy = process.privates.jump_force;
-            process.privates.grounded = false;
-          }
-          
-          // Physics
-          process.privates.vy += process.privates.gravity * vm.dt;
-          process.y += process.privates.vy * vm.dt;
-          
-          // Collision
-          if (process.collidesWith(ground)) {
-            process.privates.vy = 0;
-            process.y = ground.y - process.height;
-            process.privates.grounded = true;
-          }
-          
-          // Bounds
-          if (process.x < 0) process.x = 0;
-          if (process.x > 800 - process.width) process.x = 800 - process.width;
-          if (process.y > 600) {
-            process.x = 100;
-            process.y = 400;
-            process.privates.vy = 0;
-          }
-          
-          // Draw
-          renderer.drawRect(process.x, process.y, process.width, process.height, '#4a9eff');
-        } else if (process.name === 'ground') {
-          // Ground logic
-          renderer.drawRect(process.x, process.y, process.width, process.height, '#6b8e6b');
-        }
+    import { runDivDemo } from '../divjs.js';
+
+    const source = `program platformer;
+
+global speed = 220;
+global gravity = 700;
+global jump_force = 330;
+
+process player(x, y);
+private
+  vy = 0;
+  on_ground = 0;
+begin
+  width = 30;
+  height = 42;
+
+  loop
+    if (key(_left))
+      x = x - speed * get_delta();
+    end
+
+    if (key(_right))
+      x = x + speed * get_delta();
+    end
+
+    vy = vy + gravity * get_delta();
+
+    if (key(_space) and on_ground)
+      vy = -jump_force;
+      on_ground = 0;
+    end
+
+    y = y + vy * get_delta();
+
+    if (y > 540)
+      y = 540;
+      vy = 0;
+      on_ground = 1;
+    end
+
+    set_color('#4a9eff');
+    draw_rect(x, y, width, height, '#4a9eff');
+
+    frame;
+  end
+end
+
+begin
+  player(100, 200);
+  loop
+    frame;
+  end
+end`;
+
+    runDivDemo({
+      canvas: 'gameCanvas',
+      source,
+      clearColor: '#0b1117',
+      onError: (err) => {
+        console.error(err);
       }
-    }
-    
-    // Start
-    gameLoop();
+    });
   </script>
 </body>
 </html>

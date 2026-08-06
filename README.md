@@ -83,6 +83,38 @@ end
 open examples/index.html
 ```
 
+Teste smoke (browser-first, com preload de assets):
+
+```bash
+open examples/browser-smoke.html
+```
+
+Teste unitario VM (browser, corre tudo numa pagina):
+
+```bash
+open tests/test.html
+```
+
+## API de arranque rapido
+
+Para reduzir boilerplate nas demos, usa a API unica:
+
+```js
+import { runDivDemo } from './divjs.js';
+
+runDivDemo({
+  canvas: 'gameCanvas',
+  source: `program demo; begin loop frame; end end`
+});
+```
+
+Isso faz automaticamente:
+- lexer + parser + compiler
+- criacao da VM
+- registo dos natives do runtime
+- input de teclado
+- game loop com render
+
 ## LicenÃ§a
 
 MIT

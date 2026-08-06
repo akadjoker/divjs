@@ -1,0 +1,123 @@
+// Example of online compiler Div GO: Games Online
+// Php + Html5 + Canvas + Javascript
+// by J. Manuel Habas
+
+program example_process;
+global
+	textos[7]; txt = 0;
+	
+begin
+	set_title("Div GO : Example of process");
+
+	/* display options */
+	set_mode(480, 320);
+	screen_color(#025);
+
+	set_fps(60, 0);
+
+	// initialize scroll
+	start_scroll(0, 0, 2, 2, 0, 0);
+
+	scroll.front.alpha = 50;
+	scroll.back.alpha = 20;
+	
+	text_color = #fff;
+	text_size  = 50;
+	write(0, 237, 20, 5, "number of process:");
+	write_int(0, 243, 20, 3, offset num_process);
+	
+	text_color = #ccc;
+	textos[0] = write(0, 10, 90, 3, "Press [SPACE] to shoot");
+
+	text_color = #aaa;
+	textos[1] = write(0, 10, 105, 3, "Press [R] to delete processes");
+	textos[2] = write(0, 10, 120, 3, "Press [Q] to wake up process shot");
+	textos[3] = write(0, 10, 135, 3, "Press [W] to wake up shot process and sons");	
+	textos[4] = write(0, 10, 150, 3, "Press [A] to remove process shot");
+	textos[5] = write(0, 10, 165, 3, "Press [S] to remove shot process and sons");
+	textos[6] = write(0, 10, 180, 3, "Press [Z] to freeze process shot");
+	textos[7] = write(0, 10, 195, 3, "Press [X] to freeze shot process and sons");
+	
+	ship(240, 290);
+	
+	loop
+		scroll.front.y += 2;
+		scroll.back.y += 1;
+		
+		if (key(_esc)) exit("Amaka Soft 2012", 1); end
+
+		frame;
+	end
+end
+
+process ship(x, y);
+private
+	trigger;
+	
+begin
+	graph = 6;
+	size  = 50;
+	
+	loop		
+		if ((key(_left) or pad.stick1.left > 20) and x > 20)
+			scroll.front.x += 2;
+			scroll.back.x += 1;
+            x -= 3;
+		end
+		
+		if ((key(_right) or pad.stick1.right > 20) and x < 460)
+			scroll.front.x -= 2;
+			scroll.back.x -= 1;
+            x += 3;
+		end
+		
+		if ((key(_space) or pad.button0) and trigger < 1)
+			for (txt = 0; txt < 8; txt ++) delete_text(textos[txt]); end
+			shot(x, y-20);
+			trigger = 5;
+		end
+		
+		if (key(_r)) let_me_alone(); end	//delete all processes except this
+		if (key(_q)) signal(type shot, s_wakeup); end
+        if (key(_w)) signal(type shot, s_wakeup_tree); end
+        if (key(_a)) signal(type shot, s_kill); end
+		if (key(_s)) signal(type shot, s_kill_tree); end
+        if (key(_z)) signal(type shot, s_freeze); end
+        if (key(_x)) signal(type shot, s_freeze_tree); end
+		trigger --; if (trigger < 0) trigger = 0; end
+		
+		frame;
+	end
+end
+
+process shot(x, y);
+begin
+	graph = 3;
+	angle = 90000;
+	size  = 15;
+	z	  = 10;
+	
+	loop
+		y -= 5; if (y < -10) break; end
+		
+        explosion(x, y+10);
+		frame;
+	end
+end
+
+process explosion(x, y);
+begin
+	graph = 1;
+    size  = 10;
+    z 	  = 20;
+    alpha = 70;
+    
+    loop
+    	
+        angle = rand(0, 360000);
+        size ++;
+        alpha -= 3; if (alpha < 5) break; end
+        
+        frame;
+    end
+end

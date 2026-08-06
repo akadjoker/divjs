@@ -49,6 +49,9 @@ export const TokenType = {
   // Delimiters
   LPAREN: 'LPAREN',
   RPAREN: 'RPAREN',
+  LBRACKET: 'LBRACKET',
+  RBRACKET: 'RBRACKET',
+  DOT: 'DOT',
   COMMA: 'COMMA',
   SEMICOLON: 'SEMICOLON',
 
@@ -329,6 +332,18 @@ export class Lexer {
         case ')':
           this.advance();
           this.tokens.push(new Token(TokenType.RPAREN, ')', line, col));
+          break;
+        case '[':
+          this.advance();
+          this.tokens.push(new Token(TokenType.LBRACKET, '[', line, col));
+          break;
+        case ']':
+          this.advance();
+          this.tokens.push(new Token(TokenType.RBRACKET, ']', line, col));
+          break;
+        case '.':
+          this.advance();
+          this.tokens.push(new Token(TokenType.DOT, '.', line, col));
           break;
         case ',':
           this.advance();

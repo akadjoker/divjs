@@ -1,0 +1,158 @@
+// Example of online compiler Div GO: Games Online
+// Php + Html5 + Canvas + Javascript
+// by J. Manuel Habas
+
+program example_collision;
+global
+	id_txt1, id_txt2;
+	score = 0;
+	sound1, sound2, sound3;
+	
+begin
+	sound1 = load_sound("resources/sounds/inicia.ogg", 0);
+	sound2 = load_sound("resources/sounds/disparo.wav", 0);
+	sound3 = load_sound("resources/sounds/elimina.wav", 0);
+
+	set_title("Div GO : Example of Collisions");
+
+	/* display options */
+	set_mode(480, 320);
+	screen_color(#025);
+
+	set_fps(60, 0);
+
+	// initialize scroll
+	start_scroll(0, 0, 2, 2, 0, 0);
+	start_scroll(1, 0, 2, 2, 0, 0);
+
+	scroll[0].front.alpha = 20; scroll[0].back.alpha = 10;
+	scroll[1].front.alpha = 80; scroll[1].back.alpha = 40;
+	
+	text_color = #fff;
+	text_size  = 50;
+	id_txt1 = write_int(0, 240, 20, 4, offset score);
+	
+	text_color = #ccc;
+	id_txt2 = write(0, 240, 90, 4, "Pulsa [B] [N] o [M] para disparar");
+	
+	shadow_text(id_txt1, #000, 1, 1, 2);
+	shadow_text(id_txt2, #000, 1, 1, 2);
+	
+	ship(240, 290);
+	enemy();
+	
+	loop
+		scroll[0].front.y -= 0.5; scroll[0].back.y -= 0.25;
+		scroll[1].front.y -= 2; scroll[1].back.y -= 1;
+		
+		if (key(_esc)) exit("Amaka Soft 2012", 1); end
+
+		frame;
+	end
+end
+
+process ship(x, y);
+private
+	trigger;
+	
+begin
+	graph = 6;
+	size  = 50;
+	
+	loop		
+		if (key(_left) and x > 20)
+			scroll.front.x += 0.5; scroll.back.x += 0.25;
+			scroll[1].front.x += 2; scroll[1].back.x += 1;
+            x -= 3;
+		end
+		
+		if (key(_right) and x < 460)
+			scroll.front.x -= 0.5; scroll.back.x -= 0.25;
+			scroll[1].front.x -= 2; scroll[1].back.x -= 1;
+            x += 3;
+		end
+
+		if (mouse.left and mouse.x < x and x > 20)
+			scroll.front.x += 0.5; scroll.back.x += 0.25;
+			scroll[1].front.x += 2; scroll[1].back.x += 1;
+            x -= 3;
+		end
+		
+		if (mouse.left and mouse.x > x and x < 460)
+			scroll.front.x -= 0.5; scroll.back.x -= 0.25;
+			scroll[1].front.x -= 2; scroll[1].back.x -= 1;
+            x += 3;
+		end
+
+		if (((key(_b) or key(_n) or key(_m)) 
+        	or (mouse.left and mouse.x < 480 and mouse.y < 320)) and trigger < 1)
+			shot(x, y-20); sound(sound2, 200, 256);
+			trigger = 5;
+			delete_text(id_txt2);
+		end
+			
+		trigger --; if (trigger < 0) trigger = 0; end
+		
+		frame;
+	end
+end
+
+process shot(x, y);
+begin
+	graph = 3;
+	angle = 90000;
+	size  = 15;
+	z	  = 10;
+	
+	loop
+		y -= 5; if (y < -10) break; end
+		
+		frame;
+	end
+end
+
+process enemy();
+private
+	deformation, anima;
+	energy_enemy = 5;
+    id_shot;
+	
+begin
+	graph = 5;
+	x 	  = rand(0, 480)
+	y	  = -50;
+	size  = rand(60, 110);
+	
+	sound(sound1, 100, 256);
+	
+	loop
+    	if (deformation == 0)
+        	shear_x += 4; if (shear_x > 50) deformation = 1; end
+        else
+        	shear_x -= 4; if (shear_x < -50) deformation = 0; end
+        end
+
+		y+= 5; if (y > 100) y = 100; end
+		if (anima == 0) 
+			x-=2; if (x <0) anima = 1; end
+		end
+		
+		if (anima == 1) 
+			x+=2; if (x >480) anima = 0; end
+		end		
+		
+		if (anima == 2)
+			size -= 5; if (size < 0) score += 100; enemy(); break; end
+		end
+		
+        id_shot = collision(type shot);
+		if (id_shot) 
+			score += 5; energy_enemy --;
+			signal(id_shot, s_kill);
+		end
+		
+		if (energy_enemy < 0 and anima <> 2) anima = 2; sound(sound3, 200, 256); energy_enemy = 0; end 
+		
+		frame;
+	end
+end

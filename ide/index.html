@@ -294,6 +294,7 @@
     import { Parser } from '../parser/parser.js';
     import { Compiler } from '../compiler/compiler.js';
     import { VM } from '../vm/vm.js';
+    import { CanvasEngineRuntime } from '../vm/runtime.js';
 
     const editor = document.getElementById('editor');
     const playBtn = document.getElementById('playBtn');
@@ -312,14 +313,10 @@
     const canvas = document.getElementById('game');
     const ctx = canvas.getContext('2d');
 
-    const keys = {};
-    const drawCommands = [];
-    let currentColor = '#00ff88';
-
     let vm = null;
+    let engineRuntime = null;
     let running = false;
     let lastTime = 0;
-    let totalTime = 0;
     let fps = 0;
 
     const defaultProgram = `program ide_demo;
@@ -407,7 +404,9 @@ end
     editor.value = defaultProgram;
 
     window.addEventListener('keydown', (e) => {
-      keys[e.key] = true;
+      if (engineRuntime) {
+        engineRuntime.setKeyState(e.key, true);
+      }
       if (e.key === 'Enter' && e.ctrlKey) {
         e.preventDefault();
         runProgram();
@@ -415,12 +414,14 @@ end
     });
 
     window.addEventListener('keyup', (e) => {
-      keys[e.key] = false;
+      if (engineRuntime) {
+        engineRuntime.setKeyState(e.key, false);
+      }
     });
 
     window.addEventListener('blur', () => {
-      for (const key of Object.keys(keys)) {
-        keys[key] = false;
+      if (engineRuntime) {
+        engineRuntime.clearKeyState();
       }
     });
 
@@ -436,95 +437,6 @@ end
 
     function clearConsole() {
       consoleEl.textContent = '';
-    }
-
-    function keyDownNative(key) {
-      const aliases = {
-        left: ['left', 'arrowleft'],
-        right: ['right', 'arrowright'],
-        up: ['up', 'arrowup'],
-        down: ['down', 'arrowdown'],
-        space: ['space', ' ', 'spacebar']
-      };
-
-      const wanted = String(key).toLowerCase();
-      const candidates = aliases[wanted] || [wanted];
-
-      for (const candidate of candidates) {
-        for (const pressedKey of Object.keys(keys)) {
-          if (pressedKey === 'Meta' || pressedKey === 'Control' || pressedKey === 'Alt' || pressedKey === 'Shift') {
-            continue;
-          }
-          if (pressedKey.toLowerCase() === candidate && keys[pressedKey]) {
-            return true;
-          }
-        }
-      }
-
-      return false;
-    }
-
-    function setColorNative(color) {
-      currentColor = String(color);
-      return 0;
-    }
-
-    function clearNative() {
-      drawCommands.length = 0;
-      return 0;
-    }
-
-    function circleNative(x, y, radius) {
-      drawCommands.push({
-        type: 'circle',
-        x: Number(x),
-        y: Number(y),
-        r: Math.max(0, Number(radius)),
-        color: currentColor
-      });
-      return 0;
-    }
-
-    function textNative(x, y, text) {
-      drawCommands.push({
-        type: 'text',
-        x: Number(x),
-        y: Number(y),
-        text: String(text),
-        color: currentColor
-      });
-      return 0;
-    }
-
-    function logNative(...values) {
-      writeConsole(`[log] ${values.map(v => String(v)).join(' ')}`);
-      return 0;
-    }
-
-    function printNative(...values) {
-      writeConsole(`[print] ${values.map(v => String(v)).join(' ')}`);
-      return 0;
-    }
-
-    function collisionNative(typeCode) {
-      if (!vm || !vm.currentProcess) {
-        return 0;
-      }
-      return vm.processManager.collision(vm.currentProcess, Number(typeCode));
-    }
-
-    function registerNatives(activeVm) {
-      activeVm.registerNative('key_down', keyDownNative);
-      activeVm.registerNative('get_time', () => totalTime);
-      activeVm.registerNative('get_delta', () => activeVm.dt);
-      activeVm.registerNative('set_color', setColorNative);
-      activeVm.registerNative('set_colro', setColorNative);
-      activeVm.registerNative('clear', clearNative);
-      activeVm.registerNative('circle', circleNative);
-      activeVm.registerNative('text', textNative);
-      activeVm.registerNative('log', logNative);
-      activeVm.registerNative('print', printNative);
-      activeVm.registerNative('collision', collisionNative);
     }
 
     function compileSource(source) {
@@ -614,6 +526,7 @@ end
     function stopProgram() {
       running = false;
       vm = null;
+      engineRuntime = null;
       statusLabel.textContent = 'Stopped';
       runtimeStats.textContent = 'runtime: stopped';
       updateInspector();
@@ -622,18 +535,23 @@ end
     function runProgram() {
       try {
         clearConsole();
-        drawCommands.length = 0;
-        currentColor = '#00ff88';
 
         const source = editor.value;
         const bytecode = compileSource(source);
 
         vm = new VM();
         vm.load(bytecode);
-        registerNatives(vm);
+        engineRuntime = new CanvasEngineRuntime({
+          vm,
+          ctx,
+          width: canvas.width,
+          height: canvas.height,
+          clearColor: '#0b1117',
+          logFn: (line) => writeConsole(line)
+        });
+        engineRuntime.registerNatives();
 
         lastTime = 0;
-        totalTime = 0;
         fps = 0;
         running = true;
         statusLabel.textContent = 'Running';
@@ -648,48 +566,6 @@ end
       }
     }
 
-    function drawCommandsToCanvas() {
-      ctx.save();
-      ctx.font = '14px JetBrains Mono, Consolas, monospace';
-      ctx.textBaseline = 'top';
-
-      for (const cmd of drawCommands) {
-        ctx.fillStyle = cmd.color;
-        ctx.strokeStyle = cmd.color;
-
-        if (cmd.type === 'circle') {
-          ctx.beginPath();
-          ctx.arc(cmd.x, cmd.y, cmd.r, 0, Math.PI * 2);
-          ctx.fill();
-          continue;
-        }
-
-        if (cmd.type === 'text') {
-          ctx.fillText(cmd.text, cmd.x, cmd.y);
-        }
-      }
-
-      ctx.restore();
-      drawCommands.length = 0;
-    }
-
-    function drawProcessesFallback() {
-      if (!vm) {
-        return;
-      }
-
-      for (const process of vm.processManager.getAll()) {
-        const radius = Math.min(process.width, process.height) * 0.5;
-        const cx = process.x + process.width * 0.5;
-        const cy = process.y + process.height * 0.5;
-
-        ctx.fillStyle = '#2dd4bf';
-        ctx.beginPath();
-        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
     function renderFrame(timestamp) {
       requestAnimationFrame(renderFrame);
 
@@ -697,12 +573,8 @@ end
       lastTime = timestamp;
       fps = dt > 0 ? (1 / dt) : 0;
 
-      ctx.fillStyle = '#0b1117';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      if (running && vm) {
-        vm.dt = dt;
-        totalTime += dt;
+      if (running && vm && engineRuntime) {
+        engineRuntime.beginFrame(dt);
 
         try {
           vm.tick();
@@ -711,11 +583,12 @@ end
           stopProgram();
         }
 
-        drawProcessesFallback();
-        drawCommandsToCanvas();
+        engineRuntime.render();
 
-        runtimeStats.textContent = `fps: ${fps.toFixed(1)} | processes: ${vm.processManager.count()} | time: ${totalTime.toFixed(2)}s`;
+        runtimeStats.textContent = `fps: ${fps.toFixed(1)} | processes: ${vm.processManager.count()} | time: ${engineRuntime.totalTime.toFixed(2)}s`;
       } else {
+        ctx.fillStyle = '#0b1117';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         runtimeStats.textContent = 'runtime: idle';
       }
 

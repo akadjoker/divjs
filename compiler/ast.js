@@ -124,8 +124,9 @@ export class Continue {
 }
 
 export class Frame {
-  constructor() {
+  constructor(value = null) {
     this.type = 'frame';
+    this.value = value;
   }
 }
 
@@ -187,6 +188,22 @@ export class Identifier {
   constructor(name) {
     this.type = 'identifier';
     this.name = name;
+  }
+}
+
+export class MemberAccess {
+  constructor(object, property) {
+    this.type = 'member_access';
+    this.object = object;
+    this.property = property;
+  }
+}
+
+export class IndexAccess {
+  constructor(object, index) {
+    this.type = 'index_access';
+    this.object = object;
+    this.index = index;
   }
 }
 

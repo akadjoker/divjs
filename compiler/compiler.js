@@ -19,6 +19,7 @@ export class Compiler {
     this.globalMap = new Map();
     this.processTable = new Map();
     this.functionTable = new Map();
+    this.loopStack = [];
   }
 
   // Compile program
@@ -30,6 +31,7 @@ export class Compiler {
     this.globalMap = new Map();
     this.processTable = new Map();
     this.functionTable = new Map();
+    this.loopStack = [];
 
     // Compile globals first
     for (const global of program.globals) {
@@ -127,17 +129,22 @@ export class Compiler {
     });
 
     // Reset locals for this process
-    // Slots 0-3 reservados para x, y, width, height
+    // Slots fixos: 0=x, 1=y, 2=width, 3=height, 4=ctype, 5=id, 6=region, 7=angle
     this.localMap = new Map();
     this.localMap.set('x', 0);
     this.localMap.set('y', 1);
     this.localMap.set('width', 2);
     this.localMap.set('height', 3);
+    this.localMap.set('ctype', 4);
+    this.localMap.set('c_type', 4);
+    this.localMap.set('id', 5);
+    this.localMap.set('region', 6);
+    this.localMap.set('angle', 7);
 
-    // Add params as locals (start at slot 4)
-    let localIdx = 4;
+    // Add params as locals (start at slot 8)
+    let localIdx = 8;
     for (const param of stmt.params) {
-      // Keep canonical process fields in fixed slots (x=0, y=1, width=2, height=3).
+      // Keep canonical process fields in fixed slots.
       if (!this.localMap.has(param)) {
         this.localMap.set(param, localIdx++);
       }
@@ -205,7 +212,12 @@ export class Compiler {
         break;
 
       case 'frame':
-        this.emit(OpCodes.FRAME);
+        if (stmt.value) {
+          this.compileExpression(stmt.value);
+          this.emit(OpCodes.FRAME, 1);
+        } else {
+          this.emit(OpCodes.FRAME, 0);
+        }
         break;
 
       case 'private':
@@ -228,11 +240,11 @@ export class Compiler {
         break;
 
       case 'break':
-        this.emit(OpCodes.BREAK);
+        this.compileBreak();
         break;
 
       case 'continue':
-        this.emit(OpCodes.CONTINUE);
+        this.compileContinue();
         break;
 
       case 'expression':
@@ -252,6 +264,53 @@ export class Compiler {
       default:
         throw new Error(`Unknown statement type: ${stmt.type}`);
     }
+  }
+
+  beginLoopContext() {
+    const ctx = {
+      breakJumps: [],
+      continueJumps: []
+    };
+    this.loopStack.push(ctx);
+    return ctx;
+  }
+
+  endLoopContext() {
+    this.loopStack.pop();
+  }
+
+  currentLoopContext() {
+    return this.loopStack.length > 0 ? this.loopStack[this.loopStack.length - 1] : null;
+  }
+
+  patchLoopJumps(ctx, continueTarget, breakTarget) {
+    for (const jumpIdx of ctx.continueJumps) {
+      this.instructions[jumpIdx].operands[0] = continueTarget;
+    }
+
+    for (const jumpIdx of ctx.breakJumps) {
+      this.instructions[jumpIdx].operands[0] = breakTarget;
+    }
+  }
+
+  compileBreak() {
+    const loopCtx = this.currentLoopContext();
+    if (!loopCtx) {
+      throw new Error('BREAK used outside loop');
+    }
+
+    this.emit(OpCodes.JUMP, 0);
+    loopCtx.breakJumps.push(this.instructions.length - 1);
+  }
+
+  compileContinue() {
+    const loopCtx = this.currentLoopContext();
+    if (!loopCtx) {
+      throw new Error('CONTINUE used outside loop');
+    }
+
+    this.emit(OpCodes.JUMP, 0);
+    loopCtx.continueJumps.push(this.instructions.length - 1);
   }
 
   // Compile if
@@ -292,7 +351,10 @@ export class Compiler {
     this.emit(OpCodes.JUMP_IF_TRUE, 0); // Placeholder
     const jumpToEnd = this.instructions.length - 1;
 
+    const loopCtx = this.beginLoopContext();
     this.compileBlock(stmt.body);
+
+    const continueTarget = this.instructions.length;
 
     this.emit(OpCodes.LOAD_LOCAL, varIdx);
     this.compileExpression(stmt.step);
@@ -301,7 +363,10 @@ export class Compiler {
 
     this.emit(OpCodes.LOOP, loopStart);
 
-    this.instructions[jumpToEnd].operands[0] = this.instructions.length;
+    const loopEnd = this.instructions.length;
+    this.instructions[jumpToEnd].operands[0] = loopEnd;
+    this.patchLoopJumps(loopCtx, continueTarget, loopEnd);
+    this.endLoopContext();
   }
 
   // Compile while
@@ -312,30 +377,46 @@ export class Compiler {
     this.emit(OpCodes.JUMP_IF_FALSE, 0); // Placeholder
     const jumpToEnd = this.instructions.length - 1;
 
+    const loopCtx = this.beginLoopContext();
     this.compileBlock(stmt.body);
 
     this.emit(OpCodes.LOOP, loopStart);
 
-    this.instructions[jumpToEnd].operands[0] = this.instructions.length;
+    const loopEnd = this.instructions.length;
+    this.instructions[jumpToEnd].operands[0] = loopEnd;
+    this.patchLoopJumps(loopCtx, loopStart, loopEnd);
+    this.endLoopContext();
   }
 
   // Compile repeat
   compileRepeat(stmt) {
     const loopStart = this.instructions.length;
 
+    const loopCtx = this.beginLoopContext();
     this.compileBlock(stmt.body);
+
+    const continueTarget = this.instructions.length;
 
     this.compileExpression(stmt.condition);
     this.emit(OpCodes.JUMP_IF_FALSE, loopStart);
+
+    const loopEnd = this.instructions.length;
+    this.patchLoopJumps(loopCtx, continueTarget, loopEnd);
+    this.endLoopContext();
   }
 
   // Compile loop
   compileLoop(stmt) {
     const loopStart = this.instructions.length;
 
+    const loopCtx = this.beginLoopContext();
     this.compileBlock(stmt.body);
 
     this.emit(OpCodes.LOOP, loopStart);
+
+    const loopEnd = this.instructions.length;
+    this.patchLoopJumps(loopCtx, loopStart, loopEnd);
+    this.endLoopContext();
   }
 
   // Compile var
@@ -363,9 +444,20 @@ export class Compiler {
         this.emit(OpCodes.STORE_GLOBAL, this.globalMap.get(name));
       }
       else {
-        throw new Error(`Unknown variable: ${name}`);
+        const idx = this.localMap.size;
+        this.localMap.set(name, idx);
+        this.compileExpression(stmt.value);
+        this.emit(OpCodes.STORE_LOCAL, idx);
       }
+      return;
     }
+
+    if (stmt.target.type === 'member_access' || stmt.target.type === 'index_access') {
+      this.compilePathSet(stmt.target, stmt.value);
+      return;
+    }
+
+    throw new Error(`Invalid assignment target: ${stmt.target.type}`);
   }
 
   // Compile expression
@@ -399,6 +491,11 @@ export class Compiler {
         this.emit(OpCodes.LOAD_CONST, this.addConstant(hashCode(expr.processName)));
         break;
 
+      case 'member_access':
+      case 'index_access':
+        this.compilePathGet(expr);
+        break;
+
       case 'assign':
         this.compileAssignment(expr);
         break;
@@ -419,7 +516,34 @@ export class Compiler {
       _up: 'up',
       _down: 'down',
       _space: 'space',
-      _fire: 'z'
+      _fire: 'z',
+      _enter: 'enter',
+      _esc: 'escape',
+      _1: '1',
+      _2: '2',
+      _3: '3',
+      _4: '4',
+      _5: '5',
+      _6: '6',
+      _7: '7',
+      _8: '8',
+      _9: '9',
+      _0: '0',
+      _q: 'q',
+      _a: 'a',
+      _o: 'o',
+      _p: 'p',
+      c_screen: 0,
+      c_scroll: 1,
+      c_m7: 2,
+      s_kill: 0,
+      s_wakeup: 1,
+      s_sleep: 2,
+      s_freeze: 3,
+      s_kill_tree: 100,
+      s_wakeup_tree: 101,
+      s_sleep_tree: 102,
+      s_freeze_tree: 103
     };
 
     // Check if local
@@ -524,6 +648,62 @@ export class Compiler {
     else if (expr.callee.type === 'identifier') {
       this.emit(OpCodes.CALL_NATIVE, expr.callee.name, expr.args.length);
     }
+  }
+
+  collectPath(expr) {
+    const segments = [];
+    let current = expr;
+
+    while (current.type === 'member_access' || current.type === 'index_access') {
+      if (current.type === 'member_access') {
+        segments.unshift({ kind: 'prop', value: current.property });
+        current = current.object;
+        continue;
+      }
+
+      segments.unshift({ kind: 'index', value: current.index });
+      current = current.object;
+    }
+
+    if (current.type !== 'identifier') {
+      throw new Error('Unsupported access target');
+    }
+
+    return {
+      root: current.name,
+      segments
+    };
+  }
+
+  compilePathGet(expr) {
+    const path = this.collectPath(expr);
+    this.emit(OpCodes.LOAD_CONST, this.addConstant(path.root));
+
+    for (const segment of path.segments) {
+      if (segment.kind === 'prop') {
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(segment.value));
+      } else {
+        this.compileExpression(segment.value);
+      }
+    }
+
+    this.emit(OpCodes.CALL_NATIVE, '__get_path', 1 + path.segments.length);
+  }
+
+  compilePathSet(targetExpr, valueExpr) {
+    const path = this.collectPath(targetExpr);
+    this.emit(OpCodes.LOAD_CONST, this.addConstant(path.root));
+
+    for (const segment of path.segments) {
+      if (segment.kind === 'prop') {
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(segment.value));
+      } else {
+        this.compileExpression(segment.value);
+      }
+    }
+
+    this.compileExpression(valueExpr);
+    this.emit(OpCodes.CALL_NATIVE, '__set_path', 2 + path.segments.length);
   }
 
   // Add constant

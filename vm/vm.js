@@ -57,6 +57,9 @@ export class VM {
 
     // Debug mode
     this.debug = true;
+
+    // Last frame return/progress value (default DIV behavior: 100)
+    this.frameValue = 100;
   }
 
   // Register native function
@@ -354,13 +357,13 @@ export class VM {
         break;
 
       case OpCodes.BREAK:
-        // TODO: implement break
-        this.ip++;
+        console.error('Unresolved BREAK opcode reached VM. Compiler should lower BREAK to JUMP.');
+        this.halted = true;
         break;
 
       case OpCodes.CONTINUE:
-        // TODO: implement continue
-        this.ip++;
+        console.error('Unresolved CONTINUE opcode reached VM. Compiler should lower CONTINUE to JUMP.');
+        this.halted = true;
         break;
 
       // Call
@@ -467,19 +470,28 @@ export class VM {
           }
         }
 
+        if (this.currentProcess?.id) {
+          params.parentId = this.currentProcess.id;
+        }
+
         const newProcess = this.processManager.create(processName, params);
         newProcess.ip = this.processTable.get(processName).addr;
 
-        // Initialize local slots for process params (x/y/width/height are fixed slots).
+        // Initialize local slots for process params (engine fixed slots).
         if (processInfo && processInfo.params) {
           const fixedSlots = {
             x: 0,
             y: 1,
             width: 2,
-            height: 3
+            height: 3,
+            ctype: 4,
+            c_type: 4,
+            id: 5,
+            region: 6,
+            angle: 7
           };
 
-          let nextLocal = 4;
+          let nextLocal = 8;
           for (let i = 0; i < processInfo.params.length; i++) {
             const paramName = processInfo.params[i];
             const paramValue = processArgs[i];
@@ -499,6 +511,15 @@ export class VM {
         break;
 
       case OpCodes.FRAME:
+        if (operands[0] === 1) {
+          this.frameValue = Number(this.pop()) || 0;
+        } else {
+          this.frameValue = 100;
+        }
+
+        if (this.currentProcess) {
+          this.currentProcess.frameValue = this.frameValue;
+        }
         this.frameYield = true;
         this.ip++;
         break;

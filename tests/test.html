@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS Lexer Parser VM Tests</title>
+  <link rel="stylesheet" href="../styles/demo-runner.css">
+  <style>
+    .test-shell {
+      max-width: 920px;
+      margin: 24px auto;
+      padding: 16px;
+      color: #dbeafe;
+      font-family: "JetBrains Mono", Consolas, monospace;
+    }
+
+    .test-head {
+      margin-bottom: 14px;
+      padding: 10px 12px;
+      border: 1px solid rgba(125, 211, 252, 0.35);
+      background: rgba(10, 18, 31, 0.6);
+    }
+
+    .test-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      background: rgba(2, 6, 23, 0.7);
+    }
+
+    .test-item {
+      padding: 10px 12px;
+      border-top: 1px solid rgba(148, 163, 184, 0.15);
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .test-item:first-child {
+      border-top: 0;
+    }
+
+    .ok { color: #86efac; }
+    .fail { color: #fca5a5; }
+
+    .summary {
+      margin-top: 14px;
+      padding: 10px 12px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(15, 23, 42, 0.75);
+    }
+
+    .err {
+      margin-top: 4px;
+      font-size: 12px;
+      color: #fca5a5;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="test-shell">
+    <div class="test-head" id="head">Running Lexer + Parser + VM tests in browser...</div>
+    <ul class="test-list" id="list"></ul>
+    <div class="summary" id="summary"></div>
+  </div>
+
+  <script type="module">
+    import { runAllTests } from './browser-tests.js';
+
+    const head = document.getElementById('head');
+    const list = document.getElementById('list');
+    const summary = document.getElementById('summary');
+
+    const started = performance.now();
+    const results = await runAllTests();
+    const totalMs = performance.now() - started;
+
+    let passed = 0;
+    for (const result of results) {
+      if (result.ok) {
+        passed += 1;
+      }
+
+      const li = document.createElement('li');
+      li.className = 'test-item';
+
+      const left = document.createElement('div');
+      left.className = result.ok ? 'ok' : 'fail';
+      left.textContent = `${result.ok ? 'PASS' : 'FAIL'}  ${result.name}`;
+
+      const right = document.createElement('div');
+      right.textContent = `${result.durationMs.toFixed(1)} ms`;
+
+      li.appendChild(left);
+      li.appendChild(right);
+
+      if (!result.ok && result.error) {
+        const err = document.createElement('div');
+        err.className = 'err';
+        err.textContent = result.error;
+        li.appendChild(err);
+      }
+
+      list.appendChild(li);
+    }
+
+    const failed = results.length - passed;
+    if (failed === 0) {
+      head.textContent = 'All Lexer + Parser + VM tests passed.';
+      head.classList.add('ok');
+    } else {
+      head.textContent = `${failed} test(s) failed.`;
+      head.classList.add('fail');
+    }
+
+    summary.textContent = `Total: ${results.length} | Passed: ${passed} | Failed: ${failed} | Time: ${totalMs.toFixed(1)} ms`;
+  </script>
+</body>
+</html>

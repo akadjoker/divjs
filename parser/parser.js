@@ -241,8 +241,13 @@ export class Parser {
 
     // Frame
     if (this.match(TokenType.FRAME)) {
+      let frameValue = null;
+      if (this.match(TokenType.LPAREN)) {
+        frameValue = this.parseExpression();
+        this.expect(TokenType.RPAREN, 'Expected ) after FRAME value');
+      }
       this.expect(TokenType.SEMICOLON, 'Expected ; after FRAME');
-      return new ast.Frame();
+      return new ast.Frame(frameValue);
     }
 
     // Var
@@ -471,16 +476,35 @@ export class Parser {
       return new ast.Unary(operator, right);
     }
 
-    return this.parseCall();
+    return this.parsePostfix();
   }
 
-  // Parse call
-  parseCall() {
+  // Parse postfix operators (call, member, index)
+  parsePostfix() {
     let expr = this.parsePrimary();
 
-    while (this.match(TokenType.LPAREN)) {
-      const args = this.parseArgs();
-      expr = new ast.Call(expr, args);
+    while (true) {
+      if (this.match(TokenType.LPAREN)) {
+        const args = this.parseArgs();
+        expr = new ast.Call(expr, args);
+        continue;
+      }
+
+      if (this.match(TokenType.DOT)) {
+        const propertyToken = this.current();
+        this.expect(TokenType.IDENTIFIER, 'Expected property name after .');
+        expr = new ast.MemberAccess(expr, propertyToken.value);
+        continue;
+      }
+
+      if (this.match(TokenType.LBRACKET)) {
+        const indexExpr = this.parseExpression();
+        this.expect(TokenType.RBRACKET, 'Expected ] after index expression');
+        expr = new ast.IndexAccess(expr, indexExpr);
+        continue;
+      }
+
+      break;
     }
 
     return expr;
