@@ -98,9 +98,33 @@ export class VM {
 
     // Execute each process until FRAME or finished
     for (const process of snapshot) {
-      if (process.active && !process.suspended && !process.finished) {
-        this.runProcess(process);
+      if (!process.active || process.suspended || process.finished) {
+        continue;
       }
+
+      // frame(n) throttling. Previously frame(n) stored the value on the
+      // process (this.currentProcess.frameValue = ...) and nothing ever
+      // read it back — the syntax existed but had zero effect; every
+      // process always ran on every tick regardless of what it passed to
+      // frame(). This spends an accumulated "credit": frameValue percent
+      // is added each tick, and the process only actually executes once
+      // credit reaches 100, at which point 100 is spent (any surplus
+      // carries over). At the default frameValue=100 this adds exactly
+      // 100 every tick, so the process runs on every tick — unchanged
+      // from the old always-run behavior. frame(50) accumulates 50/tick,
+      // so it only clears 100 every *other* tick: half speed. Values
+      // above 100 are clamped to 100 here, since this scheduler calls
+      // each process at most once per external tick — there's no way to
+      // represent "runs twice as often" without executing a process's
+      // bytecode twice within the same tick, so frame(n) for n > 100
+      // means "run every tick" rather than a genuine speedup.
+      process.frameCredit += Math.min(process.frameValue, 100);
+      if (process.frameCredit < 100) {
+        continue;
+      }
+      process.frameCredit -= 100;
+
+      this.runProcess(process);
     }
 
     // Remove dead processes (sweep)

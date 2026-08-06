@@ -902,6 +902,130 @@ end`;
     `esperava [18,42] (f(9) usa o parametro local, print(speed) le o GLOBAL), obtido ${JSON.stringify(functionSeen)}`);
 }
 
+async function testStringEscapeSequences() {
+  // readString() only special-cased "\" followed by the *same* quote
+  // character used to delimit the string (so a string could contain its
+  // own delimiter), treating every other backslash as a plain literal
+  // character. "line1\nline2" produced the four literal characters
+  // '\', 'n' between "line1" and "line2" instead of an actual newline —
+  // any script trying to embed a newline or tab in a string (e.g. for a
+  // multi-line text() call) got silently wrong data with no error.
+  const cases = [
+    ['"a\\nb"', 'a\nb'],
+    ['"a\\tb"', 'a\tb'],
+    ['"a\\\\b"', 'a\\b'],
+    ['"said \\"hi\\""', 'said "hi"'],
+    ['"a\\qb"', 'a\\qb'], // unknown escape keeps the backslash literal
+    ['"plain"', 'plain']
+  ];
+
+  for (const [literal, expected] of cases) {
+    const source = `program string_escapes;\n\nbegin\n  print(${literal});\n  frame;\nend`;
+    const bytecode = compileSource(source);
+    const vm = new VM();
+    vm.load(bytecode);
+    const seen = [];
+    vm.registerNative('print', (v) => { seen.push(v); return 0; });
+    vm.tick();
+    assert(seen[0] === expected,
+      `string literal ${literal} esperava ${JSON.stringify(expected)}, obtido ${JSON.stringify(seen[0])}`);
+  }
+}
+
+async function testDuplicateDeclarationsAreCompileErrors() {
+  // A second "PROCESS p" (or FUNCTION, or GLOBAL) with the same name used
+  // to silently overwrite the Map entry from the first — no error, no
+  // indication which body actually runs. A copy-pasted process with an
+  // un-updated name, or a FUNCTION and a PROCESS accidentally sharing a
+  // name (compileCall() checks processTable before functionTable, so the
+  // process would silently win and the function become unreachable), both
+  // need to be compile errors instead.
+  const cases = [
+    ['duplicate PROCESS', `program dup_process;\n\nprocess p(x, y);\nbegin\n  frame;\nend\n\nprocess p(x, y);\nbegin\n  frame;\nend\n\nbegin\n  frame;\nend`],
+    ['duplicate FUNCTION', `program dup_function;\n\nfunction f();\nbegin\n  return 1;\nend\n\nfunction f();\nbegin\n  return 2;\nend\n\nbegin\n  frame;\nend`],
+    ['duplicate GLOBAL', `program dup_global;\n\nglobal x = 1;\nglobal x = 2;\n\nbegin\n  frame;\nend`],
+    ['FUNCTION and PROCESS sharing a name', `program cross_category;\n\nfunction p();\nbegin\n  return 1;\nend\n\nprocess p(x, y);\nbegin\n  frame;\nend\n\nbegin\n  frame;\nend`]
+  ];
+
+  for (const [label, source] of cases) {
+    let threw = false;
+    try {
+      compileSource(source);
+    } catch (error) {
+      threw = true;
+    }
+    assert(threw, `${label} devia falhar a compilar, nao compilou`);
+  }
+}
+
+async function testFrameValueThrottlesExecutionFrequency() {
+  // frame(n) stored the value on the process (this.currentProcess.
+  // frameValue = ...) but nothing ever read it back afterwards — the
+  // syntax existed and compiled, but had zero runtime effect. Every
+  // process ran on every single tick no matter what it passed to frame(),
+  // silently. Verify the fix actually throttles: frame(default/100) still
+  // runs every tick (no behavior change for the overwhelmingly common
+  // case that never calls frame(n) with an argument), while frame(50)
+  // measurably runs less often than every tick over a run long enough to
+  // smooth out the first-tick startup credit.
+  const alwaysSource = `program frame_default;
+
+process p();
+begin
+  loop
+    print(1);
+    frame;
+  end
+end
+
+begin
+  p();
+  frame;
+end`;
+
+  const alwaysBytecode = compileSource(alwaysSource);
+  const alwaysVm = new VM();
+  alwaysVm.load(alwaysBytecode);
+  let alwaysCount = 0;
+  alwaysVm.registerNative('print', () => { alwaysCount += 1; return 0; });
+  for (let i = 0; i < 10; i += 1) {
+    alwaysVm.tick();
+  }
+  assert(alwaysCount === 10,
+    `frame() por omissao devia correr em todos os 10 ticks, correu em ${alwaysCount}`);
+
+  const throttledSource = `program frame_throttled;
+
+process p();
+begin
+  loop
+    print(1);
+    frame(50);
+  end
+end
+
+begin
+  p();
+  frame;
+end`;
+
+  const throttledBytecode = compileSource(throttledSource);
+  const throttledVm = new VM();
+  throttledVm.load(throttledBytecode);
+  let throttledCount = 0;
+  throttledVm.registerNative('print', () => { throttledCount += 1; return 0; });
+  for (let i = 0; i < 40; i += 1) {
+    throttledVm.tick();
+  }
+  // Steady-state is exactly every other tick; over 40 ticks (plus one
+  // extra run from the initial full-credit seed) that's 20 or 21, well
+  // short of 40 and well above a token handful — a generous band that's
+  // still tight enough to catch "frame(n) still does nothing" (which
+  // would give 40) or "frame(n) stops the process" (which would give 0).
+  assert(throttledCount >= 15 && throttledCount <= 25,
+    `frame(50) ao longo de 40 ticks esperava entre 15 e 25 execucoes, obtido ${throttledCount}`);
+}
+
 async function testCollisionExcludesSelf() {
   // ProcessManager.collision() looked up every process of the requested
   // TYPE and tested collidesWith() without ever excluding the calling
@@ -1211,6 +1335,9 @@ export async function runAllTests() {
     ['for with negative step counts down', testForNegativeStepCountsDown],
     ['chained assignment (a = b = c) is a compile error', testChainedAssignmentIsCompileError],
     ['main does not inherit the last process/function local scope', testMainDoesNotInheritLastProcessLocalScope],
+    ['string escape sequences (\\n, \\t, \\\\, \\")', testStringEscapeSequences],
+    ['duplicate PROCESS/FUNCTION/GLOBAL names are compile errors', testDuplicateDeclarationsAreCompileErrors],
+    ['frame(n) throttles execution frequency', testFrameValueThrottlesExecutionFrequency],
     ['collision(TYPE x) excludes the calling process itself', testCollisionExcludesSelf]
   ];
 

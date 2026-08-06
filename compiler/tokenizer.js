@@ -171,12 +171,40 @@ export class Lexer {
   // Read string
   readString() {
     const quote = this.current();
+    const startLine = this.line;
+    const startCol = this.col;
     this.advance(); // consume opening quote
+
+    // Standard backslash escapes. The previous implementation only
+    // special-cased "\" followed by the *same* quote character (so a
+    // string could contain its own delimiter), and treated every other
+    // backslash as a literal character — meaning "line1\nline2" produced
+    // the four literal characters '\', 'n' between "line1" and "line2"
+    // instead of an actual newline. Any DIV script trying to embed a
+    // newline, tab, or literal backslash in a string (e.g. for a
+    // multi-line text() call) got silently wrong data with no error.
+    const escapes = {
+      n: '\n',
+      t: '\t',
+      r: '\r',
+      '0': '\0',
+      '\\': '\\',
+      "'": "'",
+      '"': '"'
+    };
 
     let str = '';
     while (this.current()) {
-      if (this.current() === '\\' && this.peek() === quote) {
-        this.advance();
+      if (this.current() === '\\') {
+        const next = this.peek();
+        if (next !== null && Object.prototype.hasOwnProperty.call(escapes, next)) {
+          this.advance(); // consume backslash
+          str += escapes[this.advance()]; // consume + translate escaped char
+          continue;
+        }
+        // Unknown escape (e.g. "\q"): keep the backslash literal rather
+        // than silently eating it, so unrecognized sequences are visible
+        // in the output instead of vanishing.
         str += this.advance();
         continue;
       }
@@ -189,7 +217,7 @@ export class Lexer {
       str += this.advance();
     }
 
-    throw new Error(`Unterminated string at line ${this.line}, col ${this.col}`);
+    throw new Error(`Unterminated string at line ${startLine}, col ${startCol}`);
   }
 
   // Read identifier or keyword

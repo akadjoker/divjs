@@ -41,10 +41,30 @@ export class Compiler {
     // within the same category. A prior pass over globals/main already
     // worked correctly only because main is always compiled *after* every
     // function and process, never interleaved with them.
+    //
+    // This same pre-pass is also the natural place to reject duplicate
+    // names: without it, "PROCESS p" declared twice (or a PROCESS and a
+    // FUNCTION sharing a name — compileCall() checks processTable before
+    // functionTable, so the process would silently win) just let the
+    // later Map.set() overwrite the earlier one, with no error and no
+    // indication which body actually runs. A copy-pasted process with an
+    // un-updated name is exactly the kind of mistake this used to hide.
     for (const func of program.functions) {
+      if (this.functionTable.has(func.name)) {
+        throw new Error(`Duplicate FUNCTION name: "${func.name}" is declared more than once.`);
+      }
+      if (this.processTable.has(func.name)) {
+        throw new Error(`"${func.name}" is declared as both a FUNCTION and a PROCESS; pick one name for each.`);
+      }
       this.functionTable.set(func.name, { addr: -1, params: func.params });
     }
     for (const proc of program.processes) {
+      if (this.processTable.has(proc.name)) {
+        throw new Error(`Duplicate PROCESS name: "${proc.name}" is declared more than once.`);
+      }
+      if (this.functionTable.has(proc.name)) {
+        throw new Error(`"${proc.name}" is declared as both a PROCESS and a FUNCTION; pick one name for each.`);
+      }
       this.processTable.set(proc.name, { addr: -1, params: proc.params, privates: proc.privates, locals: {} });
     }
 
@@ -99,6 +119,9 @@ export class Compiler {
 
   // Compile global
   compileGlobal(stmt) {
+    if (this.globalMap.has(stmt.name)) {
+      throw new Error(`Duplicate GLOBAL name: "${stmt.name}" is declared more than once.`);
+    }
     const idx = this.globalMap.size;
     this.globalMap.set(stmt.name, idx);
 

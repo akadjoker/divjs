@@ -41,6 +41,12 @@ export class Process {
     this.finished = false;
     this.dead = false; // Marked for removal
     this.frameValue = 100;
+    // Accumulator for frame(n) throttling — see the scheduler comment in
+    // vm.js's tick() for how this is spent. Starts at 100 so a freshly
+    // spawned process always gets to run on the very first tick it's
+    // scheduled for, before any frame(n) call it makes has had a chance
+    // to take effect.
+    this.frameCredit = 100;
 
     // VM context (coroutine)
     this.ip = 0;           // Instruction pointer
