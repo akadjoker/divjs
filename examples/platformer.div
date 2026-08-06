@@ -1,0 +1,83 @@
+program "Platformer";
+
+global
+  player_graph;
+  ground_graph;
+
+process main();
+begin
+  player_graph = load_graphic("sprites.png", 0, 0, 32, 32);
+  ground_graph = load_graphic("tiles.png", 0, 0, 50, 50);
+  
+  player(100, 400);
+  ground(0, 550);
+  
+  loop
+    frame;
+  end
+end
+
+process player(x, y);
+private
+  graph = 0;
+  vy = 0;
+  grounded = false;
+  speed = 200;
+  jump_force = -400;
+  gravity = 500;
+
+begin
+  repeat
+    // Input
+    if (key_down("right"))
+      x += speed * _dt;
+    end
+    
+    if (key_down("left"))
+      x -= speed * _dt;
+    end
+    
+    if (key_down("space") && grounded)
+      vy = jump_force;
+      grounded = false;
+    end
+    
+    // Physics
+    vy += gravity * _dt;
+    y += vy * _dt;
+    
+    // Collision with ground
+    if (collision(TYPE ground))
+      vy = 0;
+      y = ground.y - height;
+      grounded = true;
+    end
+    
+    // Bounds
+    if (x < 0) x = 0; end
+    if (x > 800 - width) x = 800 - width; end
+    if (y > 600)
+      x = 100;
+      y = 400;
+      vy = 0;
+    end
+    
+    // Draw
+    draw_rect(x, y, width, height, "#4a9eff");
+    
+    frame;
+  until (false)
+end
+
+process ground(x, y);
+private
+  graph = 0;
+
+begin
+  repeat
+    // Draw ground
+    draw_rect(x, y, 800, 50, "#6b8e6b");
+    
+    frame;
+  until (false)
+end

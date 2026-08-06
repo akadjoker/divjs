@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS - Platformer Example</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .container { text-align: center; }
+    h1 { color: #fff; margin-bottom: 20px; font-size: 2em; }
+    canvas {
+      border: 4px solid #4a9eff;
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(74, 158, 255, 0.3);
+    }
+    .info { color: #aaa; margin-top: 15px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎮 DivJS Platformer</h1>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div class="info">Arrow Keys to move | SPACE to jump</div>
+  </div>
+  
+  <script type="module">
+    // Import DivLang modules
+    import { Lexer } from './parser/lexer.js';
+    import { Parser } from './parser/parser.js';
+    import { Compiler } from './compiler/compiler.js';
+    import { VM } from './vm/vm.js';
+    import { ProcessManager } from './vm/process.js';
+    import { CanvasRenderer } from './graph/canvas2d.js';
+    import { Graphics, loadGraphic } from './graph/graphics.js';
+    import { Input, keyDown, keyPressed } from './graph/input.js';
+    
+    // Load DivLang code
+    const code = await fetch('platformer.div').then(r => r.text());
+    
+    // Compile
+    const lexer = new Lexer(code);
+    const tokens = lexer.tokenize();
+    
+    const parser = new Parser(tokens);
+    const ast = parser.parse();
+    
+    const compiler = new Compiler();
+    const bytecode = compiler.compile(ast);
+    
+    // Setup VM
+    const vm = new VM();
+    vm.load(bytecode);
+    
+    // Setup renderer
+    const renderer = new CanvasRenderer('gameCanvas');
+    
+    // Register native functions
+    vm.registerNative('load_graphic', loadGraphic);
+    vm.registerNative('key_down', keyDown);
+    vm.registerNative('key_pressed', keyPressed);
+    vm.registerNative('draw_rect', (x, y, w, h, color) => {
+      renderer.drawRect(x, y, w, h, color);
+    });
+    vm.registerNative('collision', (type) => {
+      return vm.processManager.collision(vm.currentProcess, type);
+    });
+    
+    // Create processes
+    const player = vm.processManager.create('player', { x: 100, y: 400, width: 32, height: 32 });
+    const ground = vm.processManager.create('ground', { x: 0, y: 550, width: 800, height: 50 });
+    
+    // Game loop
+    let lastTime = performance.now();
+    
+    function gameLoop() {
+      requestAnimationFrame(gameLoop);
+      
+      const now = performance.now();
+      vm.dt = (now - lastTime) / 1000;
+      lastTime = now;
+      
+      // Update input
+      Input.update();
+      
+      // Clear screen
+      renderer.clear('#000');
+      
+      // Update processes
+      for (const process of vm.processManager.getAll()) {
+        vm.currentProcess = process;
+        
+        // Execute process logic
+        if (process.name === 'player') {
+          // Player logic
+          if (keyDown('right')) process.x += process.speed * vm.dt;
+          if (keyDown('left')) process.x -= process.speed * vm.dt;
+          if (keyDown('space') && process.grounded) {
+            process.vy = process.jump_force;
+            process.grounded = false;
+          }
+          
+          // Physics
+          process.vy += process.gravity * vm.dt;
+          process.y += process.vy * vm.dt;
+          
+          // Collision
+          if (process.collidesWith(ground)) {
+            process.vy = 0;
+            process.y = ground.y - process.height;
+            process.grounded = true;
+          }
+          
+          // Bounds
+          if (process.x < 0) process.x = 0;
+          if (process.x > 800 - process.width) process.x = 800 - process.width;
+          if (process.y > 600) {
+            process.x = 100;
+            process.y = 400;
+            process.vy = 0;
+          }
+          
+          // Draw
+          renderer.drawRect(process.x, process.y, process.width, process.height, '#4a9eff');
+        } else if (process.name === 'ground') {
+          // Ground logic
+          renderer.drawRect(process.x, process.y, process.width, process.height, '#6b8e6b');
+        }
+      }
+    }
+    
+    // Start
+    gameLoop();
+  </script>
+</body>
+</html>

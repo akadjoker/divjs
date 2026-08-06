@@ -5,10 +5,42 @@ Div Games Studio-inspired language in JavaScript - VM + Parser + Canvas Renderer
 ## Status
 
 - [x] Lexer (Tokenizer)
-- [ ] Parser (AST)
-- [ ] VM (Bytecode)
-- [ ] Runtime (Native functions)
-- [ ] Graph (Canvas 2D)
+- [x] Parser (AST)
+- [x] Compiler (Bytecode)
+- [x] VM (Virtual Machine)
+- [x] Process Manager (Indexed)
+- [x] Canvas 2D Renderer
+- [x] Input System
+- [x] Graphics Manager
+- [ ] Full integration test
+
+## Estrutura
+
+```
+├── parser/
+│   ├── lexer.js       # Tokenizer
+│   ├── ast.js         # Node types
+│   └── parser.js      # Parser
+│
+├── compiler/
+│   ├── bytecode.js    # Opcodes
+│   └── compiler.js    # AST → Bytecode
+│
+├── vm/
+│   ├── vm.js          # Virtual Machine
+│   ├── process.js     # Process manager (indexed)
+│   ├── frame.js       # Frame system
+│   └── runtime.js     # Native functions
+│
+├── graph/
+│   ├── canvas2d.js    # Canvas 2D renderer
+│   ├── graphics.js    # Graphics manager
+│   └── input.js       # Input system
+│
+└── examples/
+    ├── platformer.div # DivLang code
+    └── index.html     # Example
+```
 
 ## Exemplo
 
@@ -20,20 +52,20 @@ global
 
 process player(x=100, y=400, width=32, height=32);
 private
-  graph = player_graph;
+  graph = 0;
   vy = 0;
   grounded = false;
 
 begin
   repeat
-    if (key_down(_right)) x += 200 * _dt; end
-    if (key_down(_left)) x -= 200 * _dt; end
-    if (key_down(_space) && grounded) vy = -400; end
+    if (key_down("right")) x += 200 * _dt; end
+    if (key_down("left")) x -= 200 * _dt; end
+    if (key_down("space") && grounded) vy = -400; end
     
     vy += 500 * _dt;
     y += vy * _dt;
     
-    if (collision(type ground))
+    if (collision(TYPE ground))
       vy = 0;
       y = ground.y - height;
       grounded = true;
@@ -42,6 +74,13 @@ begin
     frame;
   until (false)
 end
+```
+
+## Uso
+
+```bash
+# Open in browser
+open examples/index.html
 ```
 
 ## LicenÃ§a
