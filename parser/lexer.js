@@ -97,33 +97,7 @@ export const TokenType = {
   QUESTION: 'question',
   
   // Misc
-  ARROW: 'arrow',
-  
-  // FunÃ§Ãµes nativas
-  COLLISION: 'collision',
-  KEY_PRESSED: 'key_pressed',
-  KEY_DOWN: 'key_down',
-  LOAD_GRAPHIC: 'load_graphic',
-  DRAW: 'draw',
-  DRAW_TEXT: 'draw_text',
-  DRAW_RECT: 'draw_rect',
-  
-  // Constants (comeÃ§am com _)
-  _ESC: '_esc',
-  _SPACE: '_space',
-  _RIGHT: '_right',
-  _LEFT: '_left',
-  _UP: '_up',
-  _DOWN: '_down',
-  _DT: '_dt',
-  
-  // Types de colisÃ£o
-  _SOLID: '_solid',
-  _SENSOR: '_sensor',
-  _PLATFORM: '_platform',
-  _ONEWAY: '_oneway',
-  _SHOT: '_shot',
-  _DANGER: '_danger'
+  ARROW: 'arrow'
 };
 
 // Keywords map
@@ -164,32 +138,24 @@ const keywords = {
   'or': TokenType.OR,
   'xor': TokenType.XOR,
   'not': TokenType.NOT,
-  'mod': TokenType.MOD,
-  
-  'collision': TokenType.COLLISION,
-  'key_pressed': TokenType.KEY_PRESSED,
-  'key_down': TokenType.KEY_DOWN,
-  'load_graphic': TokenType.LOAD_GRAPHIC,
-  'draw': TokenType.DRAW,
-  'draw_text': TokenType.DRAW_TEXT,
-  'draw_rect': TokenType.DRAW_RECT
+  'mod': TokenType.MOD
 };
 
-// Constants (comeÃ§am com _)
+// Constants (começam com _)
 const constants = {
-  '_esc': TokenType._ESC,
-  '_space': TokenType._SPACE,
-  '_right': TokenType._RIGHT,
-  '_left': TokenType._LEFT,
-  '_up': TokenType._UP,
-  '_down': TokenType._DOWN,
-  '_dt': TokenType._DT,
-  '_solid': TokenType._SOLID,
-  '_sensor': TokenType._SENSOR,
-  '_platform': TokenType._PLATFORM,
-  '_oneway': TokenType._ONEWAY,
-  '_shot': TokenType._SHOT,
-  '_danger': TokenType._DANGER
+  '_esc': TokenType.IDENTIFIER,
+  '_space': TokenType.IDENTIFIER,
+  '_right': TokenType.IDENTIFIER,
+  '_left': TokenType.IDENTIFIER,
+  '_up': TokenType.IDENTIFIER,
+  '_down': TokenType.IDENTIFIER,
+  '_dt': TokenType.IDENTIFIER,
+  '_solid': TokenType.IDENTIFIER,
+  '_sensor': TokenType.IDENTIFIER,
+  '_platform': TokenType.IDENTIFIER,
+  '_oneway': TokenType.IDENTIFIER,
+  '_shot': TokenType.IDENTIFIER,
+  '_danger': TokenType.IDENTIFIER
 };
 
 // Token class
@@ -224,7 +190,7 @@ class Lexer {
     return this.source[this.pos];
   }
   
-  // PrÃ³ximo caractere
+  // Próximo caractere
   peekChar() {
     if (this.pos + 1 >= this.source.length) {
       return null;
@@ -232,7 +198,7 @@ class Lexer {
     return this.source[this.pos + 1];
   }
   
-  // AvanÃ§ar
+  // Avançar
   advance() {
     const char = this.currentChar();
     if (char === '\n') {
@@ -261,7 +227,7 @@ class Lexer {
     }
   }
   
-  // Ler nÃºmero
+  // Ler número
   readNumber() {
     const startLine = this.line;
     const startColumn = this.column;
@@ -326,21 +292,17 @@ class Lexer {
       result += this.advance();
     }
     
-    // Restante: letra, dÃ³lar, underscore ou dÃ³lar
+    // Restante: letra, dólar, underscore ou dólar
     while (this.currentChar() && /[a-zA-Z0-9_$]/.test(this.currentChar())) {
       result += this.advance();
     }
     
-    // Verificar se ÃÂ© keyword
+    // Verificar se é keyword
     if (keywords[result]) {
       return new Token(keywords[result], result, startLine, startColumn);
     }
     
-    // Verificar se ÃÂ© constant (_esc, _space, etc)
-    if (constants[result]) {
-      return new Token(constants[result], result, startLine, startColumn);
-    }
-    
+    // Constants e identificadores
     return new Token(TokenType.IDENTIFIER, result, startLine, startColumn);
   }
   
@@ -495,7 +457,7 @@ class Lexer {
       
       const char = this.currentChar();
       
-      // NÃºmeros
+      // Números
       if (/[0-9]/.test(char)) {
         this.tokens.push(this.readNumber());
       }
