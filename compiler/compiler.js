@@ -574,6 +574,50 @@ export class Compiler {
 
   // Compile binary
   compileBinary(expr) {
+    if (expr.operator === '&&') {
+      this.compileExpression(expr.left);
+      this.emit(OpCodes.JUMP_IF_FALSE, 0);
+      const leftFalseJump = this.instructions.length - 1;
+
+      this.compileExpression(expr.right);
+      this.emit(OpCodes.JUMP_IF_FALSE, 0);
+      const rightFalseJump = this.instructions.length - 1;
+
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(1));
+      this.emit(OpCodes.JUMP, 0);
+      const jumpToEnd = this.instructions.length - 1;
+
+      const falseLabel = this.instructions.length;
+      this.instructions[leftFalseJump].operands[0] = falseLabel;
+      this.instructions[rightFalseJump].operands[0] = falseLabel;
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(0));
+
+      this.instructions[jumpToEnd].operands[0] = this.instructions.length;
+      return;
+    }
+
+    if (expr.operator === '||') {
+      this.compileExpression(expr.left);
+      this.emit(OpCodes.JUMP_IF_TRUE, 0);
+      const leftTrueJump = this.instructions.length - 1;
+
+      this.compileExpression(expr.right);
+      this.emit(OpCodes.JUMP_IF_TRUE, 0);
+      const rightTrueJump = this.instructions.length - 1;
+
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(0));
+      this.emit(OpCodes.JUMP, 0);
+      const jumpToEnd = this.instructions.length - 1;
+
+      const trueLabel = this.instructions.length;
+      this.instructions[leftTrueJump].operands[0] = trueLabel;
+      this.instructions[rightTrueJump].operands[0] = trueLabel;
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(1));
+
+      this.instructions[jumpToEnd].operands[0] = this.instructions.length;
+      return;
+    }
+
     this.compileExpression(expr.left);
     this.compileExpression(expr.right);
 
@@ -610,12 +654,6 @@ export class Compiler {
         break;
       case '>=':
         this.emit(OpCodes.GTE);
-        break;
-      case '&&':
-        this.emit(OpCodes.AND);
-        break;
-      case '||':
-        this.emit(OpCodes.OR);
         break;
       default:
         throw new Error(`Unknown binary operator: ${expr.operator}`);

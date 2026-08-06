@@ -214,7 +214,7 @@ export class VM {
         break;
 
       case OpCodes.LOAD_GLOBAL:
-        this.push(this.globals.get(operands[0]) || 0);
+        this.push(this.globals.has(operands[0]) ? this.globals.get(operands[0]) : 0);
         this.ip++;
         break;
 
@@ -376,25 +376,27 @@ export class VM {
           funcArgs.unshift(this.pop());
         }
 
+        const funcInfo = this.functionTable.get(funcName);
+        if (!funcInfo) {
+          console.error(`Function not found: ${funcName}`);
+          this.push(0);
+          this.ip++;
+          break;
+        }
+
         // Save return address
         this.callStack.push(this.ip + 1);
 
         // Jump to function
-        const funcInfo = this.functionTable.get(funcName);
-        if (funcInfo) {
-          this.ip = funcInfo.addr;
+        this.ip = funcInfo.addr;
 
-          // Save current locals and create new frame for function
-          this.callStack.push(this.locals);
-          this.locals = [];
+        // Save current locals and create new frame for function
+        this.callStack.push(this.locals);
+        this.locals = [];
 
-          // Map args to locals
-          for (let i = 0; i < funcInfo.params.length; i++) {
-            this.locals[i] = funcArgs[i];
-          }
-        } else {
-          console.error(`Function not found: ${funcName}`);
-          this.ip++;
+        // Map args to locals
+        for (let i = 0; i < funcInfo.params.length; i++) {
+          this.locals[i] = funcArgs[i];
         }
         break;
 
@@ -470,32 +472,23 @@ export class VM {
           params.parentId = this.currentProcess.id;
         }
 
+        if (!processInfo) {
+          console.error(`Process not found: ${processName}`);
+          this.push(0);
+          this.ip++;
+          break;
+        }
+
         const newProcess = this.processManager.create(processName, params);
-        newProcess.ip = this.processTable.get(processName).addr;
+        newProcess.ip = processInfo.addr;
 
-        // Initialize local slots for process params (engine fixed slots).
-        if (processInfo && processInfo.params) {
-          const fixedSlots = {
-            x: 0,
-            y: 1,
-            width: 2,
-            height: 3,
-            ctype: 4,
-            c_type: 4,
-            id: 5,
-            region: 6,
-            angle: 7
-          };
-
-          let nextLocal = 8;
+        // Initialize param slots from compiler-local metadata.
+        if (processInfo.params && processInfo.locals) {
           for (let i = 0; i < processInfo.params.length; i++) {
             const paramName = processInfo.params[i];
-            const paramValue = processArgs[i];
-
-            if (Object.prototype.hasOwnProperty.call(fixedSlots, paramName)) {
-              newProcess.locals[fixedSlots[paramName]] = paramValue;
-            } else {
-              newProcess.locals[nextLocal++] = paramValue;
+            const slot = processInfo.locals[paramName];
+            if (slot !== undefined) {
+              newProcess.locals[slot] = processArgs[i];
             }
           }
         }

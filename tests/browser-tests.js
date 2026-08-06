@@ -388,6 +388,98 @@ end`;
   assert(p.y === 2, `y esperado 2 com or, obtido ${p.y}`);
 }
 
+async function testLogicalShortCircuitSkipsSideEffects() {
+  const source = `program logical_short_circuit;
+
+global hits = 0;
+
+function bump();
+begin
+  hits = hits + 1;
+  return 1;
+end
+
+process p();
+begin
+  if (0 and bump())
+  end
+  if (1 or bump())
+  end
+  frame;
+end
+
+begin
+  p();
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  const runtime = createRuntime(vm);
+  runtime.beginFrame(1 / 60);
+  vm.tick();
+
+  const hits = vm.globals.get(0);
+  assert(hits === 0, `short-circuit devia evitar bump(); hits esperado 0, obtido ${hits}`);
+}
+
+async function testLoadGlobalPreservesFalsyValues() {
+  const vm = new VM();
+  vm.load({
+    constants: [false],
+    instructions: [
+      { opcode: OpCodes.LOAD_CONST, operands: [0] },
+      { opcode: OpCodes.STORE_GLOBAL, operands: [0] },
+      { opcode: OpCodes.LOAD_GLOBAL, operands: [0] },
+      { opcode: OpCodes.HALT, operands: [] }
+    ],
+    processTable: new Map(),
+    functionTable: new Map(),
+    mainAddr: 0
+  });
+
+  vm.tick();
+  assert(vm.mainStack.length > 0, 'stack principal devia ter valor carregado');
+  assert(vm.mainStack[vm.mainStack.length - 1] === false, `LOAD_GLOBAL devia preservar false, obtido ${vm.mainStack[vm.mainStack.length - 1]}`);
+}
+
+async function testMissingFunctionCallDoesNotLeakCallStack() {
+  const vm = new VM();
+  vm.load({
+    constants: [],
+    instructions: [
+      { opcode: OpCodes.CALL, operands: ['missing_fn', 0] },
+      { opcode: OpCodes.HALT, operands: [] }
+    ],
+    processTable: new Map(),
+    functionTable: new Map(),
+    mainAddr: 0
+  });
+
+  vm.tick();
+  assert(vm.mainCallStack.length === 0, `CALL de funcao inexistente nao devia sujar callStack, size=${vm.mainCallStack.length}`);
+  assert(vm.mainStack[vm.mainStack.length - 1] === 0, 'CALL de funcao inexistente devia empurrar 0');
+}
+
+async function testMissingSpawnProcessFailsGracefully() {
+  const vm = new VM();
+  vm.load({
+    constants: [],
+    instructions: [
+      { opcode: OpCodes.SPAWN_PROCESS, operands: ['missing_process', 0] },
+      { opcode: OpCodes.HALT, operands: [] }
+    ],
+    processTable: new Map(),
+    functionTable: new Map(),
+    mainAddr: 0
+  });
+
+  vm.tick();
+  assert(vm.processManager.count() === 0, `SPAWN de processo inexistente nao devia criar processo, count=${vm.processManager.count()}`);
+  assert(vm.mainStack[vm.mainStack.length - 1] === 0, 'SPAWN de processo inexistente devia empurrar 0');
+}
+
 async function testVoidNativeDoesNotUnderflowStack() {
   const source = `program void_native;
 
@@ -709,6 +801,10 @@ export async function runAllTests() {
     ['load_graphic / load_tile direct ids', testLoadGraphicAndTileDirectIds],
     ['xadvance movement', testXAdvanceMovesByAngle],
     ['keyword and/or/not operators', testKeywordLogicalOperatorsCompileAndRun],
+    ['logical short-circuit skips side effects', testLogicalShortCircuitSkipsSideEffects],
+    ['LOAD_GLOBAL preserves falsy', testLoadGlobalPreservesFalsyValues],
+    ['missing CALL does not leak stack', testMissingFunctionCallDoesNotLeakCallStack],
+    ['missing SPAWN fails gracefully', testMissingSpawnProcessFailsGracefully],
     ['void native stack underflow guard', testVoidNativeDoesNotUnderflowStack],
     ['nested function return stack safety', testNestedFunctionReturnsDoNotLeakStack],
     ['implicit process locals graph/size slots', testImplicitProcessLocalsGraphAndSize],
