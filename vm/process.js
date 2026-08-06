@@ -31,7 +31,7 @@ export class Process {
     this.id = params.id || 0;
     this.type = hashCode(name); // Tipo = hash do nome
     
-    // Position (locals especiais)
+    // Position (locals especiais - slots fixos)
     this.x = params.x || 0;
     this.y = params.y || 0;
     this.width = params.width || 32;
@@ -50,6 +50,12 @@ export class Process {
     this.ip = 0;           // Instruction pointer
     this.stack = [];       // Stack próprio
     this.locals = [];      // Locais próprios
+    
+    // Sincronizar x, y com locals (slots fixos: 0=x, 1=y, 2=width, 3=height)
+    this.locals[0] = this.x;
+    this.locals[1] = this.y;
+    this.locals[2] = this.width;
+    this.locals[3] = this.height;
   }
   
   // Get bounds (for collision)
@@ -87,6 +93,14 @@ export class Process {
   kill() {
     this.dead = true;
     this.active = false;
+  }
+  
+  // Sincronizar locals com x, y (chamar no fim do frame)
+  sync() {
+    this.x = this.locals[0] ?? this.x;
+    this.y = this.locals[1] ?? this.y;
+    this.width = this.locals[2] ?? this.width;
+    this.height = this.locals[3] ?? this.height;
   }
 }
 
@@ -162,6 +176,13 @@ export class ProcessManager {
   
   // Sweep dead processes (call after frame)
   sweep() {
+    // Sincronizar x, y antes de remover
+    for (const process of this.processes) {
+      if (process.active) {
+        process.sync();
+      }
+    }
+    
     // Remove dead processes
     for (let i = this.processes.length - 1; i >= 0; i--) {
       const process = this.processes[i];

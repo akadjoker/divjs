@@ -1,153 +1,111 @@
-/**
- * DivLang Compiler
- * AST → Bytecode
- */
-
-import * as ast from '../parser/ast.js';
-import { OpCodes, Bytecode } from './bytecode.js';
+import { OpCodes } from './bytecode.js';
 
 export class Compiler {
   constructor() {
-    this.bytecode = new Bytecode();
-    this.scopes = [];
-    this.scopeIndex = 0;
+    this.constants = [];
+    this.instructions = [];
+    this.stringMap = new Map();
+    this.localMap = new Map();
+    this.globalMap = new Map();
+    this.processTable = new Map(); // Process table
   }
-  
+
   // Compile program
   compile(program) {
-    // Compile globals
-    for (const global of program.globals) {
-      this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(global.name));
-      
-      if (global.init) {
-        this.compileExpression(global.init);
-      } else {
-        this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(0));
+    this.constants = [];
+    this.instructions = [];
+    this.stringMap = new Map();
+    this.localMap = new Map();
+    this.globalMap = new Map();
+    this.processTable = new Map();
+    
+    // Compile globals first
+    for (const stmt of program.statements) {
+      if (stmt.type === 'global') {
+        this.compileGlobal(stmt);
       }
-      
-      this.bytecode.emit(OpCodes.STORE_GLOBAL, this.scopeIndex++);
     }
     
     // Compile processes
-    for (const process of program.processes) {
-      this.compileProcess(process);
+    for (const stmt of program.statements) {
+      if (stmt.type === 'process') {
+        this.compileProcess(stmt);
+      }
     }
     
-    // Compile functions
-    for (const func of program.functions) {
-      this.compileFunction(func);
-    }
-    
-    // Emit HALT
-    this.bytecode.emit(OpCodes.HALT);
-    
-    return this.bytecode;
+    return {
+      constants: this.constants,
+      instructions: this.instructions,
+      processTable: this.processTable
+    };
   }
-  
+
+  // Compile global
+  compileGlobal(stmt) {
+    const idx = this.globalMap.size;
+    this.globalMap.set(stmt.name, idx);
+    
+    if (stmt.value) {
+      this.compileExpression(stmt.value);
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(stmt.name));
+      this.emit(OpCodes.STORE_GLOBAL, idx);
+    } else {
+      this.emit(OpCodes.LOAD_CONST, 0);
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(stmt.name));
+      this.emit(OpCodes.STORE_GLOBAL, idx);
+    }
+  }
+
   // Compile process
-  compileProcess(process) {
-    const startAddr = this.bytecode.instructionCount();
+  compileProcess(stmt) {
+    const startAddr = this.instructions.length;
     
-    // Push scope
-    this.pushScope();
+    // Store process in table
+    this.processTable.set(stmt.name, {
+      addr: startAddr,
+      params: stmt.params
+    });
     
-    // Compile parameters
-    for (const param of process.params) {
-      this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(param.name));
-      
-      if (param.init) {
-        this.compileExpression(param.init);
-      } else {
-        this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(0));
-      }
-      
-      this.bytecode.emit(OpCodes.STORE_LOCAL, this.scopeIndex++);
-    }
+    // Reset locals for this process
+    this.localMap = new Map();
     
-    // Compile privates
-    for (const priv of process.privates) {
-      this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(priv.name));
-      
-      if (priv.init) {
-        this.compileExpression(priv.init);
-      } else {
-        this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(0));
-      }
-      
-      this.bytecode.emit(OpCodes.STORE_LOCAL, this.scopeIndex++);
+    // Add params as locals
+    for (let i = 0; i < stmt.params.length; i++) {
+      this.localMap.set(stmt.params[i], i);
     }
     
     // Compile body
-    this.compileStatements(process.body);
+    this.compileBlock(stmt.body);
     
-    // Pop scope
-    this.popScope();
+    // Emit RETURN if not present
+    if (this.instructions.length === 0 || 
+        this.instructions[this.instructions.length - 1].opcode !== OpCodes.RETURN) {
+      this.emit(OpCodes.RETURN);
+    }
     
     return startAddr;
   }
-  
-  // Compile function
-  compileFunction(func) {
-    const startAddr = this.bytecode.instructionCount();
-    
-    // Push scope
-    this.pushScope();
-    
-    // Compile parameters
-    for (const param of func.params) {
-      this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(param.name));
-      
-      if (param.init) {
-        this.compileExpression(param.init);
-      } else {
-        this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(0));
-      }
-      
-      this.bytecode.emit(OpCodes.STORE_LOCAL, this.scopeIndex++);
-    }
-    
-    // Compile privates
-    for (const priv of func.privates) {
-      this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(priv.name));
-      
-      if (priv.init) {
-        this.compileExpression(priv.init);
-      } else {
-        this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(0));
-      }
-      
-      this.bytecode.emit(OpCodes.STORE_LOCAL, this.scopeIndex++);
-    }
-    
-    // Compile body
-    this.compileStatements(func.body);
-    
-    // Pop scope
-    this.popScope();
-    
-    return startAddr;
-  }
-  
-  // Compile statements
-  compileStatements(statements) {
-    for (const stmt of statements) {
+
+  // Compile block
+  compileBlock(block) {
+    for (const stmt of block.statements) {
       this.compileStatement(stmt);
     }
   }
-  
+
   // Compile statement
   compileStatement(stmt) {
     switch (stmt.type) {
       case 'block':
-        this.compileStatements(stmt.statements);
-        break;
-      
-      case 'assignment':
-        this.compileAssignment(stmt);
+        this.compileBlock(stmt);
         break;
       
       case 'if':
         this.compileIf(stmt);
+        break;
+      
+      case 'for':
+        this.compileFor(stmt);
         break;
       
       case 'while':
@@ -162,252 +120,316 @@ export class Compiler {
         this.compileLoop(stmt);
         break;
       
-      case 'for':
-        this.compileFor(stmt);
+      case 'frame':
+        this.emit(OpCodes.FRAME);
         break;
       
-      case 'break':
-        this.bytecode.emit(OpCodes.BREAK);
+      case 'private':
+        this.compilePrivate(stmt);
         break;
       
-      case 'continue':
-        this.bytecode.emit(OpCodes.CONTINUE);
+      case 'var':
+        this.compileVar(stmt);
         break;
       
       case 'return':
         if (stmt.value) {
           this.compileExpression(stmt.value);
         }
-        this.bytecode.emit(OpCodes.RETURN);
+        this.emit(OpCodes.RETURN);
         break;
       
-      case 'frame':
-        this.bytecode.emit(OpCodes.FRAME);
+      case 'break':
+        this.emit(OpCodes.BREAK);
+        break;
+      
+      case 'continue':
+        this.emit(OpCodes.CONTINUE);
         break;
       
       case 'expression':
         this.compileExpression(stmt.expression);
-        this.bytecode.emit(OpCodes.POP);
+        this.emit(OpCodes.POP);
         break;
+      
+      case 'assign':
+        this.compileAssignment(stmt);
+        break;
+      
+      default:
+        throw new Error(`Unknown statement type: ${stmt.type}`);
     }
   }
-  
-  // Compile assignment
-  compileAssignment(assignment) {
-    this.compileExpression(assignment.value);
+
+  // Compile if
+  compileIf(stmt) {
+    this.compileExpression(stmt.condition);
+    this.emit(OpCodes.JUMP_IF_FALSE, 0); // Placeholder
+    const jumpToElse = this.instructions.length - 1;
     
-    if (assignment.target.type === 'identifier') {
-      const index = this.resolveLocal(assignment.target.name);
-      if (index !== -1) {
-        this.bytecode.emit(OpCodes.STORE_LOCAL, index);
-      } else {
-        this.bytecode.emit(OpCodes.STORE_GLOBAL, this.scopeIndex);
+    this.compileBlock(stmt.thenBranch);
+    
+    if (stmt.elseBranch) {
+      this.emit(OpCodes.JUMP, 0); // Placeholder
+      const jumpToEnd = this.instructions.length - 1;
+      
+      this.instructions[jumpToElse].operands[0] = this.instructions.length;
+      
+      this.compileBlock(stmt.elseBranch);
+      
+      this.instructions[jumpToEnd].operands[0] = this.instructions.length;
+    } else {
+      this.instructions[jumpToElse].operands[0] = this.instructions.length;
+    }
+  }
+
+  // Compile for
+  compileFor(stmt) {
+    const varIdx = this.localMap.size;
+    this.localMap.set(stmt.varName, varIdx);
+    
+    this.compileExpression(stmt.start);
+    this.emit(OpCodes.STORE_LOCAL, varIdx);
+    
+    const loopStart = this.instructions.length;
+    
+    this.emit(OpCodes.LOAD_LOCAL, varIdx);
+    this.compileExpression(stmt.end);
+    this.emit(OpCodes.GT);
+    this.emit(OpCodes.JUMP_IF_TRUE, 0); // Placeholder
+    const jumpToEnd = this.instructions.length - 1;
+    
+    this.compileBlock(stmt.body);
+    
+    this.emit(OpCodes.LOAD_LOCAL, varIdx);
+    this.compileExpression(stmt.step);
+    this.emit(OpCodes.ADD);
+    this.emit(OpCodes.STORE_LOCAL, varIdx);
+    
+    this.emit(OpCodes.LOOP, loopStart);
+    
+    this.instructions[jumpToEnd].operands[0] = this.instructions.length;
+  }
+
+  // Compile while
+  compileWhile(stmt) {
+    const loopStart = this.instructions.length;
+    
+    this.compileExpression(stmt.condition);
+    this.emit(OpCodes.JUMP_IF_FALSE, 0); // Placeholder
+    const jumpToEnd = this.instructions.length - 1;
+    
+    this.compileBlock(stmt.body);
+    
+    this.emit(OpCodes.LOOP, loopStart);
+    
+    this.instructions[jumpToEnd].operands[0] = this.instructions.length;
+  }
+
+  // Compile repeat
+  compileRepeat(stmt) {
+    const loopStart = this.instructions.length;
+    
+    this.compileBlock(stmt.body);
+    
+    this.compileExpression(stmt.condition);
+    this.emit(OpCodes.JUMP_IF_FALSE, loopStart);
+  }
+
+  // Compile loop
+  compileLoop(stmt) {
+    const loopStart = this.instructions.length;
+    
+    this.compileBlock(stmt.body);
+    
+    this.emit(OpCodes.LOOP, loopStart);
+  }
+
+  // Compile private
+  compilePrivate(stmt) {
+    const idx = this.localMap.size;
+    this.localMap.set(stmt.name, idx);
+    
+    if (stmt.value) {
+      this.compileExpression(stmt.value);
+    } else {
+      this.emit(OpCodes.LOAD_CONST, 0);
+    }
+    
+    this.emit(OpCodes.STORE_LOCAL, idx);
+  }
+
+  // Compile var
+  compileVar(stmt) {
+    const idx = this.localMap.size;
+    this.localMap.set(stmt.name, idx);
+    
+    this.compileExpression(stmt.value);
+    this.emit(OpCodes.STORE_LOCAL, idx);
+  }
+
+  // Compile assignment
+  compileAssignment(stmt) {
+    if (stmt.target.type === 'identifier') {
+      const name = stmt.target.name;
+      
+      // Check if local
+      if (this.localMap.has(name)) {
+        this.compileExpression(stmt.value);
+        this.emit(OpCodes.STORE_LOCAL, this.localMap.get(name));
+      }
+      // Check if global
+      else if (this.globalMap.has(name)) {
+        this.compileExpression(stmt.value);
+        this.emit(OpCodes.STORE_GLOBAL, this.globalMap.get(name));
+      }
+      else {
+        throw new Error(`Unknown variable: ${name}`);
       }
     }
   }
-  
-  // Compile IF
-  compileIf(stmt) {
-    this.compileExpression(stmt.condition);
-    
-    const jumpToElse = this.bytecode.emit(OpCodes.JUMP_IF_FALSE, 0);
-    
-    this.compileStatements(stmt.thenBlock);
-    
-    if (stmt.elseBlock) {
-      const jumpToEnd = this.bytecode.emit(OpCodes.JUMP, 0);
-      this.bytecode.patchJump(jumpToElse, this.bytecode.instructionCount());
-      
-      this.compileStatements(stmt.elseBlock);
-      
-      this.bytecode.patchJump(jumpToEnd, this.bytecode.instructionCount());
-    } else {
-      this.bytecode.patchJump(jumpToElse, this.bytecode.instructionCount());
-    }
-  }
-  
-  // Compile WHILE
-  compileWhile(stmt) {
-    const loopStart = this.bytecode.instructionCount();
-    
-    this.compileExpression(stmt.condition);
-    
-    const jumpToBody = this.bytecode.emit(OpCodes.JUMP_IF_TRUE, 0);
-    const jumpToEnd = this.bytecode.emit(OpCodes.JUMP, 0);
-    
-    this.bytecode.patchJump(jumpToBody, this.bytecode.instructionCount());
-    this.compileStatements(stmt.body);
-    
-    this.bytecode.emit(OpCodes.JUMP, loopStart);
-    this.bytecode.patchJump(jumpToEnd, this.bytecode.instructionCount());
-  }
-  
-  // Compile REPEAT
-  compileRepeat(stmt) {
-    const loopStart = this.bytecode.instructionCount();
-    
-    this.compileStatements(stmt.body);
-    
-    this.compileExpression(stmt.condition);
-    
-    const jumpToStart = this.bytecode.emit(OpCodes.JUMP_IF_FALSE, 0);
-    this.bytecode.patchJump(jumpToStart, loopStart);
-  }
-  
-  // Compile LOOP
-  compileLoop(stmt) {
-    const loopStart = this.bytecode.instructionCount();
-    
-    this.compileStatements(stmt.body);
-    
-    this.bytecode.emit(OpCodes.JUMP, loopStart);
-  }
-  
-  // Compile FOR
-  compileFor(stmt) {
-    this.compileExpression(stmt.from);
-    this.bytecode.emit(OpCodes.STORE_LOCAL, this.scopeIndex);
-    
-    const loopStart = this.bytecode.instructionCount();
-    
-    this.bytecode.emit(OpCodes.LOAD_LOCAL, this.scopeIndex);
-    this.compileExpression(stmt.to);
-    this.bytecode.emit(OpCodes.GT);
-    
-    const jumpToBody = this.bytecode.emit(OpCodes.JUMP_IF_FALSE, 0);
-    const jumpToEnd = this.bytecode.emit(OpCodes.JUMP, 0);
-    
-    this.bytecode.patchJump(jumpToBody, this.bytecode.instructionCount());
-    this.compileStatements(stmt.body);
-    
-    this.bytecode.emit(OpCodes.LOAD_LOCAL, this.scopeIndex);
-    
-    if (stmt.step) {
-      this.compileExpression(stmt.step);
-    } else {
-      this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(1));
-    }
-    
-    this.bytecode.emit(OpCodes.ADD);
-    this.bytecode.emit(OpCodes.STORE_LOCAL, this.scopeIndex);
-    
-    this.bytecode.emit(OpCodes.JUMP, loopStart);
-    this.bytecode.patchJump(jumpToEnd, this.bytecode.instructionCount());
-  }
-  
+
   // Compile expression
   compileExpression(expr) {
     switch (expr.type) {
       case 'number':
-        this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(expr.value));
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(expr.value));
         break;
       
       case 'string':
-        this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(expr.value));
-        break;
-      
-      case 'boolean':
-        this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(expr.value ? 1 : 0));
-        break;
-      
-      case 'null':
-        this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(null));
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(expr.value));
         break;
       
       case 'identifier':
-        const index = this.resolveLocal(expr.name);
-        if (index !== -1) {
-          this.bytecode.emit(OpCodes.LOAD_LOCAL, index);
-        } else {
-          this.bytecode.emit(OpCodes.LOAD_GLOBAL, 0); // TODO: resolve global
-        }
+        this.compileIdentifier(expr);
         break;
       
       case 'binary':
-        this.compileExpression(expr.left);
-        this.compileExpression(expr.right);
-        
-        switch (expr.operator) {
-          case '+': this.bytecode.emit(OpCodes.ADD); break;
-          case '-': this.bytecode.emit(OpCodes.SUB); break;
-          case '*': this.bytecode.emit(OpCodes.MUL); break;
-          case '/': this.bytecode.emit(OpCodes.DIV); break;
-          case '%': this.bytecode.emit(OpCodes.MOD); break;
-          case '==': this.bytecode.emit(OpCodes.EQ); break;
-          case '!=': this.bytecode.emit(OpCodes.NEQ); break;
-          case '<': this.bytecode.emit(OpCodes.LT); break;
-          case '<=': this.bytecode.emit(OpCodes.LTE); break;
-          case '>': this.bytecode.emit(OpCodes.GT); break;
-          case '>=': this.bytecode.emit(OpCodes.GTE); break;
-          case '&&': this.bytecode.emit(OpCodes.AND); break;
-          case '||': this.bytecode.emit(OpCodes.OR); break;
-        }
+        this.compileBinary(expr);
         break;
       
       case 'unary':
-        this.compileExpression(expr.operand);
-        
-        switch (expr.operator) {
-          case '-': this.bytecode.emit(OpCodes.NEG); break;
-          case '!': this.bytecode.emit(OpCodes.NOT); break;
-        }
+        this.compileUnary(expr);
         break;
       
       case 'call':
-        for (const arg of expr.args) {
-          this.compileExpression(arg);
-        }
-        
-        if (expr.callee.type === 'identifier') {
-          const name = expr.callee.name;
-          
-          // Native functions
-          const natives = ['collision', 'key_pressed', 'key_down', 'load_graphic', 'draw', 'draw_text', 'draw_rect'];
-          if (natives.includes(name)) {
-            this.bytecode.emit(OpCodes.CALL_NATIVE, name, expr.args.length);
-          } else {
-            this.bytecode.emit(OpCodes.CALL, name, expr.args.length);
-          }
-        }
+        this.compileCall(expr);
         break;
       
-      case 'type_operator':
-        this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant('type'));
-        this.bytecode.emit(OpCodes.LOAD_CONST, this.bytecode.addConstant(expr.processName));
+      case 'assign':
+        this.compileAssignment(expr);
         break;
+      
+      default:
+        throw new Error(`Unknown expression type: ${expr.type}`);
     }
   }
-  
-  // Push scope
-  pushScope() {
-    this.scopes.push(new Map());
+
+  // Compile identifier
+  compileIdentifier(expr) {
+    const name = expr.name;
+    
+    // Check if local
+    if (this.localMap.has(name)) {
+      this.emit(OpCodes.LOAD_LOCAL, this.localMap.get(name));
+    }
+    // Check if global
+    else if (this.globalMap.has(name)) {
+      this.emit(OpCodes.LOAD_GLOBAL, this.globalMap.get(name));
+    }
+    else {
+      throw new Error(`Unknown variable: ${name}`);
+    }
   }
-  
-  // Pop scope
-  popScope() {
-    this.scopes.pop();
+
+  // Compile binary
+  compileBinary(expr) {
+    this.compileExpression(expr.left);
+    this.compileExpression(expr.right);
+    
+    switch (expr.operator) {
+      case '+':
+        this.emit(OpCodes.ADD);
+        break;
+      case '-':
+        this.emit(OpCodes.SUB);
+        break;
+      case '*':
+        this.emit(OpCodes.MUL);
+        break;
+      case '/':
+        this.emit(OpCodes.DIV);
+        break;
+      case '%':
+        this.emit(OpCodes.MOD);
+        break;
+      case '==':
+        this.emit(OpCodes.EQ);
+        break;
+      case '!=':
+        this.emit(OpCodes.NEQ);
+        break;
+      case '<':
+        this.emit(OpCodes.LT);
+        break;
+      case '<=':
+        this.emit(OpCodes.LTE);
+        break;
+      case '>':
+        this.emit(OpCodes.GT);
+        break;
+      case '>=':
+        this.emit(OpCodes.GTE);
+        break;
+      case '&&':
+        this.emit(OpCodes.AND);
+        break;
+      case '||':
+        this.emit(OpCodes.OR);
+        break;
+      default:
+        throw new Error(`Unknown binary operator: ${expr.operator}`);
+    }
   }
-  
-  // Declare local
-  declareLocal(name) {
-    if (this.scopes.length === 0) {
-      this.pushScope();
+
+  // Compile unary
+  compileUnary(expr) {
+    this.compileExpression(expr.operand);
+    
+    switch (expr.operator) {
+      case '-':
+        this.emit(OpCodes.NEG);
+        break;
+      case '!':
+        this.emit(OpCodes.NOT);
+        break;
+      default:
+        throw new Error(`Unknown unary operator: ${expr.operator}`);
+    }
+  }
+
+  // Compile call
+  compileCall(expr) {
+    // Compile args
+    for (const arg of expr.args) {
+      this.compileExpression(arg);
     }
     
-    const scope = this.scopes[this.scopes.length - 1];
-    const index = this.scopeIndex++;
-    scope.set(name, index);
-    return index;
-  }
-  
-  // Resolve local
-  resolveLocal(name) {
-    for (let i = this.scopes.length - 1; i >= 0; i--) {
-      if (this.scopes[i].has(name)) {
-        return this.scopes[i].get(name);
-      }
+    // Check if native
+    if (expr.callee.type === 'identifier') {
+      const name = expr.callee.name;
+      this.emit(OpCodes.CALL_NATIVE, name, expr.args.length);
     }
-    
-    return -1; // Not found (global)
+  }
+
+  // Add constant
+  addConstant(value) {
+    this.constants.push(value);
+    return this.constants.length - 1;
+  }
+
+  // Emit instruction
+  emit(opcode, ...operands) {
+    this.instructions.push({ opcode, operands });
   }
 }

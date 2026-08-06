@@ -23,6 +23,9 @@ export class VM {
     // Process manager
     this.processManager = new ProcessManager();
     
+    // Process table
+    this.processTable = new Map();
+    
     // Current process being executed
     this.currentProcess = null;
     
@@ -38,6 +41,9 @@ export class VM {
     // Running state
     this.running = false;
     this.halted = false;
+    
+    // Debug mode
+    this.debug = false;
   }
   
   // Register native function
@@ -49,6 +55,7 @@ export class VM {
   load(bytecode) {
     this.constants = bytecode.constants;
     this.bytecode = bytecode.instructions;
+    this.processTable = bytecode.processTable || new Map();
   }
   
   // Run VM for one frame (scheduler)
@@ -78,8 +85,18 @@ export class VM {
     this.locals = process.locals;
     this.frameYield = false;
     
+    // Budget de instrucoes (previne loops infinitos)
+    let budget = 100000;
+    
     // Execute until FRAME or finished
     while (!this.frameYield && !process.finished) {
+      // Check budget
+      if (--budget <= 0) {
+        console.error(`Process ${process.name}#${process.id}: no FRAME in loop`);
+        process.kill();
+        break;
+      }
+      
       if (this.ip >= this.bytecode.length) {
         process.finished = true;
         break;
@@ -91,8 +108,7 @@ export class VM {
     
     // Save state back to process
     process.ip = this.ip;
-    process.stack = this.stack;
-    process.locals = this.locals;
+    // Stack/locals ja sao referencias, nao precisa copiar
   }
   
   // Execute instruction
@@ -358,11 +374,22 @@ export class VM {
   
   // Push value
   push(value) {
-    this.stack.push(value);
+    // Guard contra underflow
+    if (value === undefined && this.debug) {
+      console.warn('Stack underflow detected');
+      value = 0;
+    }
+    this.stack.push(value ?? 0);
   }
   
   // Pop value
   pop() {
+    if (this.stack.length === 0) {
+      if (this.debug) {
+        console.warn('Stack underflow');
+      }
+      return 0;
+    }
     return this.stack.pop();
   }
   
@@ -379,6 +406,7 @@ export class VM {
     this.constants = [];
     this.bytecode = [];
     this.globals = new Map();
+    this.processTable = new Map();
     this.ip = 0;
     this.stack = [];
     this.locals = [];

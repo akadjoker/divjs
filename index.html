@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>DivJS - Platformer</title>
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      background: #000;
+    }
+    
+    canvas {
+      border: 1px solid #fff;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="800" height="600"></canvas>
+  
+  <script type="module">
+    import { Lexer } from './compiler/tokenizer.js';
+    import { Parser } from './compiler/parser.js';
+    import { Compiler } from './compiler/compiler.js';
+    import { VM } from './vm/vm.js';
+    import { ProcessManager } from './vm/process.js';
+    
+    // Setup canvas
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    
+    // Input
+    const keys = {};
+    
+    window.addEventListener('keydown', (e) => {
+      keys[e.key] = true;
+    });
+    
+    window.addEventListener('keyup', (e) => {
+      keys[e.key] = false;
+    });
+    
+    function keyDown(key) {
+      return keys[key] === true;
+    }
+    
+    // Load Div source
+    const source = `PROGRAM platformer;
+
+GLOBAL player_speed = 200;
+GLOBAL gravity = 500;
+GLOBAL jump_force = 300;
+
+PROCESS player(x, y);
+PRIVATE
+  vx = 0;
+  vy = 0;
+  on_ground = 0;
+BEGIN
+  vx = 0;
+  vy = vy + gravity * 0.016;
+  
+  IF (key_down('left'))
+    vx = -player_speed;
+  END
+  
+  IF (key_down('right'))
+    vx = player_speed;
+  END
+  
+  IF (key_down('space') && on_ground)
+    vy = -jump_force;
+    on_ground = 0;
+  END
+  
+  x = x + vx * 0.016;
+  y = y + vy * 0.016;
+  
+  IF (y > 550)
+    y = 550;
+    vy = 0;
+    on_ground = 1;
+  END
+  
+  FRAME;
+END
+
+BEGIN
+  player(100, 400);
+  
+  REPEAT
+    FRAME;
+  UNTIL (0);
+END
+`;
+    
+    // Compile
+    const lexer = new Lexer(source);
+    const tokens = lexer.tokenize();
+    console.log('TOKENS:', tokens.length);
+    
+    const parser = new Parser(tokens);
+    const ast = parser.parse();
+    console.log('AST:', ast);
+    
+    const compiler = new Compiler();
+    const bytecode = compiler.compile(ast);
+    console.log('BYTECODE:', bytecode.instructions.length, 'instructions');
+    console.log('PROCESS TABLE:', bytecode.processTable);
+    
+    // VM
+    const vm = new VM();
+    vm.load(bytecode);
+    
+    // Register natives
+    vm.registerNative('key_down', keyDown);
+    
+    // Create initial process
+    const processTable = bytecode.processTable;
+    if (processTable.has('player')) {
+      const playerInfo = processTable.get('player');
+      const player = vm.processManager.create('player', { x: 100, y: 400 });
+      player.ip = playerInfo.addr; // Set IP to process start
+    }
+    
+    // Game loop
+    let lastTime = 0;
+    
+    function gameLoop(timestamp) {
+      requestAnimationFrame(gameLoop);
+      
+      const dt = (timestamp - lastTime) / 1000;
+      lastTime = timestamp;
+      
+      vm.dt = dt;
+      
+      // Update
+      vm.tick();
+      
+      // Render
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Draw processes
+      for (const process of vm.processManager.getAll()) {
+        ctx.fillStyle = '#0f0';
+        ctx.fillRect(process.x, process.y, 32, 32);
+      }
+    }
+    
+    gameLoop(0);
+  </script>
+</body>
+</html>
