@@ -345,6 +345,10 @@ export class CanvasEngineRuntime {
       return null;
     }
 
+    if (info.locals && Object.prototype.hasOwnProperty.call(info.locals, localName)) {
+      return info.locals[localName];
+    }
+
     const fixedSlots = {
       x: 0,
       y: 1,

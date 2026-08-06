@@ -460,6 +460,47 @@ end`;
   assert(p.stack.length === 0, `stack do processo devia ficar vazia, size=${p.stack.length}`);
 }
 
+async function testImplicitProcessLocalsGraphAndSize() {
+  const source = `program graph_size_slots;
+
+process p(x, y);
+private
+  vy = 0;
+begin
+  graph = 7;
+  size = 200;
+  frame;
+end
+
+begin
+  p(10, 20);
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  const runtime = createRuntime(vm);
+  runtime.beginFrame(1 / 60);
+  vm.tick();
+
+  const p = vm.processManager.getAll()[0];
+  assert(!!p, 'processo nao criado');
+
+  const slotVy = runtime.getProcessLocalSlot(p, 'vy');
+  const slotGraph = runtime.getProcessLocalSlot(p, 'graph');
+  const slotSize = runtime.getProcessLocalSlot(p, 'size');
+
+  assert(slotVy !== null, 'slot vy nao encontrado');
+  assert(slotGraph !== null, 'slot graph nao encontrado');
+  assert(slotSize !== null, 'slot size nao encontrado');
+  assert(p.locals[slotGraph] === 7, `graph esperado 7, obtido ${p.locals[slotGraph]}`);
+  assert(p.locals[slotSize] === 200, `size esperado 200, obtido ${p.locals[slotSize]}`);
+
+  vm.currentProcess = p;
+  assert(runtime.getCurrentGraphId() === 7, `getCurrentGraphId esperado 7, obtido ${runtime.getCurrentGraphId()}`);
+}
+
 async function testSpawnSetsParentId() {
   const source = `program spawn_parent;
 
@@ -579,7 +620,8 @@ export async function runAllTests() {
     ['xadvance movement', testXAdvanceMovesByAngle],
     ['keyword and/or/not operators', testKeywordLogicalOperatorsCompileAndRun],
     ['void native stack underflow guard', testVoidNativeDoesNotUnderflowStack],
-    ['nested function return stack safety', testNestedFunctionReturnsDoNotLeakStack]
+    ['nested function return stack safety', testNestedFunctionReturnsDoNotLeakStack],
+    ['implicit process locals graph/size slots', testImplicitProcessLocalsGraphAndSize]
   ];
 
   const results = [];

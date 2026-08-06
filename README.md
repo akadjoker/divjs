@@ -115,6 +115,4 @@ Isso faz automaticamente:
 - input de teclado
 - game loop com render
 
-## LicenÃ§a
-
-MIT
+ 

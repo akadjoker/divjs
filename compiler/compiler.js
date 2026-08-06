@@ -20,6 +20,7 @@ export class Compiler {
     this.processTable = new Map();
     this.functionTable = new Map();
     this.loopStack = [];
+    this.nextLocalSlot = 0;
   }
 
   // Compile program
@@ -32,6 +33,7 @@ export class Compiler {
     this.processTable = new Map();
     this.functionTable = new Map();
     this.loopStack = [];
+    this.nextLocalSlot = 0;
 
     // Compile globals first
     for (const global of program.globals) {
@@ -101,6 +103,7 @@ export class Compiler {
     for (let i = 0; i < stmt.params.length; i++) {
       this.localMap.set(stmt.params[i], i);
     }
+    this.nextLocalSlot = stmt.params.length;
 
     // Compile body
     this.compileBlock(stmt.body);
@@ -121,11 +124,12 @@ export class Compiler {
   compileProcess(stmt) {
     const startAddr = this.instructions.length;
 
-    // Store process in table
+    // Store process in table (locals map is finalized at the end).
     this.processTable.set(stmt.name, {
       addr: startAddr,
       params: stmt.params,
-      privates: stmt.privates
+      privates: stmt.privates,
+      locals: {}
     });
 
     // Reset locals for this process
@@ -142,17 +146,19 @@ export class Compiler {
     this.localMap.set('angle', 7);
 
     // Add params as locals (start at slot 8)
-    let localIdx = 8;
+    this.nextLocalSlot = 8;
     for (const param of stmt.params) {
       // Keep canonical process fields in fixed slots.
       if (!this.localMap.has(param)) {
-        this.localMap.set(param, localIdx++);
+        this.localMap.set(param, this.nextLocalSlot++);
       }
     }
 
     // Add privates as locals
     for (const priv of stmt.privates) {
-      this.localMap.set(priv.name, localIdx++);
+      if (!this.localMap.has(priv.name)) {
+        this.localMap.set(priv.name, this.nextLocalSlot++);
+      }
     }
 
     // Initialize private locals once when process starts.
@@ -173,6 +179,13 @@ export class Compiler {
         this.instructions[this.instructions.length - 1].opcode !== OpCodes.RETURN) {
       this.emit(OpCodes.RETURN);
     }
+
+    this.processTable.set(stmt.name, {
+      addr: startAddr,
+      params: stmt.params,
+      privates: stmt.privates,
+      locals: Object.fromEntries(this.localMap.entries())
+    });
 
     return startAddr;
   }
@@ -421,8 +434,12 @@ export class Compiler {
 
   // Compile var
   compileVar(stmt) {
-    const idx = this.localMap.size;
-    this.localMap.set(stmt.name, idx);
+    let idx = this.localMap.get(stmt.name);
+    if (idx === undefined) {
+      idx = this.nextLocalSlot;
+      this.nextLocalSlot += 1;
+      this.localMap.set(stmt.name, idx);
+    }
 
     this.compileExpression(stmt.value);
     this.emit(OpCodes.STORE_LOCAL, idx);
@@ -444,7 +461,8 @@ export class Compiler {
         this.emit(OpCodes.STORE_GLOBAL, this.globalMap.get(name));
       }
       else {
-        const idx = this.localMap.size;
+        const idx = this.nextLocalSlot;
+        this.nextLocalSlot += 1;
         this.localMap.set(name, idx);
         this.compileExpression(stmt.value);
         this.emit(OpCodes.STORE_LOCAL, idx);
