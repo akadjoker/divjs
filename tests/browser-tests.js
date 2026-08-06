@@ -639,6 +639,196 @@ end`;
   assert(p.locals[slotSize] === 222, `size esperado 222, obtido ${p.locals[slotSize]}`);
 }
 
+async function testIfElseBothBranchesParseAndRun() {
+  // parseBlock() used to consume END unconditionally even when it had
+  // stopped on ELSE, so "IF (c) then... ELSE else... END" threw "Expected
+  // END after block" at the ELSE token. IF without ELSE never hit this
+  // (the next token really is END there), which is why it went unnoticed.
+  const thenSource = `program if_else;
+
+process p();
+begin
+  if (1)
+    print(1);
+  else
+    print(2);
+  end
+  frame;
+end
+
+begin
+  p();
+  frame;
+end`;
+
+  const elseSource = thenSource.replace('if (1)', 'if (0)');
+
+  for (const [source, expected] of [[thenSource, 1], [elseSource, 2]]) {
+    const bytecode = compileSource(source);
+    const vm = new VM();
+    vm.load(bytecode);
+    const seen = [];
+    vm.registerNative('print', (v) => { seen.push(v); return 0; });
+    vm.tick();
+    assert(seen.length === 1 && seen[0] === expected,
+      `IF/ELSE esperava imprimir ${expected}, obtido ${JSON.stringify(seen)}`);
+  }
+
+  // Chained ELSE IF and an IF nested inside an IF both close correctly.
+  const chainedSource = `program if_else_chain;
+
+process p();
+begin
+  if (0)
+    print(1);
+  else
+    if (1)
+      print(2);
+    else
+      print(3);
+    end
+  end
+  frame;
+end
+
+begin
+  p();
+  frame;
+end`;
+
+  const chainedBytecode = compileSource(chainedSource);
+  const chainedVm = new VM();
+  chainedVm.load(chainedBytecode);
+  const chainedSeen = [];
+  chainedVm.registerNative('print', (v) => { chainedSeen.push(v); return 0; });
+  chainedVm.tick();
+  assert(chainedSeen.length === 1 && chainedSeen[0] === 2,
+    `ELSE IF encadeado esperava imprimir 2, obtido ${JSON.stringify(chainedSeen)}`);
+}
+
+async function testForNegativeStepCountsDown() {
+  // compileFor() always tested "i > end" to decide when to stop, regardless
+  // of the step's sign. A descending FOR (STEP -1) hit that exit test on
+  // its very first check and ran zero iterations instead of counting down.
+  const source = `program for_negative_step;
+
+process p();
+begin
+  for i = 5 to 0 step -1
+    print(i);
+  end
+  frame;
+end
+
+begin
+  p();
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  const seen = [];
+  vm.registerNative('print', (v) => { seen.push(v); return 0; });
+  vm.tick();
+  assert(JSON.stringify(seen) === JSON.stringify([5, 4, 3, 2, 1, 0]),
+    `FOR descendente esperava [5,4,3,2,1,0], obtido ${JSON.stringify(seen)}`);
+}
+
+async function testChainedAssignmentIsCompileError() {
+  // compileAssignment() stores directly and leaves nothing on the stack —
+  // correct when assignment is used as a statement, but "a = b = c" parses
+  // the right-hand side as a nested Assign expression too. Compiling that
+  // used to silently corrupt the stack (the outer store would pop whatever
+  // the rest of the expression happened to leave behind, or the pop()
+  // underflow default) instead of failing loudly. It must be rejected at
+  // compile time instead.
+  const source = `program chained_assign;
+
+begin
+  var x = 0;
+  var y = 0;
+  x = y = 5;
+  frame;
+end`;
+
+  let threw = false;
+  try {
+    compileSource(source);
+  } catch (error) {
+    threw = true;
+  }
+  assert(threw, 'atribuicao encadeada (x = y = 5) devia falhar a compilar, nao compilou');
+}
+
+async function testCollisionExcludesSelf() {
+  // ProcessManager.collision() looked up every process of the requested
+  // TYPE and tested collidesWith() without ever excluding the calling
+  // process itself. A process's own bounding box always overlaps itself,
+  // so collision(TYPE X) called from inside a process of type X returned
+  // that process's own id on every single frame — breaking any same-type
+  // collision check (enemy-vs-enemy, bullet-vs-bullet) before it could
+  // ever see a real hit.
+  const soloSource = `program collision_self;
+
+process enemy(x, y);
+begin
+  width = 20;
+  height = 20;
+  if (collision(TYPE enemy))
+    print(999);
+  end
+  frame;
+end
+
+begin
+  enemy(10, 10);
+  frame;
+end`;
+
+  const soloBytecode = compileSource(soloSource);
+  const soloVm = new VM();
+  soloVm.load(soloBytecode);
+  const soloRuntime = createRuntime(soloVm);
+  const soloSeen = [];
+  soloVm.registerNative('print', (v) => { soloSeen.push(v); return 0; });
+  soloRuntime.beginFrame(1 / 60);
+  soloVm.tick();
+  assert(soloSeen.length === 0,
+    `processo sozinho nao devia colidir consigo proprio, obtido ${JSON.stringify(soloSeen)}`);
+
+  // A real collision between two distinct instances of the same TYPE must
+  // still be detected — the fix must exclude only the caller, not the type.
+  const pairSource = `program collision_pair;
+
+process enemy(x, y);
+begin
+  width = 20;
+  height = 20;
+  if (collision(TYPE enemy))
+    print(1);
+  end
+  frame;
+end
+
+begin
+  enemy(10, 10);
+  enemy(15, 15);
+  frame;
+end`;
+
+  const pairBytecode = compileSource(pairSource);
+  const pairVm = new VM();
+  pairVm.load(pairBytecode);
+  const pairRuntime = createRuntime(pairVm);
+  const pairSeen = [];
+  pairVm.registerNative('print', (v) => { pairSeen.push(v); return 0; });
+  pairRuntime.beginFrame(1 / 60);
+  pairVm.tick();
+  assert(pairSeen.length === 2,
+    `duas instancias sobrepostas do mesmo TYPE deviam colidir, obtido ${JSON.stringify(pairSeen)}`);
+}
+
 async function testSpawnSetsParentId() {
   const source = `program spawn_parent;
 
@@ -808,7 +998,11 @@ export async function runAllTests() {
     ['void native stack underflow guard', testVoidNativeDoesNotUnderflowStack],
     ['nested function return stack safety', testNestedFunctionReturnsDoNotLeakStack],
     ['implicit process locals graph/size slots', testImplicitProcessLocalsGraphAndSize],
-    ['for local slot does not collide with implicit locals', testForLocalDoesNotCollideWithImplicitLocals]
+    ['for local slot does not collide with implicit locals', testForLocalDoesNotCollideWithImplicitLocals],
+    ['if/else parses and runs both branches (+ chained else if)', testIfElseBothBranchesParseAndRun],
+    ['for with negative step counts down', testForNegativeStepCountsDown],
+    ['chained assignment (a = b = c) is a compile error', testChainedAssignmentIsCompileError],
+    ['collision(TYPE x) excludes the calling process itself', testCollisionExcludesSelf]
   ];
 
   const results = [];

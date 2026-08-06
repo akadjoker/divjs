@@ -344,15 +344,51 @@ export class Compiler {
     const varIdx = this.nextLocalSlot++;
     this.localMap.set(stmt.varName, varIdx);
 
+    // The step is evaluated once and cached in a hidden local, both so an
+    // expression with side effects (e.g. a function call) doesn't re-run
+    // every iteration, and so the exit test below can read its sign
+    // consistently across every iteration of the loop.
+    this.forDepth = (this.forDepth || 0) + 1;
+    const stepVarName = `__for_step_${this.forDepth}`;
+    const stepIdx = this.nextLocalSlot++;
+    this.localMap.set(stepVarName, stepIdx);
+
     this.compileExpression(stmt.start);
     this.emit(OpCodes.STORE_LOCAL, varIdx);
 
+    this.compileExpression(stmt.step);
+    this.emit(OpCodes.STORE_LOCAL, stepIdx);
+
     const loopStart = this.instructions.length;
 
-    this.emit(OpCodes.LOAD_LOCAL, varIdx);
-    this.compileExpression(stmt.end);
-    this.emit(OpCodes.GT);
-    this.emit(OpCodes.JUMP_IF_TRUE, 0); // Placeholder
+    // A positive-step FOR must stop once i > end; a negative-step FOR
+    // (STEP -1, counting down) must stop once i < end. The previous code
+    // always used the "i > end" test regardless of step, so a descending
+    // FOR exited on its very first check (e.g. "FOR i = 5 TO 0 STEP -1"
+    // ran zero iterations instead of six). The step can be a runtime
+    // expression, so the direction can't be decided at compile time —
+    // continue while:
+    //   (step >= 0 AND i <= end) OR (step < 0 AND i >= end)
+    const iRef = { type: 'identifier', name: stmt.varName };
+    const stepRef = { type: 'identifier', name: stepVarName };
+    const zero = { type: 'number', value: 0 };
+    const continueExpr = {
+      type: 'binary',
+      operator: '||',
+      left: {
+        type: 'binary', operator: '&&',
+        left: { type: 'binary', operator: '>=', left: stepRef, right: zero },
+        right: { type: 'binary', operator: '<=', left: iRef, right: stmt.end }
+      },
+      right: {
+        type: 'binary', operator: '&&',
+        left: { type: 'binary', operator: '<', left: stepRef, right: zero },
+        right: { type: 'binary', operator: '>=', left: iRef, right: stmt.end }
+      }
+    };
+
+    this.compileExpression(continueExpr);
+    this.emit(OpCodes.JUMP_IF_FALSE, 0); // Placeholder
     const jumpToEnd = this.instructions.length - 1;
 
     const loopCtx = this.beginLoopContext();
@@ -361,7 +397,7 @@ export class Compiler {
     const continueTarget = this.instructions.length;
 
     this.emit(OpCodes.LOAD_LOCAL, varIdx);
-    this.compileExpression(stmt.step);
+    this.emit(OpCodes.LOAD_LOCAL, stepIdx);
     this.emit(OpCodes.ADD);
     this.emit(OpCodes.STORE_LOCAL, varIdx);
 
@@ -506,8 +542,18 @@ export class Compiler {
         break;
 
       case 'assign':
-        this.compileAssignment(expr);
-        break;
+        // compileAssignment() stores directly (STORE_LOCAL / STORE_GLOBAL /
+        // path-set) and intentionally leaves nothing on the stack — correct
+        // for assignment used as a statement, but this branch only fires
+        // when 'assign' shows up as a sub-expression instead, e.g.
+        // "a = b = c" or "IF (a = f()) ...". There the missing push would
+        // silently pop whatever the enclosing expression left on the stack
+        // (or the pop() underflow default), corrupting state without any
+        // error. Reject it at compile time instead.
+        throw new Error(
+          `Assignment cannot be used as a sub-expression (found "${expr.target?.name || '?'} = ..." nested inside another expression). ` +
+          `Write it as its own statement instead, e.g. "${expr.target?.name || 'x'} = value;" on its own line.`
+        );
 
       default:
         throw new Error(`Unknown expression type: ${expr.type}`);

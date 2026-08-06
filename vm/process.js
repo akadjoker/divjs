@@ -215,6 +215,14 @@ export class ProcessManager {
     if (!processIds) return 0;
 
     for (const id of processIds) {
+      // A process's own bounding box always overlaps itself, so without
+      // this guard collision(TYPE X) called from inside a process of type
+      // X immediately returns that process's own id — every frame, before
+      // any real overlap happens. This silently breaks any same-type
+      // collision check (enemy-vs-enemy, bullet-vs-bullet, etc): the
+      // caller sees a "hit" on frame one and never a real one.
+      if (id === currentProcess.id) continue;
+
       const other = this.get(id);
       if (other && other.active && currentProcess.collidesWith(other)) {
         return id; // Returns ID of colliding process
