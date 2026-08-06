@@ -1,9 +1,13 @@
 // AST node types
 
 export class Program {
-  constructor(statements) {
+  constructor(name, globals, processes, functions, mainBlock) {
     this.type = 'program';
-    this.statements = statements;
+    this.name = name;
+    this.globals = globals;
+    this.processes = processes;
+    this.functions = functions;
+    this.mainBlock = mainBlock;
   }
 }
 
@@ -25,11 +29,20 @@ export class Function {
 }
 
 export class Process {
-  constructor(name, params, body) {
+  constructor(name, params, privates, body) {
     this.type = 'process';
     this.name = name;
     this.params = params;
+    this.privates = privates;
     this.body = body;
+  }
+}
+
+export class Private {
+  constructor(name, value) {
+    this.type = 'private';
+    this.name = name;
+    this.value = value;
   }
 }
 
@@ -80,14 +93,6 @@ export class Loop {
   constructor(body) {
     this.type = 'loop';
     this.body = body;
-  }
-}
-
-export class Private {
-  constructor(name, value) {
-    this.type = 'private';
-    this.name = name;
-    this.value = value;
   }
 }
 
