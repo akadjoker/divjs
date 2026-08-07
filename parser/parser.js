@@ -103,10 +103,7 @@ export class Parser {
     while (!this.is(TokenType.EOF)) {
       const declToken = this.current();
       if (this.is(TokenType.GLOBAL)) {
-        const global = this.parseGlobal();
-        global.line = declToken.line;
-        global.col = declToken.col;
-        globals.push(global);
+        globals.push(...this.parseGlobal());
       } else if (this.is(TokenType.FUNCTION)) {
         const func = this.parseFunction();
         func.line = declToken.line;
@@ -130,18 +127,46 @@ export class Parser {
   }
 
   // Parse global
+  // Parse global. Supports both the single-declaration form
+  // ("GLOBAL score = 10;") and the classic DIV/Fenix block form — a bare
+  // GLOBAL keyword, then every following line is a name (with an
+  // optional initializer) until something that isn't one:
+  //   GLOBAL
+  //     score;
+  //     lives;
+  //     high_score = 0;
+  // Both forms are the exact same loop: read a name [= expr];, then keep
+  // going as long as the next token is still identifier-like. A single
+  // declaration just means the loop runs once — isIdentifierLike()
+  // already excludes GLOBAL/PROCESS/FUNCTION/BEGIN (see its definition),
+  // so the loop naturally stops at the next section without any special
+  // casing for where a GLOBAL block "ends".
   parseGlobal() {
     this.pos++; // consume GLOBAL
-    const name = this.readIdentifierLike('Expected global name');
 
-    let value = null;
-    if (this.match(TokenType.EQUALS)) {
-      value = this.parseExpression();
+    const globals = [];
+    while (this.isIdentifierLike(this.current())) {
+      const declToken = this.current();
+      const name = this.readIdentifierLike('Expected global name');
+
+      let value = null;
+      if (this.match(TokenType.EQUALS)) {
+        value = this.parseExpression();
+      }
+
+      this.expect(TokenType.SEMICOLON, 'Expected ; after global declaration');
+
+      const global = new ast.Global(name, value);
+      global.line = declToken.line;
+      global.col = declToken.col;
+      globals.push(global);
     }
 
-    this.expect(TokenType.SEMICOLON, 'Expected ; after global declaration');
+    if (globals.length === 0) {
+      throw new Error(`Expected at least one variable name after GLOBAL at ${this.current().line}:${this.current().col}`);
+    }
 
-    return new ast.Global(name, value);
+    return globals;
   }
 
   // Parse function

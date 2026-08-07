@@ -177,7 +177,7 @@ export class Compiler {
       this.compileExpression(stmt.value);
       this.emit(OpCodes.STORE_GLOBAL, idx);
     } else {
-      this.emit(OpCodes.LOAD_CONST, 0);
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(0));
       this.emit(OpCodes.STORE_GLOBAL, idx);
     }
   }

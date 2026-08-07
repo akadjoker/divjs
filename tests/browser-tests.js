@@ -1000,6 +1000,125 @@ async function testDuplicateDeclarationsAreCompileErrors() {
   }
 }
 
+async function testGlobalBlockFormDeclaresMultipleNames() {
+  // A bare GLOBAL keyword followed by several name declarations (the
+  // classic DIV/Fenix block style) now works, in addition to the
+  // original one-GLOBAL-per-name form:
+  //   global
+  //     score;
+  //     lives;
+  //     high_score = 100;
+  // parseGlobal() reads one declaration and keeps going as long as the
+  // next token is still identifier-like — isIdentifierLike() already
+  // excludes GLOBAL/PROCESS/FUNCTION/BEGIN, so the block naturally ends
+  // at the next section with no special-case "end of block" detection
+  // needed. A single declaration is just this same loop running once,
+  // so the original form is unaffected.
+  const source = `program global_block;
+
+global
+  score;
+  lives;
+  high_score = 100;
+
+begin
+  print(score);
+  print(lives);
+  print(high_score);
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  const seen = [];
+  vm.registerNative('print', (v) => { seen.push(v); return 0; });
+  vm.tick();
+  assert(JSON.stringify(seen) === JSON.stringify([0, 0, 100]),
+    `esperava [0,0,100] (score/lives sem valor devem ser 0, nao o valor de outro global), obtido ${JSON.stringify(seen)}`);
+
+  // A GLOBAL block must still end correctly at the next PROCESS/
+  // FUNCTION/BEGIN, and duplicate names across separate GLOBAL blocks
+  // (or within the same one) must still be rejected.
+  const stopsAtProcessSource = `program global_block_boundary;
+
+global
+  a = 1;
+  b = 2;
+
+process p();
+begin
+  frame;
+end
+
+begin
+  print(a);
+  print(b);
+  frame;
+end`;
+
+  const stopsAtProcessBytecode = compileSource(stopsAtProcessSource);
+  const stopsAtProcessVm = new VM();
+  stopsAtProcessVm.load(stopsAtProcessBytecode);
+  const stopsAtProcessSeen = [];
+  stopsAtProcessVm.registerNative('print', (v) => { stopsAtProcessSeen.push(v); return 0; });
+  stopsAtProcessVm.tick();
+  assert(JSON.stringify(stopsAtProcessSeen) === JSON.stringify([1, 2]),
+    `bloco GLOBAL antes de um PROCESS devia terminar corretamente, obtido ${JSON.stringify(stopsAtProcessSeen)}`);
+
+  let threwOnDuplicate = false;
+  try {
+    compileSource(`program global_block_duplicate;
+
+global
+  a = 1;
+  a = 2;
+
+begin
+  frame;
+end`);
+  } catch (error) {
+    threwOnDuplicate = true;
+  }
+  assert(threwOnDuplicate, 'nome duplicado dentro do mesmo bloco GLOBAL devia falhar a compilar');
+}
+
+async function testGlobalWithoutInitialValueDefaultsToZeroNotAnotherGlobalsConstant() {
+  // compileGlobal()'s no-explicit-value branch used to emit
+  // "LOAD_CONST 0" with the literal number 0 as the operand — but
+  // LOAD_CONST's operand is a constant *pool index*, not a value; every
+  // other call site in the compiler correctly goes through
+  // addConstant(value) first. This one bypassed it and just assumed
+  // index 0 would always hold the value 0, which was never guaranteed
+  // and became actively wrong once addConstant() started deduplicating
+  // (99c8d13-era) - constant pool index 0 is whatever value happens to
+  // be the first one compiled anywhere in the whole program, not
+  // necessarily 0. Confirmed this predates and is unrelated to today's
+  // GLOBAL-block work: reproduces with the original one-GLOBAL-per-line
+  // syntax too. "global score; global other = 100;" (score declared
+  // with no value, before another global that has one) used to make
+  // score read back as 100 instead of 0.
+  const source = `program global_default_value;
+
+global score;
+global other = 100;
+
+begin
+  print(score);
+  print(other);
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  const seen = [];
+  vm.registerNative('print', (v) => { seen.push(v); return 0; });
+  vm.tick();
+  assert(JSON.stringify(seen) === JSON.stringify([0, 100]),
+    `esperava [0,100], obtido ${JSON.stringify(seen)} (0 e o valor exato que o bug antigo teria trocado por 100)`);
+}
+
 async function testFrameValueThrottlesExecutionFrequency() {
   // frame(n) stored the value on the process (this.currentProcess.
   // frameValue = ...) but nothing ever read it back afterwards — the
@@ -1904,6 +2023,8 @@ export async function runAllTests() {
     ['main does not inherit the last process/function local scope', testMainDoesNotInheritLastProcessLocalScope],
     ['string escape sequences (\\n, \\t, \\\\, \\")', testStringEscapeSequences],
     ['duplicate PROCESS/FUNCTION/GLOBAL names are compile errors', testDuplicateDeclarationsAreCompileErrors],
+    ['GLOBAL block form declares multiple names', testGlobalBlockFormDeclaresMultipleNames],
+    ['GLOBAL without an initial value defaults to 0, not another global\'s constant', testGlobalWithoutInitialValueDefaultsToZeroNotAnotherGlobalsConstant],
     ['frame(n) throttles execution frequency', testFrameValueThrottlesExecutionFrequency],
     ['switch/case has no fallthrough', testSwitchCaseHasNoFallthrough],
     ['switch subject evaluated once; break/continue pass through to enclosing loop', testSwitchSubjectEvaluatedOnceAndBreakPassesThroughToLoop],

@@ -114,28 +114,42 @@ do, and matches what a DIV author coming from that background would
 expect — worth being explicit about it in whatever tests get written for
 this, since it's an easy thing to get subtly backwards.
 
-### `GLOBAL` block form: `GLOBAL` on its own line, then one name per line until the next non-name
-The user's phrasing ("como global tudo que vem a seguir são variáveis")
-describes the classic DIV/Fenix block style:
+### ~~`GLOBAL` block form~~ — DONE
+A bare `GLOBAL` keyword followed by several name declarations (with
+`;` still terminating each, unlike the whitespace-only version originally
+sketched below) now works:
 
 ```div
 GLOBAL
   score;
   lives;
-  high_score = 0;
+  high_score = 100;
 ```
 
-— a bare `GLOBAL` keyword, then every following line is a name (with an
-optional initializer) until something that isn't one. This is a
-*different* feature from the comma-separated form above (this one has no
-commas or semicolons separating names at all, relying on line position),
-and the two aren't mutually exclusive — a from-scratch DIV port would
-probably want both, since real DIV/Fenix source in the wild uses this
-block style heavily. Lower priority than the comma-separated form above
-since it's a bigger grammar change (needs a way to decide "is the next
-line another name, or the start of something else" without relying on
-significant whitespace, which this tokenizer doesn't track at all right
-now).
+Turned out not to need "significant whitespace" at all — `;` already
+terminates every declaration in this language, so `parseGlobal()` just
+keeps reading `name [= expr];` declarations as long as the next token is
+identifier-like, stopping naturally at the next `PROCESS`/`FUNCTION`/
+`GLOBAL`/`BEGIN` (already excluded by `isIdentifierLike()`, so no new
+"end of block" detection was needed). A single declaration is the same
+loop running once, so the original one-`GLOBAL`-per-name form is
+unaffected.
+
+**Found and fixed a real, pre-existing bug along the way, unrelated to
+this feature itself:** `compileGlobal()`'s no-explicit-value branch
+emitted `LOAD_CONST 0` with the literal number `0` as the operand — but
+`LOAD_CONST`'s operand is a constant *pool index*, not a value; every
+other call site in the compiler correctly goes through
+`addConstant(value)` first. This one bypassed it, assuming index `0`
+would always hold the value `0` — never guaranteed, and actively wrong
+once `addConstant()` started deduplicating (`99c8d13`): index `0` is
+whatever value happens to be the first one compiled anywhere in the
+*entire* program, not necessarily `0`. Confirmed this predates and is
+unrelated to today's `GLOBAL`-block work — reproduces with the original
+one-`GLOBAL`-per-line syntax too (`GLOBAL score; GLOBAL other = 100;`
+used to make `score` read back as `100` instead of `0`). Fixed with a
+one-line change (`addConstant(0)` instead of the bare literal `0`); the
+only other `LOAD_CONST` site in the whole compiler with this pattern.
 
 ---
 
