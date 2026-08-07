@@ -4,6 +4,7 @@ import { Compiler } from '../compiler/compiler.js';
 import { OpCodes } from '../compiler/bytecode.js';
 import { VM } from '../vm/vm.js';
 import { CanvasEngineRuntime, CType } from '../vm/runtime.js';
+import { disassemble } from '../compiler/disasm.js';
 
 const tinyPngDataUrl =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7WvYQAAAAASUVORK5CYII=';
@@ -1230,6 +1231,131 @@ async function testCompileErrorsIncludeSourceLocation() {
   }
 }
 
+async function testConstantPoolIsDeduplicated() {
+  // addConstant() used to push every literal unconditionally, even a
+  // value identical to one already in the pool — a repeated 0, a
+  // repeated color string, whatever. Measured 38% waste on the repo's
+  // own shipped demo (index.html) before the fix. Verify a handful of
+  // repeated literals collapse to a single slot each, reused by every
+  // LOAD_CONST that needs that value.
+  const source = `program dedup;
+
+begin
+  var a = 0;
+  var b = 0;
+  var c = 0;
+  print(0);
+  print(0);
+  print("x");
+  print("x");
+  print("x");
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  assert(bytecode.constants.length === 2,
+    `esperava 2 constantes unicas (0 e "x"), obtido ${bytecode.constants.length}: ${JSON.stringify(bytecode.constants)}`);
+}
+
+async function testForWithConstantStepUsesShortExitTest() {
+  // compileFor()'s general exit test — needed when the step is a genuine
+  // runtime expression — compiles "(step >= 0 AND i <= end) OR (step < 0
+  // AND i >= end)" into roughly 30 instructions, re-evaluated on every
+  // single iteration. When the step is a literal ("STEP 2", "STEP -1", or
+  // the implicit default of 1), its sign is already known at compile
+  // time, so the exit test collapses to one LTE or GTE comparison
+  // instead. This covers "STEP -N" too, which the parser represents as
+  // Unary('-', Number(N)) rather than a bare Number literal (the lexer
+  // never reads a sign into a NUMBER token) — getConstantNumericValue()
+  // has to see through that one level of unary minus, not just match
+  // expr.type === 'number' directly.
+  const ascendingSource = `program for_const_step;
+
+process p();
+begin
+  for i = 0 to 6 step 3
+    print(i);
+  end
+  frame;
+end
+
+begin
+  p();
+  frame;
+end`;
+
+  const descendingSource = `program for_const_step_negative;
+
+process p();
+begin
+  for i = 6 to 0 step -3
+    print(i);
+  end
+  frame;
+end
+
+begin
+  p();
+  frame;
+end`;
+
+  for (const [source, expected] of [[ascendingSource, [0, 3, 6]], [descendingSource, [6, 3, 0]]]) {
+    const bytecode = compileSource(source);
+    // The short form's exit test is exactly 4 instructions (LOAD_LOCAL,
+    // <end>, LTE/GTE, JUMP_IF_FALSE); the general AND/OR form is roughly
+    // 30. Rather than pin an exact instruction count (brittle against
+    // unrelated future codegen changes), assert there's no JUMP_IF_TRUE
+    // in the whole program — the short form never emits one, while the
+    // general AND/OR short-circuit codegen always does (twice, for the
+    // two "..OR.." branches). A regression back to the general form for
+    // a constant step would make this JUMP_IF_TRUE count go from 0 to 4.
+    const jumpIfTrueCount = bytecode.instructions.filter((i) => i.opcode === OpCodes.JUMP_IF_TRUE).length;
+    assert(jumpIfTrueCount === 0,
+      `FOR com step constante nao devia emitir JUMP_IF_TRUE (esse opcode so aparece na forma AND/OR generica), obtido ${jumpIfTrueCount}`);
+
+    const vm = new VM();
+    vm.load(bytecode);
+    const seen = [];
+    vm.registerNative('print', (v) => { seen.push(v); return 0; });
+    vm.tick();
+    assert(JSON.stringify(seen) === JSON.stringify(expected),
+      `esperava ${JSON.stringify(expected)}, obtido ${JSON.stringify(seen)}`);
+  }
+}
+
+async function testDisassemblerProducesReadableLabeledOutput() {
+  // compiler/bytecode.js's own disassemble() lives on the Bytecode/
+  // Instruction classes, which nothing in the real compile path ever
+  // instantiates — Compiler.emit()/addConstant() push onto plain arrays
+  // on `this` and compile() returns a plain object, never a Bytecode
+  // instance. That disassemble() is unreachable. compiler/disasm.js
+  // works on the bytecode object actually returned by compile().
+  const source = `program disasm_check;
+
+global score = 0;
+
+process enemy(x, y);
+begin
+  loop
+    score = score + 1;
+    frame;
+  end
+end
+
+begin
+  enemy(0, 0);
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const text = disassemble(bytecode);
+
+  assert(text.includes('== PROCESS enemy'), 'devia ter uma seccao rotulada para o processo enemy');
+  assert(text.includes('== MAIN main'), 'devia ter uma seccao rotulada para o main');
+  assert(text.includes('; score'), 'STORE_GLOBAL/LOAD_GLOBAL de "score" deviam estar anotados com o nome, nao so o indice');
+  assert(text.includes('-> '), 'instrucoes de salto deviam mostrar o endereco de destino anotado');
+}
+
 async function testCollisionExcludesSelf() {
   // ProcessManager.collision() looked up every process of the requested
   // TYPE and tested collidesWith() without ever excluding the calling
@@ -1546,6 +1672,9 @@ export async function runAllTests() {
     ['switch subject evaluated once; break/continue pass through to enclosing loop', testSwitchSubjectEvaluatedOnceAndBreakPassesThroughToLoop],
     ['switch with zero cases is a compile error', testSwitchWithZeroCasesIsCompileError],
     ['compile errors include a source location', testCompileErrorsIncludeSourceLocation],
+    ['constant pool deduplicates repeated literals', testConstantPoolIsDeduplicated],
+    ['FOR with a constant step uses the short exit test', testForWithConstantStepUsesShortExitTest],
+    ['disassembler produces readable labeled output', testDisassemblerProducesReadableLabeledOutput],
     ['collision(TYPE x) excludes the calling process itself', testCollisionExcludesSelf]
   ];
 

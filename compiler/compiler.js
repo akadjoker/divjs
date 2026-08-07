@@ -1,9 +1,28 @@
 import { OpCodes } from './bytecode.js';
 import { hashCode } from '../utils/hash.js';
 
+// Returns the numeric value of `expr` if it's a compile-time constant —
+// a bare number literal ("STEP 2") or a unary minus directly wrapping one
+// ("STEP -2", which the parser produces as Unary('-', Number(2)) since
+// the lexer itself never reads a leading sign into a NUMBER token) — or
+// null otherwise. Used by compileFor to decide whether a FOR loop's exit
+// test can collapse to a single LTE/GTE instead of the general
+// runtime-checked form that's needed when the step is a genuine
+// expression (a variable, a function call, ...).
+function getConstantNumericValue(expr) {
+  if (expr.type === 'number') {
+    return expr.value;
+  }
+  if (expr.type === 'unary' && expr.operator === '-' && expr.operand.type === 'number') {
+    return -expr.operand.value;
+  }
+  return null;
+}
+
 export class Compiler {
   constructor() {
     this.constants = [];
+    this.constantIndex = new Map();
     this.instructions = [];
     this.stringMap = new Map();
     this.localMap = new Map();
@@ -32,6 +51,7 @@ export class Compiler {
   // Compile program
   compile(program) {
     this.constants = [];
+    this.constantIndex = new Map();
     this.instructions = [];
     this.stringMap = new Map();
     this.localMap = new Map();
@@ -128,6 +148,11 @@ export class Compiler {
       instructions: this.instructions,
       processTable: this.processTable,
       functionTable: this.functionTable,
+      // Published for the same reason processTable entries carry a
+      // .locals map: so tooling (the disassembler, an eventual debugger)
+      // can resolve a bare slot index back to the GLOBAL name that
+      // declared it, instead of only ever showing "STORE_GLOBAL 3".
+      globals: Object.fromEntries(this.globalMap),
       mainAddr
     };
   }
@@ -472,51 +497,82 @@ export class Compiler {
     const varIdx = this.nextLocalSlot++;
     this.localMap.set(stmt.varName, varIdx);
 
-    // The step is evaluated once and cached in a hidden local, both so an
-    // expression with side effects (e.g. a function call) doesn't re-run
-    // every iteration, and so the exit test below can read its sign
-    // consistently across every iteration of the loop.
-    this.forDepth = (this.forDepth || 0) + 1;
-    const stepVarName = `__for_step_${this.forDepth}`;
-    const stepIdx = this.nextLocalSlot++;
-    this.localMap.set(stepVarName, stepIdx);
+    // When the step is a literal number — "STEP 2", "STEP -1", or the
+    // implicit default of 1 when STEP is omitted entirely — its sign is
+    // already known at compile time, covering the overwhelming majority
+    // of real FOR loops. In that case skip straight to the one
+    // comparison that direction actually needs (LTE for ascending, GTE
+    // for descending) instead of the general run-time-checked form
+    // below, which the disassembler (compiler/disasm.js) showed compiles
+    // "(step >= 0 AND i <= end) OR (step < 0 AND i >= end)" into roughly
+    // 30 instructions re-executed on *every* iteration — deadweight for
+    // a loop whose direction was never actually in question. The general
+    // form is kept, unchanged, for the genuinely dynamic case (STEP some
+    // variable or expression), where the direction really can't be
+    // decided until the loop is running.
+    const constantStepValue = getConstantNumericValue(stmt.step);
+    const isConstantStep = constantStepValue !== null;
+
+    let stepIdx = null;
+    let stepVarName = null;
+    if (!isConstantStep) {
+      // The step is evaluated once and cached in a hidden local, both so
+      // an expression with side effects (e.g. a function call) doesn't
+      // re-run every iteration, and so the exit test below can read its
+      // sign consistently across every iteration of the loop.
+      this.forDepth = (this.forDepth || 0) + 1;
+      const stepVarNameLocal = `__for_step_${this.forDepth}`;
+      stepVarName = stepVarNameLocal;
+      stepIdx = this.nextLocalSlot++;
+      this.localMap.set(stepVarName, stepIdx);
+    }
 
     this.compileExpression(stmt.start);
     this.emit(OpCodes.STORE_LOCAL, varIdx);
 
-    this.compileExpression(stmt.step);
-    this.emit(OpCodes.STORE_LOCAL, stepIdx);
+    if (!isConstantStep) {
+      this.compileExpression(stmt.step);
+      this.emit(OpCodes.STORE_LOCAL, stepIdx);
+    }
 
     const loopStart = this.instructions.length;
 
     // A positive-step FOR must stop once i > end; a negative-step FOR
-    // (STEP -1, counting down) must stop once i < end. The previous code
-    // always used the "i > end" test regardless of step, so a descending
-    // FOR exited on its very first check (e.g. "FOR i = 5 TO 0 STEP -1"
-    // ran zero iterations instead of six). The step can be a runtime
-    // expression, so the direction can't be decided at compile time —
-    // continue while:
-    //   (step >= 0 AND i <= end) OR (step < 0 AND i >= end)
-    const iRef = { type: 'identifier', name: stmt.varName };
-    const stepRef = { type: 'identifier', name: stepVarName };
-    const zero = { type: 'number', value: 0 };
-    const continueExpr = {
-      type: 'binary',
-      operator: '||',
-      left: {
-        type: 'binary', operator: '&&',
-        left: { type: 'binary', operator: '>=', left: stepRef, right: zero },
-        right: { type: 'binary', operator: '<=', left: iRef, right: stmt.end }
-      },
-      right: {
-        type: 'binary', operator: '&&',
-        left: { type: 'binary', operator: '<', left: stepRef, right: zero },
-        right: { type: 'binary', operator: '>=', left: iRef, right: stmt.end }
-      }
-    };
+    // (STEP -1, counting down) must stop once i < end. Using "i > end"
+    // regardless of step direction is the bug this whole comment block
+    // exists to avoid: a descending FOR would exit on its very first
+    // check (e.g. "FOR i = 5 TO 0 STEP -1" would run zero iterations
+    // instead of six).
+    if (isConstantStep) {
+      this.emit(OpCodes.LOAD_LOCAL, varIdx);
+      this.compileExpression(stmt.end);
+      this.emit(constantStepValue >= 0 ? OpCodes.LTE : OpCodes.GTE);
+      this.emit(OpCodes.JUMP_IF_FALSE, 0); // Placeholder
+    } else {
+      // The step can be a runtime expression, so the direction can't be
+      // decided at compile time — continue while:
+      //   (step >= 0 AND i <= end) OR (step < 0 AND i >= end)
+      const iRef = { type: 'identifier', name: stmt.varName };
+      const stepRef = { type: 'identifier', name: stepVarName };
+      const zero = { type: 'number', value: 0 };
+      const continueExpr = {
+        type: 'binary',
+        operator: '||',
+        left: {
+          type: 'binary', operator: '&&',
+          left: { type: 'binary', operator: '>=', left: stepRef, right: zero },
+          right: { type: 'binary', operator: '<=', left: iRef, right: stmt.end }
+        },
+        right: {
+          type: 'binary', operator: '&&',
+          left: { type: 'binary', operator: '<', left: stepRef, right: zero },
+          right: { type: 'binary', operator: '>=', left: iRef, right: stmt.end }
+        }
+      };
 
-    this.compileExpression(continueExpr);
-    this.emit(OpCodes.JUMP_IF_FALSE, 0); // Placeholder
+      this.compileExpression(continueExpr);
+      this.emit(OpCodes.JUMP_IF_FALSE, 0); // Placeholder
+    }
     const jumpToEnd = this.instructions.length - 1;
 
     const loopCtx = this.beginLoopContext();
@@ -525,7 +581,11 @@ export class Compiler {
     const continueTarget = this.instructions.length;
 
     this.emit(OpCodes.LOAD_LOCAL, varIdx);
-    this.emit(OpCodes.LOAD_LOCAL, stepIdx);
+    if (isConstantStep) {
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(constantStepValue));
+    } else {
+      this.emit(OpCodes.LOAD_LOCAL, stepIdx);
+    }
     this.emit(OpCodes.ADD);
     this.emit(OpCodes.STORE_LOCAL, varIdx);
 
@@ -928,9 +988,33 @@ export class Compiler {
   }
 
   // Add constant
+  // Deduplicate constants: every literal used more than once in the
+  // source (0, common colors like '#fff', repeated numeric thresholds)
+  // used to get its own fresh slot in the pool — addConstant() just
+  // pushed unconditionally and never checked for an existing match, even
+  // though the exact caching this method needed was already sitting
+  // unused in compiler/bytecode.js's dead Bytecode class. Measured 38%
+  // waste on the repo's own shipped demo and up to 79% on a small
+  // synthetic program with a handful of repeated 0/color literals — this
+  // is pure bytecode bloat with zero behavior change once fixed. Keyed
+  // by `${typeof value}:${JSON.stringify(value)}` rather than just
+  // JSON.stringify(value) alone so that values which stringify to the
+  // same JSON text but aren't the grammar's own literal type can never
+  // collide (e.g. JSON.stringify(NaN) === JSON.stringify(null) === 'null'
+  // — not reachable from valid source today since NUMBER/STRING tokens
+  // can't produce either, but free to guard against regardless).
   addConstant(value) {
+    if (!this.constantIndex) {
+      this.constantIndex = new Map();
+    }
+    const key = `${typeof value}:${JSON.stringify(value)}`;
+    if (this.constantIndex.has(key)) {
+      return this.constantIndex.get(key);
+    }
+    const idx = this.constants.length;
     this.constants.push(value);
-    return this.constants.length - 1;
+    this.constantIndex.set(key, idx);
+    return idx;
   }
 
   // Emit instruction
