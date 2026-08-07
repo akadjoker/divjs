@@ -139,6 +139,7 @@ export class Compiler {
     // GLOBAL and a process param in a real program.
     this.localMap = new Map();
     this.compileBlock({ statements: program.mainBlock });
+    const mainLocals = Object.fromEntries(this.localMap);
 
     // Main without an explicit loop should still stop cleanly.
     this.emit(OpCodes.HALT);
@@ -153,7 +154,14 @@ export class Compiler {
       // can resolve a bare slot index back to the GLOBAL name that
       // declared it, instead of only ever showing "STORE_GLOBAL 3".
       globals: Object.fromEntries(this.globalMap),
-      mainAddr
+      mainAddr,
+      // Same idea as functionTable/processTable entries' .locals — VAR
+      // declarations made directly in the top-level BEGIN/END block, not
+      // inside any PROCESS or FUNCTION, previously had no name-to-slot
+      // metadata published anywhere, so disasm.js's MAIN section always
+      // showed bare slot numbers even though PROCESS bodies resolved
+      // names correctly.
+      mainLocals
     };
   }
 
@@ -178,12 +186,6 @@ export class Compiler {
   compileFunction(stmt) {
     const startAddr = this.instructions.length;
 
-    // Store function in table
-    this.functionTable.set(stmt.name, {
-      addr: startAddr,
-      params: stmt.params
-    });
-
     // Reset locals for this function
     const savedLocals = new Map(this.localMap);
     this.localMap = new Map();
@@ -204,7 +206,21 @@ export class Compiler {
     }
 
     // Restore locals
+    const functionLocals = Object.fromEntries(this.localMap);
     this.localMap = savedLocals;
+
+    // Publish the function's local-name -> slot mapping, mirroring what
+    // compileProcess already does for processTable entries — lets
+    // tooling (compiler/disasm.js) resolve LOAD_LOCAL/STORE_LOCAL inside
+    // a FUNCTION body to a variable name instead of a bare slot number.
+    // Captured after compiling the body (not just the initial params)
+    // since VAR declarations inside the function add more names to
+    // localMap as they're compiled.
+    this.functionTable.set(stmt.name, {
+      addr: startAddr,
+      params: stmt.params,
+      locals: functionLocals
+    });
 
     return startAddr;
   }

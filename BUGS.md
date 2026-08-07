@@ -7,9 +7,9 @@ Ordered roughly by severity.
 
 ---
 
-## 1. MAIN silently truncates and permanently dies on a large single-tick spawn loop
+## 1. ~~MAIN silently truncates and permanently dies on a large single-tick spawn loop~~ — FIXED in a4bd61b
 
-**Severity: high.** Found while building `bench/bunnymark.mjs`.
+**Severity: high.** Found while building `bench/bunnymark.mjs`. **Fixed.**
 
 `vm.js`'s `runMain()` (and `runProcess()`, same mechanism) has a
 per-tick instruction budget:
@@ -86,6 +86,20 @@ exists.
 - At minimum: make the failure loud in a way a game author would actually
   see (not just a `console.error` easy to miss in a browser console),
   and document the ceiling.
+
+### Fix applied (a4bd61b)
+
+Went with "make the guard resumable instead of terminal," plus a streak
+counter so a genuine infinite loop (one that never reaches FRAME no
+matter how many extra ticks it's given) still gets caught: a single
+budget exhaustion now resumes on the next tick via the exact same
+mainIp/mainStack/mainLocals/mainCallStack (or per-process equivalent)
+save/restore that already existed; after 5 *consecutive* exhaustions
+with zero progress, it's treated as genuinely stuck and stopped for
+real. The 5,000-process repro above now completes in 2 ticks instead of
+plateauing at 3,225 forever. `bench/bunnymark.mjs` still uses the
+batched-spawner workaround since it predates the fix and there's no
+reason to change a working benchmark, but new code doesn't need it.
 
 ---
 

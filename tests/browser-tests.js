@@ -1356,6 +1356,42 @@ end`;
   assert(text.includes('-> '), 'instrucoes de salto deviam mostrar o endereco de destino anotado');
 }
 
+async function testDisassemblerResolvesFunctionAndMainLocalNames() {
+  // functionTable entries used to only ever get { addr, params } —
+  // unlike processTable, which always carried a .locals map — so
+  // LOAD_LOCAL/STORE_LOCAL inside a FUNCTION body printed a bare slot
+  // number in disasm.js's output even though the same instructions
+  // inside a PROCESS body correctly resolved to a variable name. MAIN's
+  // own top-level VAR declarations had no name metadata published
+  // anywhere at all. compileFunction() now publishes .locals the same
+  // way compileProcess() always has, and compile()'s returned bytecode
+  // object gained a top-level `mainLocals` field for the same reason.
+  const source = `program disasm_locals_check;
+
+function add(a, b);
+begin
+  var total = a + b;
+  return total;
+end
+
+begin
+  var result = add(3, 4);
+  print(result);
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const text = disassemble(bytecode);
+
+  assert(text.includes('== FUNCTION add'), 'devia ter uma seccao rotulada para a funcao add');
+  assert(text.includes('; a') && text.includes('; b'),
+    'os parametros a/b da FUNCTION deviam estar anotados com o nome, nao so o indice');
+  assert(text.includes('; total'),
+    'a VAR "total" dentro da FUNCTION devia estar anotada com o nome, nao so o indice');
+  assert(text.includes('; result'),
+    'a VAR "result" dentro do MAIN devia estar anotada com o nome, nao so o indice');
+}
+
 async function testMainSurvivesLargeSpawnLoopAcrossMultipleTicks() {
   // runMain()'s per-tick instruction budget (100,000, guarding against a
   // genuine infinite loop that never reaches FRAME) used to set
@@ -1768,6 +1804,7 @@ export async function runAllTests() {
     ['constant pool deduplicates repeated literals', testConstantPoolIsDeduplicated],
     ['FOR with a constant step uses the short exit test', testForWithConstantStepUsesShortExitTest],
     ['disassembler produces readable labeled output', testDisassemblerProducesReadableLabeledOutput],
+    ['disassembler resolves FUNCTION and MAIN local names', testDisassemblerResolvesFunctionAndMainLocalNames],
     ['MAIN survives a large spawn loop across multiple ticks instead of dying permanently', testMainSurvivesLargeSpawnLoopAcrossMultipleTicks],
     ['a genuine infinite loop in MAIN is still caught and stopped', testGenuineInfiniteLoopInMainIsStillCaught],
     ['collision(TYPE x) excludes the calling process itself', testCollisionExcludesSelf]

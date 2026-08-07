@@ -44,16 +44,15 @@ function buildAddressRanges(bytecode) {
   const entries = [];
 
   for (const [name, info] of bytecode.functionTable) {
-    // functionTable entries only ever get { addr, params } — unlike
-    // processTable, compileFunction() never publishes a .locals map for
-    // its own body, so there's nothing to reverse-lookup slot names
-    // against inside a FUNCTION. Slots print bare (see formatOperands).
-    entries.push({ name, kind: 'FUNCTION', addr: info.addr, locals: null });
+    // compileFunction() now publishes a .locals map for its own body,
+    // same as processTable entries always have — resolves slot numbers
+    // to variable names inside a FUNCTION instead of printing them bare.
+    entries.push({ name, kind: 'FUNCTION', addr: info.addr, locals: info.locals || null });
   }
   for (const [name, info] of bytecode.processTable) {
     entries.push({ name, kind: 'PROCESS', addr: info.addr, locals: info.locals || null });
   }
-  entries.push({ name: 'main', kind: 'MAIN', addr: bytecode.mainAddr, locals: null });
+  entries.push({ name: 'main', kind: 'MAIN', addr: bytecode.mainAddr, locals: bytecode.mainLocals || null });
 
   entries.sort((a, b) => a.addr - b.addr);
   for (let i = 0; i < entries.length; i++) {

@@ -7,15 +7,11 @@ means impact-if-hit × how likely a real program is to hit it, not effort.
 
 ## High priority
 
-### Fix MAIN's single-tick spawn budget being a silent, permanent kill switch
-See `BUGS.md` #1. This is the one item here that's a genuine correctness
-bug (silent data loss — requested processes just don't get created, no
-error surfaces anywhere a game author would see it) rather than a
-performance ceiling or missing feature. Needs a design decision first
-(raise the budget vs. make it resumable across ticks vs. both), then
-implementation, then a regression test reproducing the exact scenario in
-`BUGS.md` (request N processes in one MAIN-level `FOR` loop, assert
-`processManager.getAll().length === N` after spawning settles).
+### ~~Fix MAIN's single-tick spawn budget being a silent, permanent kill switch~~ — DONE (a4bd61b)
+See `BUGS.md` #1. Fixed: a single budget exhaustion now resumes on the
+next tick instead of dying permanently; a genuine infinite loop still
+gets caught after 5 consecutive exhaustions with zero progress. Two
+regression tests added.
 
 ### Decide what "how many processes can this realistically run" should be, and document it
 The bunnymark (`bench/bunnymark.mjs`) found scaling is roughly linear
