@@ -47,6 +47,12 @@ export class Process {
     // scheduled for, before any frame(n) call it makes has had a chance
     // to take effect.
     this.frameCredit = 100;
+    // How many consecutive ticks in a row this process has run entirely
+    // out of instruction budget without ever reaching FRAME or finishing
+    // — see runProcess()'s budget handling in vm.js for what this is
+    // used for. Reset to 0 the moment the process successfully yields or
+    // finishes normally.
+    this.budgetExhaustedStreak = 0;
 
     // VM context (coroutine)
     this.ip = 0;           // Instruction pointer

@@ -1356,6 +1356,99 @@ end`;
   assert(text.includes('-> '), 'instrucoes de salto deviam mostrar o endereco de destino anotado');
 }
 
+async function testMainSurvivesLargeSpawnLoopAcrossMultipleTicks() {
+  // runMain()'s per-tick instruction budget (100,000, guarding against a
+  // genuine infinite loop that never reaches FRAME) used to set
+  // mainFinished = true the moment it was exceeded — permanently, since
+  // tick() only calls runMain() at all while !mainFinished. A MAIN-level
+  // FOR loop spawning enough processes to cross that budget in one tick
+  // (a plausible pattern: a wave spawner, a particle burst) would
+  // silently spawn only a fraction of what was requested and then never
+  // run MAIN again for the rest of the program — no error surfaced
+  // anywhere a game author would see, just fewer processes than asked
+  // for and a dead MAIN. Confirmed directly: requesting 5,000 processes
+  // in one FOR loop used to always produce exactly 3,225 live ones,
+  // regardless of how much larger the requested count was (5,000/
+  // 10,000/20,000/50,000 all produced that same 3,225 — the loop always
+  // died at the same iteration count for the same per-spawn instruction
+  // cost). Fixed by letting a *single* budget exhaustion resume on the
+  // next tick instead of stopping permanently, while still killing
+  // MAIN after several (5) *consecutive* exhaustions with zero progress
+  // — preserving the original safety net for a genuine infinite loop.
+  const source = `program large_spawn;
+
+process bunny(x, y);
+begin
+  loop
+    frame;
+  end
+end
+
+begin
+  for i = 0 to 4999
+    bunny(i, i);
+  end
+  loop
+    frame;
+  end
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+
+  // The fix needs at least 2 ticks to finish 5,000 spawns (3,225 fit in
+  // the first tick's budget, the rest resume on the second) — give it a
+  // handful more as headroom without masking a real regression back to
+  // the old permanent-stop behavior, which would plateau at 3,225
+  // forever no matter how many ticks it's given.
+  for (let i = 0; i < 6; i += 1) {
+    vm.tick();
+  }
+
+  const liveCount = vm.processManager.getAll().length;
+  assert(liveCount === 5000,
+    `esperava 5000 processos vivos apos varios ticks, obtido ${liveCount} ` +
+    `(3225 e o valor exato que o bug antigo produzia, truncado para sempre)`);
+  assert(vm.mainFinished === false,
+    'MAIN devia continuar vivo (para chegar ao seu proprio LOOP FRAME final), nao mainFinished=true');
+}
+
+async function testGenuineInfiniteLoopInMainIsStillCaught() {
+  // The other half of the fix above: a MAIN-level loop that truly never
+  // reaches FRAME no matter how many extra ticks it's given (not just
+  // "needs one or two more ticks to finish real work") must still be
+  // caught and stopped — otherwise every tick would burn a full 100,000-
+  // instruction budget forever, which is strictly worse than the old
+  // behavior for this specific case.
+  const source = `program genuine_infinite_loop;
+
+begin
+  var x = 0;
+  while (1)
+    x = x + 1;
+  end
+  loop
+    frame;
+  end
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+
+  let stoppedWithinBudget = false;
+  for (let i = 0; i < 10; i += 1) {
+    vm.tick();
+    if (vm.mainFinished) {
+      stoppedWithinBudget = true;
+      break;
+    }
+  }
+
+  assert(stoppedWithinBudget, 'um loop genuinamente infinito no MAIN devia acabar por parar (mainFinished=true), nao continuar para sempre');
+}
+
 async function testCollisionExcludesSelf() {
   // ProcessManager.collision() looked up every process of the requested
   // TYPE and tested collidesWith() without ever excluding the calling
@@ -1675,6 +1768,8 @@ export async function runAllTests() {
     ['constant pool deduplicates repeated literals', testConstantPoolIsDeduplicated],
     ['FOR with a constant step uses the short exit test', testForWithConstantStepUsesShortExitTest],
     ['disassembler produces readable labeled output', testDisassemblerProducesReadableLabeledOutput],
+    ['MAIN survives a large spawn loop across multiple ticks instead of dying permanently', testMainSurvivesLargeSpawnLoopAcrossMultipleTicks],
+    ['a genuine infinite loop in MAIN is still caught and stopped', testGenuineInfiniteLoopInMainIsStillCaught],
     ['collision(TYPE x) excludes the calling process itself', testCollisionExcludesSelf]
   ];
 

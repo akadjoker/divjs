@@ -54,6 +54,7 @@ export class VM {
     this.mainLocals = [];
     this.mainCallStack = [];
     this.mainFinished = false;
+    this.mainBudgetExhaustedStreak = 0;
 
     // Debug mode
     this.debug = false;
@@ -81,6 +82,7 @@ export class VM {
     this.mainLocals = [];
     this.mainCallStack = [];
     this.mainFinished = false;
+    this.mainBudgetExhaustedStreak = 0;
   }
 
   // Run VM for one frame (scheduler)
@@ -140,11 +142,28 @@ export class VM {
     this.frameYield = false;
     this.callStack = this.mainCallStack;
 
+    // How many consecutive ticks MAIN has run entirely out of budget
+    // without reaching FRAME or finishing. A single instance of this is
+    // not necessarily a bug — a MAIN-level FOR loop spawning several
+    // thousand processes in one logical "tick" can legitimately need
+    // more than 100,000 instructions to finish, and there was previously
+    // no way to express "give me a bit more time" other than the author
+    // manually inserting FRAME calls mid-loop. See BUGS.md #1 for the
+    // exact repro this was written against: requesting 5,000+ processes
+    // in one MAIN-level spawn loop used to silently cap at ~3,225 and
+    // permanently stop MAIN forever, with only a console.error as any
+    // trace. A GENUINE infinite loop that never reaches FRAME no matter
+    // how many extra ticks it gets is still exactly what this guard
+    // exists to catch — MAIN_MAX_CONSECUTIVE_BUDGET_EXHAUSTIONS below is
+    // the line between "needs a few more ticks" and "actually stuck".
+    const MAX_CONSECUTIVE_BUDGET_EXHAUSTIONS = 5;
+
     let budget = 100000;
+    let budgetExhausted = false;
+
     while (!this.frameYield && !this.mainFinished && !this.halted) {
       if (--budget <= 0) {
-        console.error('MAIN: no FRAME in loop');
-        this.mainFinished = true;
+        budgetExhausted = true;
         break;
       }
 
@@ -155,6 +174,30 @@ export class VM {
 
       const instr = this.bytecode[this.ip];
       this.execute(instr);
+    }
+
+    if (budgetExhausted) {
+      this.mainBudgetExhaustedStreak = (this.mainBudgetExhaustedStreak || 0) + 1;
+      if (this.mainBudgetExhaustedStreak >= MAX_CONSECUTIVE_BUDGET_EXHAUSTIONS) {
+        console.error(
+          `MAIN: exceeded the per-tick instruction budget (100000) on ` +
+          `${MAX_CONSECUTIVE_BUDGET_EXHAUSTIONS} consecutive ticks without ever reaching FRAME ` +
+          `or finishing — this looks like a genuine infinite loop, not just a lot of legitimate ` +
+          `work. Stopping MAIN permanently.`
+        );
+        this.mainFinished = true;
+      } else {
+        console.warn(
+          `MAIN: exceeded the per-tick instruction budget (100000) without reaching FRAME — ` +
+          `resuming from where it left off on the next tick instead of stopping ` +
+          `(attempt ${this.mainBudgetExhaustedStreak}/${MAX_CONSECUTIVE_BUDGET_EXHAUSTIONS}). ` +
+          `If a single logical "tick" of MAIN genuinely needs more than ~100,000 instructions ` +
+          `of real work (e.g. spawning a very large number of processes at once), consider ` +
+          `spreading it across multiple FRAME-separated batches instead.`
+        );
+      }
+    } else {
+      this.mainBudgetExhaustedStreak = 0;
     }
 
     this.mainIp = this.ip;
@@ -172,15 +215,22 @@ export class VM {
     this.frameYield = false;
     this.callStack = process.callStack || [];
 
-    // Budget de instrucoes (previne loops infinitos)
+    // Budget de instrucoes (previne loops infinitos). See runMain()'s
+    // matching handling for the full rationale: a single instance of
+    // running out of budget without reaching FRAME isn't necessarily a
+    // bug on its own — this process's own logic can legitimately need
+    // more than 100,000 instructions in one tick (a heavy per-frame
+    // batch, a local spawn loop, ...) — so it gets a few more ticks to
+    // finish before being treated as a genuine infinite loop and killed.
+    const MAX_CONSECUTIVE_BUDGET_EXHAUSTIONS = 5;
     let budget = 100000;
+    let budgetExhausted = false;
 
     // Execute until FRAME or finished
     while (!this.frameYield && !process.finished) {
       // Check budget
       if (--budget <= 0) {
-        console.error(`Process ${process.name}#${process.id}: no FRAME in loop`);
-        process.kill();
+        budgetExhausted = true;
         break;
       }
 
@@ -191,6 +241,27 @@ export class VM {
 
       const instr = this.bytecode[this.ip];
       this.execute(instr);
+    }
+
+    if (budgetExhausted) {
+      process.budgetExhaustedStreak = (process.budgetExhaustedStreak || 0) + 1;
+      if (process.budgetExhaustedStreak >= MAX_CONSECUTIVE_BUDGET_EXHAUSTIONS) {
+        console.error(
+          `Process ${process.name}#${process.id}: exceeded the per-tick instruction budget ` +
+          `(100000) on ${MAX_CONSECUTIVE_BUDGET_EXHAUSTIONS} consecutive ticks without ever ` +
+          `reaching FRAME or finishing — this looks like a genuine infinite loop, not just a ` +
+          `lot of legitimate work. Killing the process.`
+        );
+        process.kill();
+      } else {
+        console.warn(
+          `Process ${process.name}#${process.id}: exceeded the per-tick instruction budget ` +
+          `(100000) without reaching FRAME — resuming from where it left off on the next tick ` +
+          `instead of killing it (attempt ${process.budgetExhaustedStreak}/${MAX_CONSECUTIVE_BUDGET_EXHAUSTIONS}).`
+        );
+      }
+    } else {
+      process.budgetExhaustedStreak = 0;
     }
 
     // Save state back to process
@@ -644,6 +715,7 @@ export class VM {
     this.mainLocals = [];
     this.mainCallStack = [];
     this.mainFinished = false;
+    this.mainBudgetExhaustedStreak = 0;
     this.running = false;
     this.halted = false;
     this.frameYield = false;
