@@ -14,6 +14,10 @@ export const OpCodes = {
   LOAD_GLOBAL: 0x12, // Load global variable
   STORE_GLOBAL: 0x13,// Store global variable
   LOAD_PARAM: 0x14,  // Load parameter
+  LOAD_LOCAL_IDX: 0x15,  // index=pop(), push locals[base+index]
+  STORE_LOCAL_IDX: 0x16, // value=pop(), index=pop(), locals[base+index]=value
+  LOAD_GLOBAL_IDX: 0x17, // index=pop(), push globals[base+index]
+  STORE_GLOBAL_IDX: 0x18,// value=pop(), index=pop(), globals[base+index]=value
   
   // Arithmetic
   ADD: 0x20,         // Addition

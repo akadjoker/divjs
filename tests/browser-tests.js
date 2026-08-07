@@ -755,6 +755,91 @@ end`;
   assert(p.locals[slotSize] === 222, `size esperado 222, obtido ${p.locals[slotSize]}`);
 }
 
+async function testCanonicalColorAndTagFields() {
+  // Five new canonical fixed slots, following the exact pattern already
+  // established for ctype/region/angle: red/green/blue (0-255, the
+  // conventional 8-bit RGB range), alpha (0-100, matching the scale
+  // scroll[i].alpha already uses elsewhere in this runtime, kept
+  // consistent rather than introducing a second incompatible alpha
+  // convention), and tag (a free-form number for a game author's own
+  // gameplay logic — distinct from `type`/process.type, which is
+  // already the hash of the process's declared name, used by
+  // collision()/signal(), and not meant for reassignment). Storage
+  // only: nothing in the renderer applies these to a draw call
+  // automatically — a process's own LOOP body still calls set_color()
+  // itself, same as before these fields existed.
+  const source = `program canonical_color_fields;
+
+process p(x, y);
+begin
+  print(red);
+  print(green);
+  print(blue);
+  print(alpha);
+  print(tag);
+
+  red = 10;
+  green = 20;
+  blue = 30;
+  alpha = 50;
+  tag = 99;
+
+  print(red);
+  print(green);
+  print(blue);
+  print(alpha);
+  print(tag);
+
+  frame;
+end
+
+begin
+  p(1, 2);
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  const seen = [];
+  vm.registerNative('print', (v) => { seen.push(v); return 0; });
+  vm.tick();
+
+  assert(JSON.stringify(seen) === JSON.stringify([255, 255, 255, 100, 0, 10, 20, 30, 50, 99]),
+    `esperava defaults [255,255,255,100,0] seguidos de valores escritos [10,20,30,50,99], obtido ${JSON.stringify(seen)}`);
+
+  const process = vm.processManager.getAll()[0];
+  assert(process.red === 10 && process.green === 20 && process.blue === 30 &&
+    process.alpha === 50 && process.tag === 99,
+    `campos deviam estar sincronizados no objeto Process, obtido red=${process.red} green=${process.green} blue=${process.blue} alpha=${process.alpha} tag=${process.tag}`);
+
+  // A process param named "tag" (or red/green/blue/alpha) collides with
+  // the fixed slot name the same way a param named "id" already does —
+  // confirm the param wins (matches existing canonical-field-name-as-
+  // param behavior, not a new special case).
+  const paramSource = `program canonical_field_as_param;
+
+process p(tag, x, y);
+begin
+  print(tag);
+  frame;
+end
+
+begin
+  p(777, 1, 2);
+  frame;
+end`;
+
+  const paramBytecode = compileSource(paramSource);
+  const paramVm = new VM();
+  paramVm.load(paramBytecode);
+  const paramSeen = [];
+  paramVm.registerNative('print', (v) => { paramSeen.push(v); return 0; });
+  paramVm.tick();
+  assert(paramSeen[0] === 777,
+    `parametro chamado "tag" devia sombrear o slot fixo, obtido ${JSON.stringify(paramSeen)}`);
+}
+
 async function testIfElseBothBranchesParseAndRun() {
   // parseBlock() used to consume END unconditionally even when it had
   // stopped on ELSE, so "IF (c) then... ELSE else... END" threw "Expected
@@ -1970,6 +2055,312 @@ async function testLetMeAloneKillsOthers() {
   assert(a.dead && b.dead, 'outros processos deviam morrer');
 }
 
+async function testPriorityFieldSortsDrawList() {
+  // priority is canonical slot 13. Lower value draws first (behind),
+  // higher value draws last (in front). getDrawList() returns a sorted
+  // copy rebuilt only when the dirty flag is set.
+  const source = `program t;
+process actor(prio);
+begin
+  priority = prio;
+  loop frame; end
+end
+begin
+  actor(10);
+  actor(5);
+  actor(1);
+  loop frame; end
+end`;
+  const vm = new VM();
+  vm.load(compileSource(source));
+  vm.tick();
+  const dl = vm.processManager.getDrawList();
+  assert(dl.length === 3, `esperava 3 processos, obtido ${dl.length}`);
+  for (let i = 1; i < dl.length; i++) {
+    assert(dl[i].priority >= dl[i - 1].priority,
+      `draw list fora de ordem: [${dl.map(p => p.priority).join(',')}]`);
+  }
+
+  // Default priority is 0
+  const src2 = `program t;
+process p();
+begin
+  print(priority);
+  loop frame; end
+end
+begin p(); loop frame; end end`;
+  const vm2 = new VM();
+  vm2.load(compileSource(src2));
+  const seen = [];
+  vm2.registerNative('print', v => { seen.push(v); return 0; });
+  vm2.tick();
+  assert(seen[0] === 0, `priority default devia ser 0, obtido ${seen[0]}`);
+
+  // Dirty flag: cleared after getDrawList, set again after a new spawn
+  assert(!vm.processManager._drawDirty, 'dirty devia estar false depois de getDrawList');
+}
+
+async function testGlobalArrayReadWrite() {
+  // GLOBAL arr[n] allocates n consecutive slots; arr[i] uses LOAD/STORE_GLOBAL_IDX.
+  // Unwritten slots default to 0.
+  const source = `program t;
+global scores[5];
+begin
+  scores[0] = 10;
+  scores[1] = 20;
+  scores[4] = 99;
+  print(scores[0]);
+  print(scores[1]);
+  print(scores[2]);
+  print(scores[4]);
+  loop frame; end
+end`;
+  const vm = new VM();
+  vm.load(compileSource(source));
+  const seen = [];
+  vm.registerNative('print', v => { seen.push(v); return 0; });
+  vm.tick();
+  assert(JSON.stringify(seen) === '[10,20,0,99]',
+    `esperava [10,20,0,99], obtido ${JSON.stringify(seen)}`);
+
+  // Variable index: fill with i*i and read back
+  const src2 = `program t;
+global sq[5];
+begin
+  for i = 0 to 4
+    sq[i] = i * i;
+  end
+  for i = 0 to 4
+    print(sq[i]);
+  end
+  loop frame; end
+end`;
+  const vm2 = new VM();
+  vm2.load(compileSource(src2));
+  const seen2 = [];
+  vm2.registerNative('print', v => { seen2.push(v); return 0; });
+  vm2.tick();
+  assert(JSON.stringify(seen2) === '[0,1,4,9,16]',
+    `esperava [0,1,4,9,16], obtido ${JSON.stringify(seen2)}`);
+
+  // Multiple arrays don't overlap
+  const src3 = `program t;
+global a[3], b[3];
+begin
+  a[0] = 1; a[2] = 3;
+  b[0] = 4; b[2] = 6;
+  print(a[0]); print(a[1]); print(a[2]);
+  print(b[0]); print(b[1]); print(b[2]);
+  loop frame; end
+end`;
+  const vm3 = new VM();
+  vm3.load(compileSource(src3));
+  const seen3 = [];
+  vm3.registerNative('print', v => { seen3.push(v); return 0; });
+  vm3.tick();
+  assert(JSON.stringify(seen3) === '[1,0,3,4,0,6]',
+    `arrays sobrepostos: ${JSON.stringify(seen3)}`);
+}
+
+async function testPrivateArrayInProcess() {
+  const source = `program t;
+process p();
+private hist[4];
+begin
+  hist[0] = 10;
+  hist[1] = 20;
+  hist[2] = 30;
+  hist[3] = 40;
+  print(hist[0] + hist[3]);
+  loop frame; end
+end
+begin p(); loop frame; end end`;
+  const vm = new VM();
+  vm.load(compileSource(source));
+  const seen = [];
+  vm.registerNative('print', v => { seen.push(v); return 0; });
+  vm.tick();
+  assert(seen[0] === 50, `esperava 50, obtido ${seen[0]}`);
+}
+
+async function testGlobalInlineCommaForm() {
+  // GLOBAL a, b, c = 5; — all on one line, comma-separated, single ;
+  // Each name gets its own optional initializer left-to-right.
+  const source = `program t;
+global a, b, c = 5;
+begin
+  print(a);
+  print(b);
+  print(c);
+  frame;
+end`;
+  const vm = new VM();
+  vm.load(compileSource(source));
+  const seen = [];
+  vm.registerNative('print', (v) => { seen.push(v); return 0; });
+  vm.tick();
+  assert(JSON.stringify(seen) === JSON.stringify([0, 0, 5]),
+    `esperava [0,0,5], obtido ${JSON.stringify(seen)}`);
+
+  // mixed: some with initializers, some without
+  const src2 = `program t;
+global x = 1, y, z = 3;
+begin
+  print(x);
+  print(y);
+  print(z);
+  frame;
+end`;
+  const vm2 = new VM();
+  vm2.load(compileSource(src2));
+  const seen2 = [];
+  vm2.registerNative('print', (v) => { seen2.push(v); return 0; });
+  vm2.tick();
+  assert(JSON.stringify(seen2) === JSON.stringify([1, 0, 3]),
+    `esperava [1,0,3], obtido ${JSON.stringify(seen2)}`);
+}
+
+async function testPrivateCommaForm() {
+  // PRIVATE vx, vy = 3; — comma-separated inside a PROCESS
+  const source = `program t;
+process p();
+private vx, vy = 3;
+begin
+  print(vx);
+  print(vy);
+  frame;
+end
+begin
+  p();
+  frame;
+end`;
+  const vm = new VM();
+  vm.load(compileSource(source));
+  const seen = [];
+  vm.registerNative('print', (v) => { seen.push(v); return 0; });
+  vm.tick();
+  assert(JSON.stringify(seen) === JSON.stringify([0, 3]),
+    `esperava [0,3], obtido ${JSON.stringify(seen)}`);
+}
+
+async function testStructSingleInstance() {
+  const vm = new VM();
+  vm.load(compileSource(`program t;
+struct player
+  x = 100;
+  y = 200;
+  hp = 3;
+end
+begin
+  print(player.x); print(player.hp);
+  player.x = 50;
+  print(player.x);
+  loop frame; end
+end`));
+  const seen = [];
+  vm.registerNative('print', v => { seen.push(v); return 0; });
+  vm.tick();
+  assert(JSON.stringify(seen) === '[100,3,50]', `esperava [100,3,50], obtido ${JSON.stringify(seen)}`);
+}
+
+async function testStructArrayOfStructs() {
+  const vm = new VM();
+  vm.load(compileSource(`program t;
+struct enemy[3]
+  x; y; hp = 5;
+end
+begin
+  enemy[0].x = 10; enemy[1].x = 20; enemy[2].hp = 99;
+  print(enemy[0].x); print(enemy[1].x); print(enemy[2].x);
+  print(enemy[0].hp); print(enemy[2].hp);
+  loop frame; end
+end`));
+  const seen = [];
+  vm.registerNative('print', v => { seen.push(v); return 0; });
+  vm.tick();
+  assert(JSON.stringify(seen) === '[10,20,0,5,99]', `esperava [10,20,0,5,99], obtido ${JSON.stringify(seen)}`);
+}
+
+async function testStructArrayField() {
+  const vm = new VM();
+  vm.load(compileSource(`program t;
+struct anim[2]
+  count; frames[4];
+end
+begin
+  anim[0].count = 2; anim[0].frames[0] = 100; anim[0].frames[1] = 101;
+  anim[1].frames[0] = 200;
+  print(anim[0].count); print(anim[0].frames[1]); print(anim[1].frames[0]);
+  loop frame; end
+end`));
+  const seen = [];
+  vm.registerNative('print', v => { seen.push(v); return 0; });
+  vm.tick();
+  assert(JSON.stringify(seen) === '[2,101,200]', `esperava [2,101,200], obtido ${JSON.stringify(seen)}`);
+}
+
+async function testStructInitializerList() {
+  // = val, val, N DUP(val); after END initializes slots in order
+  const vm = new VM();
+  vm.load(compileSource(`program t;
+struct scores[3]
+  val; bonus;
+end =
+  10, 1,
+  20, 2,
+  30, 3;
+begin
+  print(scores[0].val); print(scores[0].bonus);
+  print(scores[2].val); print(scores[2].bonus);
+  loop frame; end
+end`));
+  const seen = [];
+  vm.registerNative('print', v => { seen.push(v); return 0; });
+  vm.tick();
+  assert(JSON.stringify(seen) === '[10,1,30,3]', `esperava [10,1,30,3], obtido ${JSON.stringify(seen)}`);
+
+  // N DUP(val) expansion
+  const vm2 = new VM();
+  vm2.load(compileSource(`program t;
+struct data[3]
+  a; b;
+end =
+  1, 2,
+  3, 2 DUP(0);
+begin
+  print(data[0].a); print(data[1].a); print(data[1].b); print(data[2].a);
+  loop frame; end
+end`));
+  const seen2 = [];
+  vm2.registerNative('print', v => { seen2.push(v); return 0; });
+  vm2.tick();
+  assert(JSON.stringify(seen2) === '[1,3,0,0]', `DUP: esperava [1,3,0,0], obtido ${JSON.stringify(seen2)}`);
+}
+
+async function testStructNested() {
+  const vm = new VM();
+  vm.load(compileSource(`program t;
+struct traj[2]
+  x; y;
+  struct pts[3]
+    px; py;
+  end
+end
+begin
+  traj[0].x = 100;
+  traj[0].pts[0].px = 10;
+  traj[0].pts[1].py = 20;
+  traj[1].pts[2].px = 99;
+  print(traj[0].x); print(traj[0].pts[0].px);
+  print(traj[0].pts[1].py); print(traj[1].pts[2].px);
+  loop frame; end
+end`));
+  const seen = [];
+  vm.registerNative('print', v => { seen.push(v); return 0; });
+  vm.tick();
+  assert(JSON.stringify(seen) === '[100,10,20,99]', `esperava [100,10,20,99], obtido ${JSON.stringify(seen)}`);
+}
+
 async function testPathNativesScrollState() {
   const vm = new VM();
   const runtime = createRuntime(vm);
@@ -2017,6 +2408,8 @@ export async function runAllTests() {
     ['nested function return stack safety', testNestedFunctionReturnsDoNotLeakStack],
     ['implicit process locals graph/size slots', testImplicitProcessLocalsGraphAndSize],
     ['for local slot does not collide with implicit locals', testForLocalDoesNotCollideWithImplicitLocals],
+    ['canonical red/green/blue/alpha/tag process fields', testCanonicalColorAndTagFields],
+    ['priority field sorts draw list (dirty-flag, slot 13)', testPriorityFieldSortsDrawList],
     ['if/else parses and runs both branches (+ chained else if)', testIfElseBothBranchesParseAndRun],
     ['for with negative step counts down', testForNegativeStepCountsDown],
     ['chained assignment (a = b = c) is a compile error', testChainedAssignmentIsCompileError],
@@ -2024,6 +2417,9 @@ export async function runAllTests() {
     ['string escape sequences (\\n, \\t, \\\\, \\")', testStringEscapeSequences],
     ['duplicate PROCESS/FUNCTION/GLOBAL names are compile errors', testDuplicateDeclarationsAreCompileErrors],
     ['GLOBAL block form declares multiple names', testGlobalBlockFormDeclaresMultipleNames],
+    ['GLOBAL array read/write with variable index', testGlobalArrayReadWrite],
+    ['PRIVATE array inside process', testPrivateArrayInProcess],
+    ['PRIVATE comma form (vx, vy = 3)', testPrivateCommaForm],
     ['GLOBAL without an initial value defaults to 0, not another global\'s constant', testGlobalWithoutInitialValueDefaultsToZeroNotAnotherGlobalsConstant],
     ['frame(n) throttles execution frequency', testFrameValueThrottlesExecutionFrequency],
     ['switch/case has no fallthrough', testSwitchCaseHasNoFallthrough],
@@ -2039,6 +2435,28 @@ export async function runAllTests() {
     ['a genuine infinite loop in MAIN is still caught and stopped', testGenuineInfiniteLoopInMainIsStillCaught],
     ['collision(TYPE x) excludes the calling process itself', testCollisionExcludesSelf]
   ];
+
+  // ── New features added after bunnymark session ───────────────────────────
+  tests.push(
+    ['spawn parent -> child parentId', testSpawnSetsParentId],
+    ['signal tree + signal by TYPE wakeup', testSignalKillTreeAndWakeupByType],
+    ['signal(id, s_kill) semantics', testSignalKillByIdUsesDivSemantics],
+    ['ctype=c_scroll persists after frame', testCTypeScrollAssignmentPersistsAfterFrame],
+    ['collision by TYPE', testCollisionByType],
+    ['cross-process fixed slots (width/height/ctype/region/angle) are live within the same frame', testCrossProcessFixedSlotsAreLiveWithinSameFrame],
+    ['let_me_alone kills others', testLetMeAloneKillsOthers],
+    ['__get_path/__set_path scroll state', testPathNativesScrollState],
+    ['priority field sorts draw list (dirty-flag, slot 13)', testPriorityFieldSortsDrawList],
+    ['GLOBAL array read/write with variable index', testGlobalArrayReadWrite],
+    ['PRIVATE array inside process', testPrivateArrayInProcess],
+    ['GLOBAL inline comma form (a, b, c = 5)', testGlobalInlineCommaForm],
+    ['PRIVATE comma form (vx, vy = 3)', testPrivateCommaForm],
+    ['STRUCT single instance read/write + default values', testStructSingleInstance],
+    ['STRUCT array of structs', testStructArrayOfStructs],
+    ['STRUCT array field within struct', testStructArrayField],
+    ['STRUCT initializer list + DUP syntax', testStructInitializerList],
+    ['STRUCT nested structs', testStructNested],
+  );
 
   const results = [];
   for (const [name, fn] of tests) {

@@ -95,6 +95,7 @@ export class Parser {
     this.expect(TokenType.SEMICOLON, 'Expected ; after program name');
 
     const globals = [];
+    const structs = [];
     const processes = [];
     const functions = [];
     const mainBlock = [];
@@ -104,6 +105,10 @@ export class Parser {
       const declToken = this.current();
       if (this.is(TokenType.GLOBAL)) {
         globals.push(...this.parseGlobal());
+      } else if (this.is(TokenType.STRUCT)) {
+        const s = this.parseStructDecl();
+        s.line = declToken.line; s.col = declToken.col;
+        structs.push(s);
       } else if (this.is(TokenType.FUNCTION)) {
         const func = this.parseFunction();
         func.line = declToken.line;
@@ -123,7 +128,70 @@ export class Parser {
       }
     }
 
-    return new ast.Program(name, globals, processes, functions, mainBlock);
+    return new ast.Program(name, globals, structs, processes, functions, mainBlock);
+  }
+
+  parseStructDecl() {
+    this.pos++; // consume STRUCT
+    const name = this.readIdentifierLike('Expected struct name');
+    let count = null;
+    if (this.match(TokenType.LBRACKET)) {
+      count = this.parseExpression();
+      this.expect(TokenType.RBRACKET, 'Expected ] after struct count');
+    }
+    const fields = [];
+    while (!this.is(TokenType.END) && !this.is(TokenType.EOF)) {
+      if (this.is(TokenType.STRUCT)) {
+        // Nested struct — becomes a composite field
+        const nested = this.parseStructDecl();
+        fields.push({ name: nested.name, nested, defaultValue: null, size: null });
+        continue;
+      }
+      const fname = this.readIdentifierLike('Expected field name');
+      let fsize = null;
+      let fdefault = null;
+      if (this.match(TokenType.LBRACKET)) {
+        fsize = this.parseExpression();
+        this.expect(TokenType.RBRACKET, 'Expected ] after field size');
+      } else if (this.match(TokenType.EQUALS)) {
+        fdefault = this.parseExpression();
+      }
+      this.expect(TokenType.SEMICOLON, 'Expected ; after struct field');
+      fields.push({ name: fname, defaultValue: fdefault, size: fsize, nested: null });
+    }
+    this.expect(TokenType.END, 'Expected END after struct body');
+
+    // Optional initializer list: = val, val, N DUP(val), ... ;
+    let initializers = null;
+    if (this.match(TokenType.EQUALS)) {
+      initializers = this.parseStructInitializers();
+    }
+    return new ast.StructDecl(name, count, fields, initializers);
+  }
+
+  parseStructInitializers() {
+    const values = [];
+    while (!this.is(TokenType.SEMICOLON) && !this.is(TokenType.EOF)) {
+      // N DUP(expr) — N is a number literal, DUP is an identifier
+      if (this.current().type === TokenType.NUMBER &&
+          this.peek(1).type === TokenType.IDENTIFIER &&
+          this.peek(1).value.toUpperCase() === 'DUP' &&
+          this.peek(2).type === TokenType.LPAREN) {
+        const dupCount = this.current().value;
+        this.pos += 2; // consume N and DUP
+        this.expect(TokenType.LPAREN, 'Expected ( after DUP');
+        const dupVal = this.parseExpression();
+        this.expect(TokenType.RPAREN, 'Expected ) after DUP value');
+        for (let i = 0; i < dupCount; i++) values.push(dupVal);
+      } else {
+        values.push(this.parseExpression());
+      }
+      if (!this.is(TokenType.SEMICOLON)) {
+        this.expect(TokenType.COMMA, 'Expected , or ; in initializer list');
+      }
+    }
+    this.expect(TokenType.SEMICOLON, 'Expected ; after struct initializer list');
+    return values;
   }
 
   // Parse global
@@ -146,20 +214,24 @@ export class Parser {
 
     const globals = [];
     while (this.isIdentifierLike(this.current())) {
-      const declToken = this.current();
-      const name = this.readIdentifierLike('Expected global name');
-
-      let value = null;
-      if (this.match(TokenType.EQUALS)) {
-        value = this.parseExpression();
-      }
+      do {
+        const declToken = this.current();
+        const name = this.readIdentifierLike('Expected global name');
+        let value = null;
+        let size;
+        if (this.match(TokenType.LBRACKET)) {
+          size = this.parseExpression();
+          this.expect(TokenType.RBRACKET, 'Expected ] after array size');
+        } else if (this.match(TokenType.EQUALS)) {
+          value = this.parseExpression();
+        }
+        const global = new ast.Global(name, value, size);
+        global.line = declToken.line;
+        global.col = declToken.col;
+        globals.push(global);
+      } while (this.match(TokenType.COMMA));
 
       this.expect(TokenType.SEMICOLON, 'Expected ; after global declaration');
-
-      const global = new ast.Global(name, value);
-      global.line = declToken.line;
-      global.col = declToken.col;
-      globals.push(global);
     }
 
     if (globals.length === 0) {
@@ -217,7 +289,7 @@ export class Parser {
     const privates = [];
     if (this.match(TokenType.PRIVATE)) {
       while (!this.is(TokenType.BEGIN) && !this.is(TokenType.EOF)) {
-        privates.push(this.parsePrivate());
+        privates.push(...this.parsePrivate());
       }
     }
 
@@ -229,16 +301,23 @@ export class Parser {
 
   // Parse private
   parsePrivate() {
-    const name = this.readIdentifierLike('Expected private name');
-
-    let value = null;
-    if (this.match(TokenType.EQUALS)) {
-      value = this.parseExpression();
-    }
+    const decls = [];
+    do {
+      const name = this.readIdentifierLike('Expected private name');
+      let value = null;
+      let size;
+      if (this.match(TokenType.LBRACKET)) {
+        size = this.parseExpression();
+        this.expect(TokenType.RBRACKET, 'Expected ] after array size');
+      } else if (this.match(TokenType.EQUALS)) {
+        value = this.parseExpression();
+      }
+      decls.push(new ast.Private(name, value, size));
+    } while (this.match(TokenType.COMMA));
 
     this.expect(TokenType.SEMICOLON, 'Expected ; after PRIVATE');
 
-    return new ast.Private(name, value);
+    return decls;
   }
 
   // Parse statements up to (but not consuming) END/UNTIL/ELSE/CASE/

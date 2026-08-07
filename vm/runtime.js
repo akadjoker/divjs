@@ -70,6 +70,26 @@ export class CanvasEngineRuntime {
     };
 
     this.randomSeed = null;
+
+    // Fade overlay: alpha 0=transparent, 1=fully opaque
+    this._fade = { active: false, alpha: 0, target: 0, speed: 0, r: 0, g: 0, b: 0 };
+
+    // Mouse state (updated by setupMouseListeners)
+    this._mouse = { x: 0, y: 0, buttons: [false, false, false] };
+    if (this.ctx?.canvas) this._setupMouseListeners(this.ctx.canvas);
+  }
+
+  _setupMouseListeners(canvas) {
+    const m = this._mouse;
+    const toCanvas = (e) => {
+      const r = canvas.getBoundingClientRect();
+      m.x = Math.round((e.clientX - r.left) * (canvas.width  / r.width));
+      m.y = Math.round((e.clientY - r.top)  * (canvas.height / r.height));
+    };
+    canvas.addEventListener('mousemove',  e => { toCanvas(e); });
+    canvas.addEventListener('mousedown',  e => { toCanvas(e); m.buttons[e.button] = true; });
+    canvas.addEventListener('mouseup',    e => { toCanvas(e); m.buttons[e.button] = false; });
+    canvas.addEventListener('mouseleave', e => { m.buttons = [false, false, false]; });
   }
 
   nextRandom01() {
@@ -126,6 +146,20 @@ export class CanvasEngineRuntime {
       this.fpsValue = this.fpsAccumFrames / this.fpsAccumTime;
       this.fpsAccumTime = 0;
       this.fpsAccumFrames = 0;
+    }
+
+    // Advance fade each frame
+    const f = this._fade;
+    if (f.active) {
+      const step = f.speed / 100;
+      if (f.alpha < f.target) {
+        f.alpha = Math.min(f.target, f.alpha + step);
+      } else if (f.alpha > f.target) {
+        f.alpha = Math.max(f.target, f.alpha - step);
+      }
+      if (f.alpha === f.target) f.active = false;
+      // Snap to exact target to avoid float drift
+      else if (Math.abs(f.alpha - f.target) < 1e-9) { f.alpha = f.target; f.active = false; }
     }
   }
 
@@ -632,6 +666,11 @@ export class CanvasEngineRuntime {
     return 0;
   }
 
+  writeIntNative(font, x, y, align, value) {
+    this.textNative(x, y, Math.floor(Number(value) || 0));
+    return 0;
+  }
+
   clearNative() {
     this.drawCommands.length = 0;
     return 0;
@@ -695,10 +734,32 @@ export class CanvasEngineRuntime {
   }
 
   collisionNative(typeCode) {
-    if (!this.vm?.currentProcess) {
-      return 0;
-    }
+    if (!this.vm?.currentProcess) return 0;
     return this.vm.processManager.collision(this.vm.currentProcess, Number(typeCode));
+  }
+
+  collisionCircleNative(typeCode) {
+    if (!this.vm?.currentProcess) return 0;
+    return this.vm.processManager.collisionCircle(this.vm.currentProcess, Number(typeCode));
+  }
+
+  collisionOBBNative(typeCode) {
+    if (!this.vm?.currentProcess) return 0;
+    return this.vm.processManager.collisionOBB(this.vm.currentProcess, Number(typeCode));
+  }
+
+  collisionPointNative(px, py, typeCode) {
+    return this.vm.processManager.collisionPoint(Number(px), Number(py), Number(typeCode));
+  }
+
+  placeMeetingNative(tx, ty, typeCode) {
+    if (!this.vm?.currentProcess) return 0;
+    return this.vm.processManager.placeMeeting(this.vm.currentProcess, Number(tx), Number(ty), Number(typeCode));
+  }
+
+  placeFreeNative(tx, ty, typeCode) {
+    if (!this.vm?.currentProcess) return 1;
+    return this.vm.processManager.placeFree(this.vm.currentProcess, Number(tx), Number(ty), Number(typeCode));
   }
 
   signalNative(targetOrType, signalCode) {
@@ -885,6 +946,7 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('out_of_screen', this.outOfScreenNative.bind(this));
     this.vm.registerNative('exit_screen', this.outOfScreenNative.bind(this));
     this.vm.registerNative('write', this.writeNative.bind(this));
+    this.vm.registerNative('write_int', this.writeIntNative.bind(this));
     this.vm.registerNative('set_color', this.setColorNative.bind(this));
     this.vm.registerNative('set_colro', this.setColorNative.bind(this));
     this.vm.registerNative('clear', this.clearNative.bind(this));
@@ -894,12 +956,113 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('log', this.logNative.bind(this));
     this.vm.registerNative('print', this.printNative.bind(this));
     this.vm.registerNative('collision', this.collisionNative.bind(this));
+    this.vm.registerNative('collision_circle', this.collisionCircleNative.bind(this));
+    this.vm.registerNative('collision_obb', this.collisionOBBNative.bind(this));
+    this.vm.registerNative('collision_point', this.collisionPointNative.bind(this));
+    this.vm.registerNative('place_meeting', this.placeMeetingNative.bind(this));
+    this.vm.registerNative('place_free', this.placeFreeNative.bind(this));
     this.vm.registerNative('signal', this.signalNative.bind(this));
     this.vm.registerNative('let_me_alone', this.letMeAloneNative.bind(this));
     this.vm.registerNative('load_graphic', this.loadGraphicNative.bind(this));
     this.vm.registerNative('load_tile', this.loadTileNative.bind(this));
     this.vm.registerNative('__get_path', this.getPathNative.bind(this));
     this.vm.registerNative('__set_path', this.setPathNative.bind(this));
+    this.vm.registerNative('fade_off', (speed = 1) => { this._fadeStart(0, 0, 0, speed ?? 1, 1); return 0; });
+    this.vm.registerNative('fade_on',  (speed = 1) => { this._fadeStart(0, 0, 0, speed ?? 1, 0); return 0; });
+    this.vm.registerNative('fade',     (r, g, b, speed, target) => { this._fadeStart(r ?? 0, g ?? 0, b ?? 0, speed ?? 1, target ?? 1); return 0; });
+    this.vm.registerNative('is_fading', () => this._fade.active ? 1 : 0);
+    this.vm.registerNative('new_graphic',        this.newGraphicNative.bind(this));
+    this.vm.registerNative('gfx_fill',           this.gfxFillNative.bind(this));
+    this.vm.registerNative('gfx_fill_rgba',      this.gfxFillRGBANative.bind(this));
+    this.vm.registerNative('gfx_pixel',          this.gfxPixelNative.bind(this));
+    this.vm.registerNative('gfx_line',           this.gfxLineNative.bind(this));
+    this.vm.registerNative('gfx_rect',           this.gfxRectNative.bind(this));
+    this.vm.registerNative('gfx_rect_outline',   this.gfxRectOutlineNative.bind(this));
+    this.vm.registerNative('gfx_circle',         this.gfxCircleNative.bind(this));
+    this.vm.registerNative('gfx_circle_outline', this.gfxCircleOutlineNative.bind(this));
+    this.vm.registerNative('gfx_text',           this.gfxTextNative.bind(this));
+    this.vm.registerNative('free_graphic',       (id) => { Graphics.remove(Number(id)); return 0; });
+    this.vm.registerNative('mouse_x',      () => this._mouse.x);
+    this.vm.registerNative('mouse_y',      () => this._mouse.y);
+    this.vm.registerNative('mouse_button', (b) => this._mouse.buttons[Number(b) || 0] ? 1 : 0);
+  }
+
+  // target: 1 = fade to opaque (fade out), 0 = fade to transparent (fade in)
+  _fadeStart(r, g, b, speed, target) {
+    const f = this._fade;
+    f.r = Math.max(0, Math.min(255, Math.round(r)));
+    f.g = Math.max(0, Math.min(255, Math.round(g)));
+    f.b = Math.max(0, Math.min(255, Math.round(b)));
+    f.speed = Math.max(0.1, Math.min(100, speed));
+    f.target = target ? 1 : 0;
+    f.active = f.alpha !== f.target;
+  }
+
+  // ── Procedural graphics API ──────────────────────────────────────────────
+
+  _gfxCtx(id) {
+    const g = Graphics.get(Number(id));
+    return g && g.ctx2d ? g.ctx2d : null;
+  }
+
+  _cssRGB(r, g, b) { return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`; }
+  _cssRGBA(r, g, b, a) { return `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${Math.max(0,Math.min(1, a/100))})`; }
+
+  newGraphicNative(w, h) { return Graphics.create(Number(w) || 1, Number(h) || 1); }
+
+  gfxFillNative(id, r, g, b) {
+    const c = this._gfxCtx(id); if (!c) return 0;
+    c.fillStyle = this._cssRGB(r, g, b);
+    c.fillRect(0, 0, c.canvas.width, c.canvas.height); return 0;
+  }
+
+  gfxFillRGBANative(id, r, g, b, a) {
+    const c = this._gfxCtx(id); if (!c) return 0;
+    c.clearRect(0, 0, c.canvas.width, c.canvas.height);
+    if ((a ?? 100) > 0) { c.fillStyle = this._cssRGBA(r, g, b, a ?? 100); c.fillRect(0, 0, c.canvas.width, c.canvas.height); }
+    return 0;
+  }
+
+  gfxPixelNative(id, x, y, r, g, b) {
+    const c = this._gfxCtx(id); if (!c) return 0;
+    c.fillStyle = this._cssRGB(r, g, b); c.fillRect(x, y, 1, 1); return 0;
+  }
+
+  gfxLineNative(id, x1, y1, x2, y2, r, g, b) {
+    const c = this._gfxCtx(id); if (!c) return 0;
+    c.strokeStyle = this._cssRGB(r, g, b); c.lineWidth = 1;
+    c.beginPath(); c.moveTo(x1, y1); c.lineTo(x2, y2); c.stroke(); return 0;
+  }
+
+  gfxRectNative(id, x, y, w, h, r, g, b) {
+    const c = this._gfxCtx(id); if (!c) return 0;
+    c.fillStyle = this._cssRGB(r, g, b); c.fillRect(x, y, w, h); return 0;
+  }
+
+  gfxRectOutlineNative(id, x, y, w, h, r, g, b) {
+    const c = this._gfxCtx(id); if (!c) return 0;
+    c.strokeStyle = this._cssRGB(r, g, b); c.lineWidth = 1;
+    c.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1); return 0;
+  }
+
+  gfxCircleNative(id, cx, cy, radius, r, g, b) {
+    const c = this._gfxCtx(id); if (!c) return 0;
+    c.fillStyle = this._cssRGB(r, g, b);
+    c.beginPath(); c.arc(cx, cy, Math.abs(radius), 0, Math.PI * 2); c.fill(); return 0;
+  }
+
+  gfxCircleOutlineNative(id, cx, cy, radius, r, g, b) {
+    const c = this._gfxCtx(id); if (!c) return 0;
+    c.strokeStyle = this._cssRGB(r, g, b); c.lineWidth = 1;
+    c.beginPath(); c.arc(cx, cy, Math.abs(radius), 0, Math.PI * 2); c.stroke(); return 0;
+  }
+
+  gfxTextNative(id, x, y, text, r, g, b, size) {
+    const c = this._gfxCtx(id); if (!c) return 0;
+    c.fillStyle = this._cssRGB(r, g, b);
+    c.font = `${Math.round(size || 12)}px monospace`;
+    c.textBaseline = 'top';
+    c.fillText(String(text), x, y); return 0;
   }
 
   transformPoint(x, y, ctype) {
@@ -1043,23 +1206,43 @@ export class CanvasEngineRuntime {
     const centerY = py + process.height * 0.5;
     const graph = this.getProcessGraphInfo(process);
 
+    const alpha = (process.alpha ?? 100) / 100;
+    if (alpha <= 0) return; // invisible — skip entirely
+
+    const r = process.red   ?? 255;
+    const g = process.green ?? 255;
+    const b = process.blue  ?? 255;
+    const hasTint = r !== 255 || g !== 255 || b !== 255;
+
+    this.ctx.save();
+    if (alpha < 1) this.ctx.globalAlpha = alpha;
+
     if (graph.graphId > 0) {
       const drewSprite = this.drawGraphSprite(
-        graph.fileId,
-        graph.graphId,
-        centerX,
-        centerY,
-        graph.angle,
-        graph.size,
-        graph.flags,
-        process.width,
-        process.height
+        graph.fileId, graph.graphId,
+        centerX, centerY,
+        graph.angle, graph.size, graph.flags,
+        process.width, process.height
       );
 
-      if (!drewSprite) {
-        this.drawGraphPlaceholder(centerX, centerY, graph.angle, graph.size, '#2dd4bf');
+      if (drewSprite && hasTint) {
+        this.ctx.globalCompositeOperation = 'multiply';
+        this.ctx.fillStyle = `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+        const hw = process.width * 0.5 * ((graph.size || 100) / 100);
+        const hh = process.height * 0.5 * ((graph.size || 100) / 100);
+        this.ctx.fillRect(centerX - hw, centerY - hh, hw * 2, hh * 2);
+        this.ctx.globalCompositeOperation = 'source-over';
       }
+
+      if (!drewSprite) {
+        this.drawGraphPlaceholder(centerX, centerY, graph.angle, graph.size, `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`);
+      }
+    } else {
+      // No graphic assigned — draw a colored placeholder box so the process is always visible
+      this.drawGraphPlaceholder(centerX, centerY, graph.angle, graph.size, `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`);
     }
+
+    this.ctx.restore();
 
     if (this.debugDrawProcessBounds) {
       this.ctx.save();
@@ -1071,7 +1254,7 @@ export class CanvasEngineRuntime {
   }
 
   drawProcessesFallback() {
-    const processes = this.vm.processManager.getAll();
+    const processes = this.vm.processManager.getDrawList();
     const activeScrollEntries = this.state.scroll
       .map((entry, index) => ({ entry, index }))
       .filter(({ entry }) => entry && entry.active);
@@ -1189,5 +1372,14 @@ export class CanvasEngineRuntime {
     this.drawProcessesFallback();
     this.drawCommandsToCanvas();
     this.drawDebugStats();
+    // Fade overlay drawn last, on top of everything
+    if (this._fade.alpha > 0) {
+      const f = this._fade;
+      this.ctx.save();
+      this.ctx.globalAlpha = f.alpha;
+      this.ctx.fillStyle = `rgb(${f.r},${f.g},${f.b})`;
+      this.ctx.fillRect(0, 0, this.width, this.height);
+      this.ctx.restore();
+    }
   }
 }

@@ -95,11 +95,15 @@ export class VM {
       this.runMain();
     }
 
-    // Get snapshot of processes (new spawns only enter next frame)
-    const snapshot = [...this.processManager.processes];
+    // Iterate processes by index so newly-spawned processes (appended
+    // after this point) are never visited in the same tick — same
+    // semantics as the old [...snapshot] but without the array allocation.
+    const procs = this.processManager.processes;
+    const procCount = procs.length;
 
     // Execute each process until FRAME or finished
-    for (const process of snapshot) {
+    for (let pi = 0; pi < procCount; pi++) {
+      const process = procs[pi];
       if (!process.active || process.suspended || process.finished) {
         continue;
       }
@@ -270,18 +274,19 @@ export class VM {
     process.locals = this.locals;
     process.callStack = this.callStack;
 
-    // Sync all 8 canonical fields (x, y, width, height, ctype, id, region,
-    // angle) from locals right after this process yields — not just x/y.
-    // The previous code only synced x/y here and left the other six for
-    // ProcessManager.sweep() to sync once, after every process in the tick
-    // has already run. That made x/y "live" within the same frame (visible
-    // to any process that runs later in this tick) while width/height/
-    // ctype/region/angle stayed a full frame stale for the same readers —
-    // e.g. a process that grows its own hitbox mid-frame wouldn't have
-    // that reflected in collision() checks against it until the next
-    // frame. Process.sync() already implements all 8 fields consistently;
-    // calling it here (instead of duplicating two of the eight by hand)
-    // removes both the duplication and the asymmetry in one line.
+    // Sync all canonical fields (x, y, width, height, ctype, id, region,
+    // angle, red, green, blue, alpha, tag) from locals right after this
+    // process yields — not just x/y. The previous code only synced x/y
+    // here and left the rest for ProcessManager.sweep() to sync once,
+    // after every process in the tick has already run. That made x/y
+    // "live" within the same frame (visible to any process that runs
+    // later in this tick) while width/height/ctype/region/angle stayed a
+    // full frame stale for the same readers — e.g. a process that grows
+    // its own hitbox mid-frame wouldn't have that reflected in
+    // collision() checks against it until the next frame. Process.sync()
+    // already implements every canonical field consistently; calling it
+    // here (instead of duplicating some of them by hand) removes both
+    // the duplication and the asymmetry in one line.
     process.sync();
   }
 
@@ -316,18 +321,53 @@ export class VM {
 
       case OpCodes.STORE_LOCAL:
         this.locals[operands[0]] = this.pop();
+        // Notify the draw-list cache when priority (slot 13) changes.
+        if (operands[0] === 13) this.processManager.markPriorityDirty();
         this.ip++;
         break;
 
-      case OpCodes.LOAD_GLOBAL:
-        this.push(this.globals.has(operands[0]) ? this.globals.get(operands[0]) : 0);
+      case OpCodes.LOAD_GLOBAL: {
+        const gv = this.globals.get(operands[0]);
+        this.push(gv === undefined ? 0 : gv);
         this.ip++;
         break;
+      }
 
       case OpCodes.STORE_GLOBAL:
         this.globals.set(operands[0], this.pop());
         this.ip++;
         break;
+
+      case OpCodes.LOAD_LOCAL_IDX: {
+        const li = this.pop();
+        this.push(this.locals[operands[0] + li] ?? 0);
+        this.ip++;
+        break;
+      }
+
+      case OpCodes.STORE_LOCAL_IDX: {
+        const lv = this.pop();
+        const li2 = this.pop();
+        this.locals[operands[0] + li2] = lv;
+        this.ip++;
+        break;
+      }
+
+      case OpCodes.LOAD_GLOBAL_IDX: {
+        const gi = this.pop();
+        const gv2 = this.globals.get(operands[0] + gi);
+        this.push(gv2 === undefined ? 0 : gv2);
+        this.ip++;
+        break;
+      }
+
+      case OpCodes.STORE_GLOBAL_IDX: {
+        const gval = this.pop();
+        const gi2 = this.pop();
+        this.globals.set(operands[0] + gi2, gval);
+        this.ip++;
+        break;
+      }
 
       // Arithmetic. Every one of these used to declare its operands as
       // "const b1"/"const a1", "const b2"/"const a2", ... — a separately
@@ -667,12 +707,11 @@ export class VM {
 
   // Push value
   push(value) {
-    // Guard contra underflow
-    if (value === undefined && this.debug) {
+    if (this.debug && value === undefined) {
       console.warn('Stack underflow detected');
       value = 0;
     }
-    this.stack.push(value ?? 0);
+    this.stack.push(value);
   }
 
   // Pop value

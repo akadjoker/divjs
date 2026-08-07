@@ -193,39 +193,28 @@ generally more load-bearing for real game logic — inventories, wave
 lists, tile data — than structs, which are more of a code-organization
 nicety) is enough to start with.
 
-### Canonical `red`/`green`/`blue`/`alpha`/`tag` process fields
-The 8 existing canonical fields (`x`, `y`, `width`, `height`, `ctype`,
-`id`, `region`, `angle` — confirmed in `compiler/compiler.js`'s
-`compileProcess()`, fixed slots 0-7) cover position/size/collision-type/
-identity/angle, but nothing for color or free-form gameplay tagging:
+### ~~Canonical `red`/`green`/`blue`/`alpha`/`tag` process fields~~ — DONE (`lang-features` branch)
+Five new fixed slots (8-12), following the exact pattern already used
+for `ctype`/`region`/`angle`. Went with four separate numeric fields
+rather than one packed value (`red`/`green`/`blue` at 0-255, the
+conventional 8-bit RGB range; `alpha` at 0-100, matching the scale
+`scroll[i].alpha` already uses elsewhere in this runtime — kept
+consistent rather than introducing a second, incompatible alpha
+convention). `red`/`green`/`blue` default to `255` (a process that never
+touches them is visually unaffected); `alpha` defaults to `100`
+(matching `scroll.alpha`'s own default); `tag` defaults to `0`.
 
-- **`red`/`green`/`blue`/`alpha`** (or a single packed `color` field —
-  worth deciding which before implementing, since they're genuininely
-  different APIs for a DIV author: four separate numeric fields read/
-  written independently, versus one field holding a packed RGBA value
-  that needs a native to unpack/pack) would let a process tint or fade
-  itself without a native call for every color change — right now the
-  only way to affect a process's draw color is `set_color()` immediately
-  before a draw call inside that process's own loop, which is fine for a
-  single flat color but has no notion of *this process's own* persistent
-  tint/opacity the renderer could pick up automatically.
-- **`tag`** — a free-form number (or small string) a game author sets
-  and reads purely for their own gameplay logic (`IF (other.tag == 5)
-  ...`), distinct from `TYPE`/`process.type`, which is already spoken
-  for (the hash of the process's *declared name*, used by `collision()`
-  and `signal()` — confirmed in `vm/process.js`; not available for
-  reassignment or general-purpose categorization the way a Unity-style
-  "tag" would be).
+**Storage only**, as flagged as a separate decision below when this was
+scoped — nothing in the renderer applies these to a draw call
+automatically yet. A process's own `LOOP` body still calls `set_color()`
+itself, same as before these fields existed; whether/how the renderer
+should pick them up automatically during `drawProcessAt()` remains a
+follow-up, not done here.
 
-Implementation shape: extends the exact same fixed-slot pattern already
-used for `ctype`/`region`/`angle` — more entries in the slot table in
-`compiler/compiler.js`, `vm/vm.js`'s `SPAWN_PROCESS`, and
-`vm/process.js`'s `Process` constructor/`sync()`. Mechanically
-straightforward; the real decision is the color representation (4 fields
-vs. 1 packed value) and whether the renderer should actually *apply*
-`red`/`green`/`blue`/`alpha` automatically during `drawProcessAt()`
-(making them meaningful, not just storage) or whether that's left as a
-separate, later integration once the fields exist.
+Confirmed a process param sharing a canonical field's name (e.g.
+`PROCESS p(tag, x, y)`) shadows the fixed slot the same way a param
+named `id` already did before this — not a new special case, same
+existing behavior extended to five more names.
 
 ### Cross-process field access: `father.x`, `son.x`
 Confirmed this doesn't work today, and confirmed exactly why. `.` access

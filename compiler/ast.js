@@ -1,10 +1,11 @@
 // AST node types
 
 export class Program {
-  constructor(name, globals, processes, functions, mainBlock) {
+  constructor(name, globals, structs, processes, functions, mainBlock) {
     this.type = 'program';
     this.name = name;
     this.globals = globals;
+    this.structs = structs;
     this.processes = processes;
     this.functions = functions;
     this.mainBlock = mainBlock;
@@ -12,10 +13,11 @@ export class Program {
 }
 
 export class Global {
-  constructor(name, value) {
+  constructor(name, value, size) {
     this.type = 'global';
     this.name = name;
     this.value = value;
+    if (size !== undefined) this.size = size; // present only for array declarations
   }
 }
 
@@ -39,10 +41,11 @@ export class Process {
 }
 
 export class Private {
-  constructor(name, value) {
+  constructor(name, value, size) {
     this.type = 'private';
     this.name = name;
     this.value = value;
+    if (size !== undefined) this.size = size;
   }
 }
 
@@ -226,5 +229,17 @@ export class TypeOperator {
   constructor(processName) {
     this.type = 'type_operator';
     this.processName = processName;
+  }
+}
+
+// fields: [{name, defaultValue|null, size|null, nested:StructDecl|null}]
+// initializers: flat array of value expressions | null
+export class StructDecl {
+  constructor(name, count, fields, initializers = null) {
+    this.type = 'struct_decl';
+    this.name = name;
+    this.count = count;
+    this.fields = fields;
+    this.initializers = initializers;
   }
 }

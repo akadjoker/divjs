@@ -30,6 +30,28 @@ export class Process {
     this.ctype = params.ctype ?? params.c_type ?? 0;
     this.region = params.region ?? 0;
     this.angle = params.angle ?? 0;
+    // Color tint (0-255, matching the conventional 8-bit RGB range) and
+    // opacity (0-100, matching the 0-100 scale scroll[i].alpha already
+    // uses elsewhere in this runtime — kept consistent with that rather
+    // than introducing a second, incompatible 0-255 alpha convention).
+    // Storage only: nothing in the renderer applies these to a draw call
+    // automatically yet, same as every other canonical field — a
+    // process's own LOOP body is responsible for calling set_color()
+    // itself, same as today. red/green/blue default to 255 (full/no
+    // tint) so a process that never touches them draws unaffected.
+    this.red = params.red ?? 255;
+    this.green = params.green ?? 255;
+    this.blue = params.blue ?? 255;
+    this.alpha = params.alpha ?? 100;
+    // Free-form number a game author sets/reads purely for their own
+    // gameplay logic (IF (other.tag == 5) ...) — distinct from `type`
+    // just below, which is the hash of the process's *declared name*
+    // and is already spoken for by collision()/signal(), not
+    // reassignable or meant for general-purpose categorization.
+    this.tag = params.tag ?? 0;
+    // Draw order: lower priority draws first (behind), higher draws last
+    // (in front). Default 0 = creation order (same as before this existed).
+    this.priority = params.priority ?? 0;
     this.parentId = params.parentId ?? 0;
 
     // Private variables
@@ -59,7 +81,9 @@ export class Process {
     this.stack = [];       // Stack proprio
     this.locals = [];      // Locais proprios
 
-    // Sincronizar com locals (slots fixos: 0=x, 1=y, 2=width, 3=height, 4=ctype, 5=id, 6=region, 7=angle)
+    // Sincronizar com locals (slots fixos: 0=x, 1=y, 2=width, 3=height,
+    // 4=ctype, 5=id, 6=region, 7=angle, 8=red, 9=green, 10=blue,
+    // 11=alpha, 12=tag, 13=priority)
     this.locals[0] = this.x;
     this.locals[1] = this.y;
     this.locals[2] = this.width;
@@ -68,6 +92,12 @@ export class Process {
     this.locals[5] = this.id;
     this.locals[6] = this.region;
     this.locals[7] = this.angle;
+    this.locals[8] = this.red;
+    this.locals[9] = this.green;
+    this.locals[10] = this.blue;
+    this.locals[11] = this.alpha;
+    this.locals[12] = this.tag;
+    this.locals[13] = this.priority;
   }
 
   // Get bounds (for collision)
@@ -89,6 +119,46 @@ export class Process {
            a.x + a.width > b.x &&
            a.y < b.y + b.height &&
            a.y + a.height > b.y;
+  }
+
+  // Circle vs circle: uses width/2 as radius for each process
+  collidesCircle(other) {
+    const ra = this.width / 2;
+    const rb = other.width / 2;
+    const dx = this.x - other.x;
+    const dy = this.y - other.y;
+    const r = ra + rb;
+    return dx * dx + dy * dy <= r * r;
+  }
+
+  // OBB vs OBB using SAT (4 axes from the two boxes).
+  // Falls back to AABB when both angles are 0.
+  collidesOBB(other) {
+    if (this.angle === 0 && other.angle === 0) return this.collidesWith(other);
+
+    const DIV_TO_RAD = Math.PI / 180000;
+    const aa = this.angle * DIV_TO_RAD;
+    const ba = other.angle * DIV_TO_RAD;
+
+    const ahx = this.width / 2,  ahy = this.height / 2;
+    const bhx = other.width / 2, bhy = other.height / 2;
+
+    const axX = Math.cos(aa), axY = Math.sin(aa);
+    const ayX = -axY,         ayY = axX;
+    const bxX = Math.cos(ba), bxY = Math.sin(ba);
+    const byX = -bxY,         byY = bxX;
+
+    const dX = other.x - this.x, dY = other.y - this.y;
+
+    const proj = (axisX, axisY) => {
+      const pA = Math.abs(axX * axisX + axY * axisY) * ahx +
+                 Math.abs(ayX * axisX + ayY * axisY) * ahy;
+      const pB = Math.abs(bxX * axisX + bxY * axisY) * bhx +
+                 Math.abs(byX * axisX + byY * axisY) * bhy;
+      return Math.abs(dX * axisX + dY * axisY) <= pA + pB;
+    };
+
+    return proj(axX, axY) && proj(ayX, ayY) && proj(bxX, bxY) && proj(byX, byY);
   }
 
   // Get property
@@ -117,6 +187,12 @@ export class Process {
     this.locals[5] = this.id;
     this.region = this.locals[6] ?? this.region;
     this.angle = this.locals[7] ?? this.angle;
+    this.red = this.locals[8] ?? this.red;
+    this.green = this.locals[9] ?? this.green;
+    this.blue = this.locals[10] ?? this.blue;
+    this.alpha = this.locals[11] ?? this.alpha;
+    this.tag = this.locals[12] ?? this.tag;
+    this.priority = this.locals[13] ?? this.priority;
   }
 }
 
@@ -126,6 +202,8 @@ export class ProcessManager {
     this.byType = new Map();       // Map<type, Set<processId>>
     this.byName = new Map();       // Map<name, Set<processId>>
     this.nextId = 1;               // IDs comecam em 1 (0 = null)
+    this._drawList = [];           // Cached sorted draw order
+    this._drawDirty = true;        // Rebuild draw list before next render
   }
 
   // Create process
@@ -137,6 +215,7 @@ export class ProcessManager {
     process.locals[7] = process.angle;
 
     this.processes.push(process);
+    this._drawDirty = true;
 
     // Index por tipo
     if (!this.byType.has(process.type)) {
@@ -162,6 +241,22 @@ export class ProcessManager {
   // Get all processes
   getAll() {
     return this.processes;
+  }
+
+  // Returns processes sorted by priority for rendering.
+  // Rebuilds only when the list changed or a priority was written.
+  getDrawList() {
+    if (this._drawDirty) {
+      this._drawList = this.processes.slice();
+      this._drawList.sort((a, b) => a.priority - b.priority);
+      this._drawDirty = false;
+    }
+    return this._drawList;
+  }
+
+  // Called by the VM when priority slot (13) is written.
+  markPriorityDirty() {
+    this._drawDirty = true;
   }
 
   // Get processes by type (O(1) lookup)
@@ -212,6 +307,7 @@ export class ProcessManager {
 
         // Remove from array
         this.processes.splice(i, 1);
+        this._drawDirty = true;
       }
     }
   }
@@ -225,23 +321,68 @@ export class ProcessManager {
   collision(currentProcess, typeCode) {
     const processIds = this.byType.get(typeCode);
     if (!processIds) return 0;
-
     for (const id of processIds) {
-      // A process's own bounding box always overlaps itself, so without
-      // this guard collision(TYPE X) called from inside a process of type
-      // X immediately returns that process's own id — every frame, before
-      // any real overlap happens. This silently breaks any same-type
-      // collision check (enemy-vs-enemy, bullet-vs-bullet, etc): the
-      // caller sees a "hit" on frame one and never a real one.
       if (id === currentProcess.id) continue;
-
       const other = this.get(id);
-      if (other && other.active && currentProcess.collidesWith(other)) {
-        return id; // Returns ID of colliding process
-      }
+      if (other && other.active && currentProcess.collidesWith(other)) return id;
     }
+    return 0;
+  }
 
-    return 0; // No collision
+  collisionCircle(currentProcess, typeCode) {
+    const processIds = this.byType.get(typeCode);
+    if (!processIds) return 0;
+    for (const id of processIds) {
+      if (id === currentProcess.id) continue;
+      const other = this.get(id);
+      if (other && other.active && currentProcess.collidesCircle(other)) return id;
+    }
+    return 0;
+  }
+
+  collisionOBB(currentProcess, typeCode) {
+    const processIds = this.byType.get(typeCode);
+    if (!processIds) return 0;
+    for (const id of processIds) {
+      if (id === currentProcess.id) continue;
+      const other = this.get(id);
+      if (other && other.active && currentProcess.collidesOBB(other)) return id;
+    }
+    return 0;
+  }
+
+  // Returns ID of first process of typeCode whose AABB contains point (px, py)
+  collisionPoint(px, py, typeCode) {
+    const processIds = this.byType.get(typeCode);
+    if (!processIds) return 0;
+    for (const id of processIds) {
+      const p = this.get(id);
+      if (p && p.active &&
+          px >= p.x && px <= p.x + p.width &&
+          py >= p.y && py <= p.y + p.height) return id;
+    }
+    return 0;
+  }
+
+  // Returns ID of first process of typeCode that would collide with
+  // currentProcess if it were placed at (tx, ty). Position is not changed.
+  placeMeeting(currentProcess, tx, ty, typeCode) {
+    const processIds = this.byType.get(typeCode);
+    if (!processIds) return 0;
+    const hw = currentProcess.width, hh = currentProcess.height;
+    for (const id of processIds) {
+      if (id === currentProcess.id) continue;
+      const other = this.get(id);
+      if (!other || !other.active) continue;
+      if (tx < other.x + other.width  && tx + hw > other.x &&
+          ty < other.y + other.height && ty + hh > other.y) return id;
+    }
+    return 0;
+  }
+
+  // Returns 1 if currentProcess placed at (tx, ty) does NOT hit typeCode.
+  placeFree(currentProcess, tx, ty, typeCode) {
+    return this.placeMeeting(currentProcess, tx, ty, typeCode) === 0 ? 1 : 0;
   }
 
   getChildrenOf(parentId) {

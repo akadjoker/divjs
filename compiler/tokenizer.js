@@ -9,6 +9,7 @@ export const TokenType = {
   PROGRAM: 'PROGRAM',
   PROCESS: 'PROCESS',
   FUNCTION: 'FUNCTION',
+  STRUCT: 'STRUCT',
   GLOBAL: 'GLOBAL',
   PRIVATE: 'PRIVATE',
   VAR: 'VAR',
@@ -77,6 +78,7 @@ const KEYWORDS = {
   'PROGRAM': TokenType.PROGRAM,
   'PROCESS': TokenType.PROCESS,
   'FUNCTION': TokenType.FUNCTION,
+  'STRUCT': TokenType.STRUCT,
   'GLOBAL': TokenType.GLOBAL,
   'PRIVATE': TokenType.PRIVATE,
   'VAR': TokenType.VAR,
@@ -152,12 +154,21 @@ export class Lexer {
 
   // Skip comments
   skipComment() {
-    if (this.current() === '/' && this.peek() === '/') {
-      while (this.current() && this.current() !== '\n') {
-        this.advance();
-      }
-      // Consume newline
-      if (this.current() === '\n') {
+    // Single-line: // or --
+    if ((this.current() === '/' && this.peek() === '/') ||
+        (this.current() === '-' && this.peek() === '-')) {
+      while (this.current() && this.current() !== '\n') this.advance();
+      if (this.current() === '\n') this.advance();
+      return true;
+    }
+    // Block: /* ... */
+    if (this.current() === '/' && this.peek() === '*') {
+      this.advance(); this.advance(); // consume /*
+      while (this.current()) {
+        if (this.current() === '*' && this.peek() === '/') {
+          this.advance(); this.advance(); // consume */
+          return true;
+        }
         this.advance();
       }
       return true;

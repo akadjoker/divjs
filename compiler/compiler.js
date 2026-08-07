@@ -31,6 +31,8 @@ export class Compiler {
     this.functionTable = new Map();
     this.loopStack = [];
     this.nextLocalSlot = 0;
+    this.nextGlobalSlot = 0;
+    this.structMap = new Map(); // name → {base, count, instanceSize, fields: Map<fname,{offset,size}>}
   }
 
   // Every compile-time error below is keyed off an AST node (a statement
@@ -60,6 +62,8 @@ export class Compiler {
     this.functionTable = new Map();
     this.loopStack = [];
     this.nextLocalSlot = 0;
+    this.nextGlobalSlot = 0;
+    this.structMap = new Map();
 
     // Pre-register every function and process name — with a placeholder
     // address, patched once its body is actually compiled below — before
@@ -108,6 +112,11 @@ export class Compiler {
       this.compileGlobal(global);
     }
 
+    // Compile struct declarations (allocate slots + initialize defaults)
+    for (const struct of program.structs || []) {
+      this.compileStructDecl(struct);
+    }
+
     // Skip declarations at runtime and jump to main entry.
     this.emit(OpCodes.JUMP, 0);
     const jumpToMain = this.instructions.length - 1;
@@ -149,11 +158,10 @@ export class Compiler {
       instructions: this.instructions,
       processTable: this.processTable,
       functionTable: this.functionTable,
-      // Published for the same reason processTable entries carry a
-      // .locals map: so tooling (the disassembler, an eventual debugger)
-      // can resolve a bare slot index back to the GLOBAL name that
-      // declared it, instead of only ever showing "STORE_GLOBAL 3".
-      globals: Object.fromEntries(this.globalMap),
+      // Scalar globals only (arrays stored as objects, not useful for slot→name lookup)
+      globals: Object.fromEntries(
+        [...this.globalMap.entries()].filter(([, v]) => typeof v === 'number')
+      ),
       mainAddr,
       // Same idea as functionTable/processTable entries' .locals — VAR
       // declarations made directly in the top-level BEGIN/END block, not
@@ -170,7 +178,25 @@ export class Compiler {
     if (this.globalMap.has(stmt.name)) {
       throw new Error(`Duplicate GLOBAL name: "${stmt.name}" is declared more than once.${this.locSuffix(stmt)}`);
     }
-    const idx = this.globalMap.size;
+
+    if (stmt.size !== undefined) {
+      // Array: evaluate size at compile time (must be a constant number)
+      const sizeVal = getConstantNumericValue(stmt.size);
+      if (sizeVal === null || sizeVal <= 0 || !Number.isInteger(sizeVal)) {
+        throw new Error(`GLOBAL array size must be a positive integer literal${this.locSuffix(stmt)}`);
+      }
+      const base = this.nextGlobalSlot;
+      this.nextGlobalSlot += sizeVal;
+      this.globalMap.set(stmt.name, { isArray: true, base, size: sizeVal });
+      // Zero-initialize all slots at startup
+      for (let i = 0; i < sizeVal; i++) {
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(0));
+        this.emit(OpCodes.STORE_GLOBAL, base + i);
+      }
+      return;
+    }
+
+    const idx = this.nextGlobalSlot++;
     this.globalMap.set(stmt.name, idx);
 
     if (stmt.value) {
@@ -179,6 +205,74 @@ export class Compiler {
     } else {
       this.emit(OpCodes.LOAD_CONST, this.addConstant(0));
       this.emit(OpCodes.STORE_GLOBAL, idx);
+    }
+  }
+
+  compileStructDecl(stmt) {
+    if (this.structMap.has(stmt.name)) {
+      throw new Error(`Duplicate STRUCT name: "${stmt.name}"${this.locSuffix(stmt)}`);
+    }
+
+    // Build field layout: offset and size within one instance
+    // Build the layout recursively (nested STRUCTs inline into parent)
+    const def = this.buildStructDef(stmt);
+    const base = this.nextGlobalSlot;
+    this.nextGlobalSlot += def.count * def.instanceSize;
+    this.structMap.set(stmt.name, { base, ...def });
+
+    if (stmt.initializers) {
+      // Flat initializer list: values map 1-to-1 to global slots
+      for (let s = 0; s < stmt.initializers.length && s < def.count * def.instanceSize; s++) {
+        const v = getConstantNumericValue(stmt.initializers[s]);
+        if (v !== null && v !== 0) {
+          this.emit(OpCodes.LOAD_CONST, this.addConstant(v));
+          this.emit(OpCodes.STORE_GLOBAL, base + s);
+        }
+      }
+    } else {
+      // Emit default-value initializers for non-zero scalar fields, all instances
+      this.emitStructDefaults(base, def, 0);
+    }
+  }
+
+  // Recursively build {instanceSize, count, fields} from a StructDecl AST node.
+  buildStructDef(stmt) {
+    const fields = new Map();
+    let instanceSize = 0;
+    const count = stmt.count ? getConstantNumericValue(stmt.count) : 1;
+    if (stmt.count && (count === null || count <= 0 || !Number.isInteger(count))) {
+      throw new Error(`STRUCT count must be a positive integer literal${this.locSuffix(stmt)}`);
+    }
+    for (const f of stmt.fields) {
+      if (f.nested) {
+        const nestedDef = this.buildStructDef(f.nested);
+        const totalSize = nestedDef.count * nestedDef.instanceSize;
+        fields.set(f.name, { offset: instanceSize, size: totalSize, isNested: true, nestedDef });
+        instanceSize += totalSize;
+      } else {
+        const fsize = f.size ? getConstantNumericValue(f.size) : 1;
+        if (f.size && (fsize === null || fsize <= 0 || !Number.isInteger(fsize))) {
+          throw new Error(`Struct field array size must be a positive integer literal${this.locSuffix(stmt)}`);
+        }
+        fields.set(f.name, { offset: instanceSize, size: fsize ?? 1, isNested: false, defaultValue: f.defaultValue });
+        instanceSize += fsize ?? 1;
+      }
+    }
+    return { instanceSize, count: count ?? 1, fields };
+  }
+
+  // Emit STORE_GLOBAL for all non-zero default values recursively.
+  emitStructDefaults(base, def, baseOffset) {
+    for (let i = 0; i < def.count; i++) {
+      const instOffset = baseOffset + i * def.instanceSize;
+      for (const [, f] of def.fields) {
+        if (f.isNested) {
+          this.emitStructDefaults(base, f.nestedDef, instOffset + f.offset);
+        } else if (f.size === 1 && f.defaultValue) {
+          this.compileExpression(f.defaultValue);
+          this.emit(OpCodes.STORE_GLOBAL, base + instOffset + f.offset);
+        }
+      }
     }
   }
 
@@ -238,7 +332,8 @@ export class Compiler {
     });
 
     // Reset locals for this process
-    // Slots fixos: 0=x, 1=y, 2=width, 3=height, 4=ctype, 5=id, 6=region, 7=angle
+    // Slots fixos: 0=x, 1=y, 2=width, 3=height, 4=ctype, 5=id, 6=region,
+    // 7=angle, 8=red, 9=green, 10=blue, 11=alpha, 12=tag, 13=priority
     this.localMap = new Map();
     this.localMap.set('x', 0);
     this.localMap.set('y', 1);
@@ -249,9 +344,15 @@ export class Compiler {
     this.localMap.set('id', 5);
     this.localMap.set('region', 6);
     this.localMap.set('angle', 7);
+    this.localMap.set('red', 8);
+    this.localMap.set('green', 9);
+    this.localMap.set('blue', 10);
+    this.localMap.set('alpha', 11);
+    this.localMap.set('tag', 12);
+    this.localMap.set('priority', 13);
 
-    // Add params as locals (start at slot 8)
-    this.nextLocalSlot = 8;
+    // Add params as locals (start at slot 14)
+    this.nextLocalSlot = 14;
     for (const param of stmt.params) {
       // Keep canonical process fields in fixed slots.
       if (!this.localMap.has(param)) {
@@ -261,13 +362,22 @@ export class Compiler {
 
     // Add privates as locals
     for (const priv of stmt.privates) {
-      if (!this.localMap.has(priv.name)) {
+      if (this.localMap.has(priv.name)) continue;
+      if (priv.size !== undefined) {
+        const sizeVal = getConstantNumericValue(priv.size);
+        if (sizeVal === null || sizeVal <= 0 || !Number.isInteger(sizeVal)) {
+          throw new Error(`PRIVATE array size must be a positive integer literal${this.locSuffix(priv)}`);
+        }
+        this.localMap.set(priv.name, { isArray: true, base: this.nextLocalSlot, size: sizeVal });
+        this.nextLocalSlot += sizeVal;
+      } else {
         this.localMap.set(priv.name, this.nextLocalSlot++);
       }
     }
 
     // Initialize private locals once when process starts.
     for (const priv of stmt.privates) {
+      if (priv.size !== undefined) continue; // arrays: uninitialized slots read as 0
       if (priv.value) {
         this.compileExpression(priv.value);
       } else {
@@ -705,13 +815,21 @@ export class Compiler {
 
       // Check if local
       if (this.localMap.has(name)) {
+        const entry = this.localMap.get(name);
+        if (typeof entry === 'object' && entry.isArray) {
+          throw new Error(`Array "${name}" must be assigned with an index: ${name}[i] = v${this.locSuffix(stmt)}`);
+        }
         this.compileExpression(stmt.value);
-        this.emit(OpCodes.STORE_LOCAL, this.localMap.get(name));
+        this.emit(OpCodes.STORE_LOCAL, entry);
       }
       // Check if global
       else if (this.globalMap.has(name)) {
+        const entry = this.globalMap.get(name);
+        if (typeof entry === 'object' && entry.isArray) {
+          throw new Error(`Array "${name}" must be assigned with an index: ${name}[i] = v${this.locSuffix(stmt)}`);
+        }
         this.compileExpression(stmt.value);
-        this.emit(OpCodes.STORE_GLOBAL, this.globalMap.get(name));
+        this.emit(OpCodes.STORE_GLOBAL, entry);
       }
       else {
         const idx = this.nextLocalSlot;
@@ -789,55 +907,46 @@ export class Compiler {
   // Compile identifier
   compileIdentifier(expr) {
     const name = expr.name;
+    const nameLower = name.toLowerCase(); // constants are case-insensitive
 
     // Builtin constants available without GLOBAL declarations.
     const builtinConstants = {
-      _left: 'left',
-      _right: 'right',
-      _up: 'up',
-      _down: 'down',
-      _space: 'space',
+      _left: 'ArrowLeft', _right: 'ArrowRight',
+      _up: 'ArrowUp',     _down: 'ArrowDown',
+      _space: ' ', _enter: 'Enter', _esc: 'Escape', _backspace: 'Backspace',
+      _tab: 'Tab', _shift: 'Shift', _ctrl: 'Control', _alt: 'Alt',
       _fire: 'z',
-      _enter: 'enter',
-      _esc: 'escape',
-      _1: '1',
-      _2: '2',
-      _3: '3',
-      _4: '4',
-      _5: '5',
-      _6: '6',
-      _7: '7',
-      _8: '8',
-      _9: '9',
-      _0: '0',
-      _q: 'q',
-      _a: 'a',
-      _o: 'o',
-      _p: 'p',
-      c_screen: 0,
-      c_scroll: 1,
-      c_m7: 2,
-      s_kill: 0,
-      s_wakeup: 1,
-      s_sleep: 2,
-      s_freeze: 3,
-      s_kill_tree: 100,
-      s_wakeup_tree: 101,
-      s_sleep_tree: 102,
-      s_freeze_tree: 103
+      _a: 'a', _b: 'b', _c: 'c', _d: 'd', _e: 'e', _f: 'f',
+      _g: 'g', _h: 'h', _i: 'i', _j: 'j', _k: 'k', _l: 'l',
+      _m: 'm', _n: 'n', _o: 'o', _p: 'p', _q: 'q', _r: 'r',
+      _s: 's', _t: 't', _u: 'u', _v: 'v', _w: 'w', _x: 'x',
+      _y: 'y', _z: 'z',
+      _0: '0', _1: '1', _2: '2', _3: '3', _4: '4',
+      _5: '5', _6: '6', _7: '7', _8: '8', _9: '9',
+      c_screen: 0, c_scroll: 1, c_m7: 2,
+      s_kill: 0, s_wakeup: 1, s_sleep: 2, s_freeze: 3,
+      s_kill_tree: 100, s_wakeup_tree: 101, s_sleep_tree: 102, s_freeze_tree: 103
     };
 
     // Check if local
     if (this.localMap.has(name)) {
-      this.emit(OpCodes.LOAD_LOCAL, this.localMap.get(name));
+      const entry = this.localMap.get(name);
+      if (typeof entry === 'object' && entry.isArray) {
+        throw new Error(`Array "${name}" must be accessed with an index: ${name}[i]${this.locSuffix(expr)}`);
+      }
+      this.emit(OpCodes.LOAD_LOCAL, entry);
     }
     // Check if global
     else if (this.globalMap.has(name)) {
-      this.emit(OpCodes.LOAD_GLOBAL, this.globalMap.get(name));
+      const entry = this.globalMap.get(name);
+      if (typeof entry === 'object' && entry.isArray) {
+        throw new Error(`Array "${name}" must be accessed with an index: ${name}[i]${this.locSuffix(expr)}`);
+      }
+      this.emit(OpCodes.LOAD_GLOBAL, entry);
     }
     // Check builtin constants
-    else if (Object.prototype.hasOwnProperty.call(builtinConstants, name)) {
-      this.emit(OpCodes.LOAD_CONST, this.addConstant(builtinConstants[name]));
+    else if (Object.prototype.hasOwnProperty.call(builtinConstants, nameLower)) {
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(builtinConstants[nameLower]));
     }
     else {
       throw new Error(`Unknown variable: ${name}${this.locSuffix(expr)}`);
@@ -994,8 +1103,114 @@ export class Compiler {
     };
   }
 
+  // Matches struct access patterns and emits the index computation.
+  // Works for arbitrary nesting depth. For dynamic cases the computed
+  // offset is left on the stack as a side-effect before returning.
+  compileStructIndex(path) {
+    const st = this.structMap.get(path.root);
+    if (!st) return { handled: false };
+
+    // Walk the segment list, collecting additive terms:
+    //   {kind:'const', v:N}  or  {kind:'dyn', expr, mult:M}
+    const terms = [];
+    let currentFields = st.fields;
+    let currentInstanceSize = st.instanceSize;
+    const segs = path.segments;
+    let i = 0;
+
+    while (i < segs.length) {
+      const seg = segs[i];
+
+      if (seg.kind === 'index') {
+        terms.push({ kind: 'dyn', expr: seg.value, mult: currentInstanceSize });
+        i++;
+        // After array index, context (currentFields/instanceSize) is unchanged —
+        // the next segment selects a field within one instance.
+      } else { // 'prop'
+        const f = currentFields.get(seg.value);
+        if (!f) throw new Error(`Unknown struct field "${path.root}...${seg.value}"`);
+        if (f.offset > 0) terms.push({ kind: 'const', v: f.offset });
+
+        if (f.isNested) {
+          // Descend into nested struct; next segment may be [index] into it
+          currentFields = f.nestedDef.fields;
+          currentInstanceSize = f.nestedDef.instanceSize;
+          i++;
+        } else if (f.size > 1) {
+          // Array field: next must be [j]
+          if (i + 1 < segs.length && segs[i + 1].kind === 'index') {
+            terms.push({ kind: 'dyn', expr: segs[i + 1].value, mult: 1 });
+            i += 2;
+          } else {
+            throw new Error(`Array field "${seg.value}" requires index [j]`);
+          }
+        } else {
+          i++; // scalar — terminal
+        }
+      }
+    }
+
+    // Static-only path: all const terms, no indices
+    if (terms.every(t => t.kind === 'const')) {
+      const offset = terms.reduce((s, t) => s + t.v, 0);
+      return { handled: true, isStatic: true, slot: st.base + offset };
+    }
+
+    // Dynamic path: emit sum of all terms
+    const staticTotal = terms.filter(t => t.kind === 'const').reduce((s, t) => s + t.v, 0);
+    const dynTerms    = terms.filter(t => t.kind === 'dyn');
+
+    this.compileExpression(dynTerms[0].expr);
+    if (dynTerms[0].mult !== 1) {
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(dynTerms[0].mult));
+      this.emit(OpCodes.MUL);
+    }
+    for (let d = 1; d < dynTerms.length; d++) {
+      this.compileExpression(dynTerms[d].expr);
+      if (dynTerms[d].mult !== 1) {
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(dynTerms[d].mult));
+        this.emit(OpCodes.MUL);
+      }
+      this.emit(OpCodes.ADD);
+    }
+    if (staticTotal > 0) {
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(staticTotal));
+      this.emit(OpCodes.ADD);
+    }
+
+    return { handled: true, isStatic: false, base: st.base };
+  }
+
   compilePathGet(expr) {
     const path = this.collectPath(expr);
+
+    // Route to indexed opcodes for declared arrays
+    if (path.segments.length === 1 && path.segments[0].kind === 'index') {
+      const localEntry = this.localMap.get(path.root);
+      if (localEntry && typeof localEntry === 'object' && localEntry.isArray) {
+        this.compileExpression(path.segments[0].value);
+        this.emit(OpCodes.LOAD_LOCAL_IDX, localEntry.base);
+        return;
+      }
+      const globalEntry = this.globalMap.get(path.root);
+      if (globalEntry && typeof globalEntry === 'object' && globalEntry.isArray) {
+        this.compileExpression(path.segments[0].value);
+        this.emit(OpCodes.LOAD_GLOBAL_IDX, globalEntry.base);
+        return;
+      }
+    }
+
+    // Struct access
+    const sr = this.compileStructIndex(path);
+    if (sr.handled) {
+      if (sr.isStatic) {
+        this.emit(OpCodes.LOAD_GLOBAL, sr.slot);
+      } else {
+        this.emit(OpCodes.LOAD_GLOBAL_IDX, sr.base);
+      }
+      return;
+    }
+
     this.emit(OpCodes.LOAD_CONST, this.addConstant(path.root));
 
     for (const segment of path.segments) {
@@ -1011,6 +1226,38 @@ export class Compiler {
 
   compilePathSet(targetExpr, valueExpr) {
     const path = this.collectPath(targetExpr);
+
+    // Route to indexed opcodes for declared arrays
+    if (path.segments.length === 1 && path.segments[0].kind === 'index') {
+      const localEntry = this.localMap.get(path.root);
+      if (localEntry && typeof localEntry === 'object' && localEntry.isArray) {
+        this.compileExpression(path.segments[0].value);
+        this.compileExpression(valueExpr);
+        this.emit(OpCodes.STORE_LOCAL_IDX, localEntry.base);
+        return;
+      }
+      const globalEntry = this.globalMap.get(path.root);
+      if (globalEntry && typeof globalEntry === 'object' && globalEntry.isArray) {
+        this.compileExpression(path.segments[0].value);
+        this.compileExpression(valueExpr);
+        this.emit(OpCodes.STORE_GLOBAL_IDX, globalEntry.base);
+        return;
+      }
+    }
+
+    // Struct access — index computation emitted first, then value
+    const sr = this.compileStructIndex(path);
+    if (sr.handled) {
+      if (sr.isStatic) {
+        this.compileExpression(valueExpr);
+        this.emit(OpCodes.STORE_GLOBAL, sr.slot);
+      } else {
+        this.compileExpression(valueExpr);
+        this.emit(OpCodes.STORE_GLOBAL_IDX, sr.base);
+      }
+      return;
+    }
+
     this.emit(OpCodes.LOAD_CONST, this.addConstant(path.root));
 
     for (const segment of path.segments) {

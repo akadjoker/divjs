@@ -39,6 +39,22 @@ export class GraphicsManager {
     this.graphics.set(id, graphic);
     return id;
   }
+
+  // Create a procedural graphic backed by an offscreen canvas
+  create(width, height) {
+    const id = this.nextId++;
+    const canvas = document.createElement('canvas');
+    canvas.width  = Math.max(1, Math.round(width));
+    canvas.height = Math.max(1, Math.round(height));
+    const ctx2d = canvas.getContext('2d');
+    // Pre-clear to transparent
+    ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+    this.graphics.set(id, {
+      id, image: canvas, canvas, ctx2d,
+      loaded: true, sw: canvas.width, sh: canvas.height
+    });
+    return id;
+  }
   
   // Get graphic by ID
   get(id) {
@@ -59,13 +75,3 @@ export class GraphicsManager {
 
 // Global instance
 export const Graphics = new GraphicsManager();
-
-// Native function bindings
-export function loadGraphic(src, sx, sy, sw, sh) {
-  return Graphics.load(src, sx, sy, sw, sh);
-}
-
-export function drawGraphic(graphicId, x, y, width, height) {
-  // Will be called by renderer
-  return { graphicId, x, y, width, height };
-}
