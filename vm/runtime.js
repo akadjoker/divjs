@@ -4,6 +4,8 @@
  */
 
 import { Graphics } from '../graph/graphics.js';
+import { parseBennuBdfFont } from './bennu_bdf.js';
+import { loadDivFpgFromUrl, loadDivFntFromUrl, loadDivMapFromUrl } from './div_formats.js';
 
 export const CType = {
   C_SCREEN: 0,
@@ -68,6 +70,14 @@ export class CanvasEngineRuntime {
       region: {},
       graphs: {}
     };
+
+    this.bitmapFonts = new Map();
+    this.nextBitmapFontId = 1;
+    this.graphLibraries = new Map();
+    this.nextGraphLibraryId = 1;
+    this.paths = new Map();
+    this.nextPathId = 1;
+    this.pathFollowers = new Map();
 
     this.randomSeed = null;
 
@@ -341,6 +351,164 @@ export class CanvasEngineRuntime {
 
   roundNative(value) {
     return Math.round(Number(value) || 0);
+  }
+
+  normalizeAngleNative(angle) {
+    const fullTurn = 360000;
+    let a = Number(angle) || 0;
+    a %= fullTurn;
+    if (a < 0) {
+      a += fullTurn;
+    }
+    return a;
+  }
+
+  signNative(value) {
+    const v = Number(value) || 0;
+    if (v > 0) return 1;
+    if (v < 0) return -1;
+    return 0;
+  }
+
+  distanceNative(x1, y1, x2, y2) {
+    const dx = (Number(x2) || 0) - (Number(x1) || 0);
+    const dy = (Number(y2) || 0) - (Number(y1) || 0);
+    return Math.hypot(dx, dy);
+  }
+
+  distanceRectNative(px, py, rx, ry, rw, rh) {
+    const x = Number(px) || 0;
+    const y = Number(py) || 0;
+    const rectX = Number(rx) || 0;
+    const rectY = Number(ry) || 0;
+    const rectW = Math.max(0, Number(rw) || 0);
+    const rectH = Math.max(0, Number(rh) || 0);
+    const dx = Math.max(rectX - x, 0, x - (rectX + rectW));
+    const dy = Math.max(rectY - y, 0, y - (rectY + rectH));
+    return Math.hypot(dx, dy);
+  }
+
+  fgetAngleNative(x1, y1, x2, y2) {
+    const dx = (Number(x2) || 0) - (Number(x1) || 0);
+    const dy = (Number(y2) || 0) - (Number(y1) || 0);
+    return this.toDivAngleFromRadians(Math.atan2(dy, dx));
+  }
+
+  fgetDistanceNative(x1, y1, x2, y2) {
+    return this.distanceNative(x1, y1, x2, y2);
+  }
+
+  hermiteNative(fromValue, toValue, t) {
+    const a = Number(fromValue) || 0;
+    const b = Number(toValue) || 0;
+    const u = this.clampNative(Number(t) || 0, 0, 1);
+    const h = u * u * (3 - 2 * u);
+    return a + (b - a) * h;
+  }
+
+  getDistXNative(distance, angle) {
+    const dist = Number(distance) || 0;
+    const rad = this.toRadiansFromDivAngle(angle);
+    return Math.cos(rad) * dist;
+  }
+
+  getDistYNative(distance, angle) {
+    const dist = Number(distance) || 0;
+    const rad = this.toRadiansFromDivAngle(angle);
+    return Math.sin(rad) * dist;
+  }
+
+  toRadNative(angle) {
+    return this.toRadiansFromDivAngle(angle);
+  }
+
+  toDegNative(radians) {
+    return this.toDivAngleFromRadians(radians);
+  }
+
+  pingPongNative(t, length) {
+    const l = Math.abs(Number(length) || 0);
+    if (l <= 1e-9) {
+      return 0;
+    }
+
+    const period = l * 2;
+    let x = Number(t) || 0;
+    x %= period;
+    if (x < 0) {
+      x += period;
+    }
+
+    return x <= l ? x : (period - x);
+  }
+
+  wrapNative(value, min, max) {
+    const v = Number(value) || 0;
+    let lo = Number(min) || 0;
+    let hi = Number(max) || 0;
+
+    if (lo === hi) {
+      return lo;
+    }
+    if (lo > hi) {
+      const tmp = lo;
+      lo = hi;
+      hi = tmp;
+    }
+
+    const range = hi - lo;
+    let out = (v - lo) % range;
+    if (out < 0) {
+      out += range;
+    }
+    return lo + out;
+  }
+
+  lerpAngleNative(fromAngle, toAngle, t) {
+    const from = Number(fromAngle) || 0;
+    const to = Number(toAngle) || 0;
+    const factor = Number(t) || 0;
+    const fullTurn = 360000;
+    const halfTurn = fullTurn / 2;
+
+    let delta = (to - from) % fullTurn;
+    if (delta < -halfTurn) {
+      delta += fullTurn;
+    } else if (delta > halfTurn) {
+      delta -= fullTurn;
+    }
+
+    return from + delta * factor;
+  }
+
+  clampNative(value, min, max) {
+    const v = Number(value) || 0;
+    let lo = Number(min) || 0;
+    let hi = Number(max) || 0;
+    if (lo > hi) {
+      const tmp = lo;
+      lo = hi;
+      hi = tmp;
+    }
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  lerpNative(fromValue, toValue, t) {
+    const a = Number(fromValue) || 0;
+    const b = Number(toValue) || 0;
+    const factor = Number(t) || 0;
+    return a + (b - a) * factor;
+  }
+
+  smoothStepNative(min, max, value) {
+    const lo = Number(min) || 0;
+    const hi = Number(max) || 0;
+    const v = Number(value) || 0;
+    if (Math.abs(hi - lo) <= 1e-9) {
+      return 0;
+    }
+    const t = this.clampNative((v - lo) / (hi - lo), 0, 1);
+    return t * t * (3 - 2 * t);
   }
 
   randSeedNative(seed) {
@@ -662,13 +830,21 @@ export class CanvasEngineRuntime {
   }
 
   writeNative(font, x, y, align, text) {
-    this.textNative(x, y, text);
+    this.drawCommands.push({
+      type: 'text',
+      x: Number(x),
+      y: Number(y),
+      text: String(text),
+      color: this.currentColor,
+      ctype: this.getCurrentCType(),
+      fontId: Number(font) || 0,
+      align: Number(align) || 0
+    });
     return 0;
   }
 
   writeIntNative(font, x, y, align, value) {
-    this.textNative(x, y, Math.floor(Number(value) || 0));
-    return 0;
+    return this.writeNative(font, x, y, align, Math.floor(Number(value) || 0));
   }
 
   clearNative() {
@@ -752,6 +928,102 @@ export class CanvasEngineRuntime {
     return this.vm.processManager.collisionPoint(Number(px), Number(py), Number(typeCode));
   }
 
+  setCollisionShapeNative(shape) {
+    const p = this.vm?.currentProcess;
+    if (!p) return 0;
+    const s = String(shape ?? '').toLowerCase();
+    p.collisionShape = (s === 'circle' || s === '1') ? 'circle' : 'box';
+    return p.collisionShape === 'circle' ? 1 : 0;
+  }
+
+  getCollisionShapeNative() {
+    const p = this.vm?.currentProcess;
+    if (!p) return 0;
+    return p.collisionShape === 'circle' ? 1 : 0;
+  }
+
+  clearCollisionBoxesNative() {
+    const p = this.vm?.currentProcess;
+    if (!p) return 0;
+    p.cboxes = [];
+    return 0;
+  }
+
+  addCollisionBoxNative(x, y, width, height, code = -1) {
+    const p = this.vm?.currentProcess;
+    if (!p) return 0;
+    if (!Array.isArray(p.cboxes)) p.cboxes = [];
+    const c = {
+      shape: 'box',
+      x: Number(x) || 0,
+      y: Number(y) || 0,
+      width: Math.max(1, Number(width) || 1),
+      height: Math.max(1, Number(height) || 1),
+      code: Number.isFinite(Number(code)) ? Math.trunc(Number(code)) : -1
+    };
+    p.cboxes.push(c);
+    return p.cboxes.length;
+  }
+
+  addCollisionCircleNative(x, y, radius, code = -1) {
+    const p = this.vm?.currentProcess;
+    if (!p) return 0;
+    if (!Array.isArray(p.cboxes)) p.cboxes = [];
+    const c = {
+      shape: 'circle',
+      x: Number(x) || 0,
+      y: Number(y) || 0,
+      radius: Math.max(1, Number(radius) || 1),
+      code: Number.isFinite(Number(code)) ? Math.trunc(Number(code)) : -1
+    };
+    p.cboxes.push(c);
+    return p.cboxes.length;
+  }
+
+  getPenetrationXNative() {
+    return Number(this.vm?.processManager?.lastPenetrationX) || 0;
+  }
+
+  getPenetrationYNative() {
+    return Number(this.vm?.processManager?.lastPenetrationY) || 0;
+  }
+
+  getColliderCBoxNative() {
+    return Number(this.vm?.processManager?.lastColliderCBox) || -1;
+  }
+
+  getCollidedCBoxNative() {
+    return Number(this.vm?.processManager?.lastCollidedCBox) || -1;
+  }
+
+  setCollisionRadiusNative(radius) {
+    const p = this.vm?.currentProcess;
+    if (!p) return 0;
+    const r = Number(radius);
+    p.collisionRadius = Number.isFinite(r) && r > 0 ? r : 0;
+    return p.collisionRadius;
+  }
+
+  getCollisionRadiusNative() {
+    const p = this.vm?.currentProcess;
+    if (!p) return 0;
+    return Number(p.collisionRadius) || 0;
+  }
+
+  setCollisionScaleNative(scale) {
+    const p = this.vm?.currentProcess;
+    if (!p) return 1;
+    const s = Number(scale);
+    p.collisionScale = Number.isFinite(s) && s > 0 ? s : 1;
+    return p.collisionScale;
+  }
+
+  getCollisionScaleNative() {
+    const p = this.vm?.currentProcess;
+    if (!p) return 1;
+    return Number(p.collisionScale) || 1;
+  }
+
   placeMeetingNative(tx, ty, typeCode) {
     if (!this.vm?.currentProcess) return 0;
     return this.vm.processManager.placeMeeting(this.vm.currentProcess, Number(tx), Number(ty), Number(typeCode));
@@ -794,6 +1066,119 @@ export class CanvasEngineRuntime {
     return segment;
   }
 
+  resolveRelativeProcessRoot(rootName) {
+    const process = this.vm?.currentProcess;
+    if (!process) return null;
+    const root = String(rootName || '').toLowerCase();
+
+    if (root === 'father') {
+      return this.vm?.processManager?.get(Number(process.parentId) || 0) || null;
+    }
+
+    if (root === 'son') {
+      const children = this.vm?.processManager?.getChildrenOf(process.id) || [];
+      for (const child of children) {
+        if (child && !child.dead) {
+          return child;
+        }
+      }
+      return null;
+    }
+
+    return null;
+  }
+
+  getProcessFieldValue(process, fieldName) {
+    if (!process) return 0;
+    const key = String(fieldName || '');
+    const lower = key.toLowerCase();
+
+    const canonicalSlots = {
+      x: 0,
+      y: 1,
+      width: 2,
+      height: 3,
+      ctype: 4,
+      id: 5,
+      region: 6,
+      angle: 7,
+      red: 8,
+      green: 9,
+      blue: 10,
+      alpha: 11,
+      tag: 12,
+      priority: 13
+    };
+
+    if (Object.prototype.hasOwnProperty.call(canonicalSlots, lower)) {
+      const slot = canonicalSlots[lower];
+      const value = Number(process.locals?.[slot]);
+      if (Number.isFinite(value)) {
+        return value;
+      }
+    }
+
+    const slot = this.getProcessLocalSlot(process, key);
+    if (slot !== null && slot !== undefined) {
+      const value = process.locals?.[slot];
+      if (value !== undefined) {
+        return value;
+      }
+    }
+
+    if (process[key] !== undefined) {
+      return process[key];
+    }
+
+    if (process.privates && process.privates[key] !== undefined) {
+      return process.privates[key];
+    }
+
+    return 0;
+  }
+
+  setProcessFieldValue(process, fieldName, value) {
+    if (!process) return 0;
+    const key = String(fieldName || '');
+    const lower = key.toLowerCase();
+
+    const canonicalSlots = {
+      x: 0,
+      y: 1,
+      width: 2,
+      height: 3,
+      ctype: 4,
+      id: 5,
+      region: 6,
+      angle: 7,
+      red: 8,
+      green: 9,
+      blue: 10,
+      alpha: 11,
+      tag: 12,
+      priority: 13
+    };
+
+    if (Object.prototype.hasOwnProperty.call(canonicalSlots, lower)) {
+      const slot = canonicalSlots[lower];
+      process.locals[slot] = value;
+      process.sync();
+      return value;
+    }
+
+    const slot = this.getProcessLocalSlot(process, key);
+    if (slot !== null && slot !== undefined) {
+      process.locals[slot] = value;
+      return value;
+    }
+
+    process[key] = value;
+    if (process.privates) {
+      process.privates[key] = value;
+    }
+    return value;
+  }
+
   ensureScrollEntry(index) {
     if (!this.state.scroll[index]) {
       this.state.scroll[index] = {
@@ -813,7 +1198,24 @@ export class CanvasEngineRuntime {
     }
 
     const [rootName, ...segments] = args;
-    let current = this.state[String(rootName)];
+    const root = String(rootName);
+
+    const relativeProcess = this.resolveRelativeProcessRoot(root);
+    if (relativeProcess || root.toLowerCase() === 'father' || root.toLowerCase() === 'son') {
+      if (!relativeProcess) {
+        return 0;
+      }
+      if (segments.length === 0) {
+        return relativeProcess.id || 0;
+      }
+      const first = segments[0];
+      if (typeof first !== 'string') {
+        return 0;
+      }
+      return this.getProcessFieldValue(relativeProcess, first);
+    }
+
+    let current = this.state[root];
     if (current === undefined) {
       return 0;
     }
@@ -851,6 +1253,17 @@ export class CanvasEngineRuntime {
     const value = args[args.length - 1];
     const segments = args.slice(1, -1);
 
+    const relativeProcess = this.resolveRelativeProcessRoot(rootName);
+    if (relativeProcess || rootName.toLowerCase() === 'father' || rootName.toLowerCase() === 'son') {
+      if (!relativeProcess) {
+        return 0;
+      }
+      if (segments.length !== 1 || typeof segments[0] !== 'string') {
+        return 0;
+      }
+      return this.setProcessFieldValue(relativeProcess, segments[0], value);
+    }
+
     if (this.state[rootName] === undefined) {
       this.state[rootName] = rootName === 'scroll' ? [] : {};
     }
@@ -885,6 +1298,294 @@ export class CanvasEngineRuntime {
     return value;
   }
 
+  _gridKey(gx, gy) {
+    return `${gx},${gy}`;
+  }
+
+  _octileDistance(ax, ay, bx, by) {
+    const dx = Math.abs(ax - bx);
+    const dy = Math.abs(ay - by);
+    const minD = Math.min(dx, dy);
+    const maxD = Math.max(dx, dy);
+    return minD * 14 + (maxD - minD) * 10;
+  }
+
+  _manhattanDistance(ax, ay, bx, by) {
+    return (Math.abs(ax - bx) + Math.abs(ay - by)) * 10;
+  }
+
+  _nodeBlocked(gx, gy, cellSize, obstacleTypeCode) {
+    if (!obstacleTypeCode) return false;
+    const cx = gx * cellSize + Math.floor(cellSize * 0.5);
+    const cy = gy * cellSize + Math.floor(cellSize * 0.5);
+    const hit = this.vm?.processManager?.collisionPoint(cx, cy, obstacleTypeCode) || 0;
+    return hit > 0;
+  }
+
+  _buildPathPoints(cameFrom, endKey, startX, startY, endX, endY, cellSize) {
+    const chain = [];
+    let cursor = endKey;
+    while (cursor) {
+      const [gxRaw, gyRaw] = String(cursor).split(',');
+      const gx = Number(gxRaw);
+      const gy = Number(gyRaw);
+      chain.push({
+        x: gx * cellSize + Math.floor(cellSize * 0.5),
+        y: gy * cellSize + Math.floor(cellSize * 0.5)
+      });
+      cursor = cameFrom.get(cursor);
+    }
+    chain.reverse();
+
+    if (chain.length === 0) {
+      return [];
+    }
+
+    chain[0].x = Math.round(startX);
+    chain[0].y = Math.round(startY);
+    chain[chain.length - 1].x = Math.round(endX);
+    chain[chain.length - 1].y = Math.round(endY);
+    return chain;
+  }
+
+  pathFindNative(startX, startY, endX, endY, obstacleTypeCode = 0, cellSize = 16, allowDiagonal = 1, maxNodes = 4096) {
+    const size = Math.max(4, Math.floor(Number(cellSize) || 16));
+    const allowDiag = Number(allowDiagonal) !== 0;
+    const maxVisited = Math.max(64, Math.floor(Number(maxNodes) || 4096));
+    const ox = Number(startX) || 0;
+    const oy = Number(startY) || 0;
+    const tx = Number(endX) || 0;
+    const ty = Number(endY) || 0;
+    const obstacleType = Math.trunc(Number(obstacleTypeCode) || 0);
+
+    const sx = Math.floor(ox / size);
+    const sy = Math.floor(oy / size);
+    const ex = Math.floor(tx / size);
+    const ey = Math.floor(ty / size);
+
+    const startKey = this._gridKey(sx, sy);
+    const endKey = this._gridKey(ex, ey);
+    if (startKey === endKey) {
+      const id = this.nextPathId++;
+      this.paths.set(id, [{ x: Math.round(ox), y: Math.round(oy) }, { x: Math.round(tx), y: Math.round(ty) }]);
+      return id;
+    }
+
+    const margin = 64;
+    const minX = Math.min(sx, ex) - margin;
+    const maxX = Math.max(sx, ex) + margin;
+    const minY = Math.min(sy, ey) - margin;
+    const maxY = Math.max(sy, ey) + margin;
+
+    const neighbors = allowDiag
+      ? [
+          [1, 0, 10], [-1, 0, 10], [0, 1, 10], [0, -1, 10],
+          [1, 1, 14], [1, -1, 14], [-1, 1, 14], [-1, -1, 14]
+        ]
+      : [
+          [1, 0, 10], [-1, 0, 10], [0, 1, 10], [0, -1, 10]
+        ];
+
+    const heuristic = allowDiag
+      ? this._octileDistance.bind(this)
+      : this._manhattanDistance.bind(this);
+
+    const open = [{ key: startKey, x: sx, y: sy, g: 0, f: heuristic(sx, sy, ex, ey) }];
+    const openMap = new Map([[startKey, open[0]]]);
+    const closed = new Set();
+    const cameFrom = new Map();
+    const gScore = new Map([[startKey, 0]]);
+
+    let visited = 0;
+
+    while (open.length > 0 && visited < maxVisited) {
+      let bestIndex = 0;
+      for (let i = 1; i < open.length; i++) {
+        if (open[i].f < open[bestIndex].f) bestIndex = i;
+      }
+
+      const current = open.splice(bestIndex, 1)[0];
+      openMap.delete(current.key);
+      if (closed.has(current.key)) continue;
+      closed.add(current.key);
+      visited += 1;
+
+      if (current.key === endKey) {
+        const points = this._buildPathPoints(cameFrom, current.key, ox, oy, tx, ty, size);
+        if (points.length === 0) return 0;
+        const id = this.nextPathId++;
+        this.paths.set(id, points);
+        return id;
+      }
+
+      for (const [dx, dy, stepCost] of neighbors) {
+        const nx = current.x + dx;
+        const ny = current.y + dy;
+        if (nx < minX || nx > maxX || ny < minY || ny > maxY) continue;
+
+        const nKey = this._gridKey(nx, ny);
+        if (closed.has(nKey)) continue;
+
+        if (nKey !== endKey && this._nodeBlocked(nx, ny, size, obstacleType)) {
+          continue;
+        }
+
+        const tentativeG = current.g + stepCost;
+        const bestKnown = gScore.get(nKey);
+        if (bestKnown !== undefined && tentativeG >= bestKnown) {
+          continue;
+        }
+
+        cameFrom.set(nKey, current.key);
+        gScore.set(nKey, tentativeG);
+        const f = tentativeG + heuristic(nx, ny, ex, ey);
+
+        const existing = openMap.get(nKey);
+        if (existing) {
+          existing.g = tentativeG;
+          existing.f = f;
+        } else {
+          const node = { key: nKey, x: nx, y: ny, g: tentativeG, f };
+          open.push(node);
+          openMap.set(nKey, node);
+        }
+      }
+    }
+
+    return 0;
+  }
+
+  pathLengthNative(pathId) {
+    const id = Math.trunc(Number(pathId) || 0);
+    const path = this.paths.get(id);
+    return Array.isArray(path) ? path.length : 0;
+  }
+
+  pathGetXNative(pathId, index) {
+    const id = Math.trunc(Number(pathId) || 0);
+    const i = Math.trunc(Number(index) || 0);
+    const path = this.paths.get(id);
+    if (!Array.isArray(path) || i < 0 || i >= path.length) return 0;
+    return Number(path[i].x) || 0;
+  }
+
+  pathGetYNative(pathId, index) {
+    const id = Math.trunc(Number(pathId) || 0);
+    const i = Math.trunc(Number(index) || 0);
+    const path = this.paths.get(id);
+    if (!Array.isArray(path) || i < 0 || i >= path.length) return 0;
+    return Number(path[i].y) || 0;
+  }
+
+  pathClearNative(pathId) {
+    const id = Math.trunc(Number(pathId) || 0);
+    if (!id) return 0;
+    if (!this.paths.delete(id)) return 0;
+    for (const [processId, state] of this.pathFollowers.entries()) {
+      if (state?.pathId === id) {
+        this.pathFollowers.delete(processId);
+      }
+    }
+    return 1;
+  }
+
+  pathAssignNative(pathId, startIndex = 1) {
+    const process = this.vm?.currentProcess;
+    if (!process) return 0;
+
+    const id = Math.trunc(Number(pathId) || 0);
+    const path = this.paths.get(id);
+    if (!Array.isArray(path) || path.length === 0) {
+      this.pathFollowers.delete(process.id);
+      return 0;
+    }
+
+    const idx = Math.max(0, Math.min(path.length - 1, Math.trunc(Number(startIndex) || 0)));
+    this.pathFollowers.set(process.id, { pathId: id, index: idx });
+    return 1;
+  }
+
+  pathStopNative() {
+    const process = this.vm?.currentProcess;
+    if (!process) return 0;
+    return this.pathFollowers.delete(process.id) ? 1 : 0;
+  }
+
+  pathIndexNative() {
+    const process = this.vm?.currentProcess;
+    if (!process) return 0;
+    const state = this.pathFollowers.get(process.id);
+    return Number(state?.index) || 0;
+  }
+
+  pathStepNative(speedPerSecond = 120, arriveRadius = 2) {
+    const process = this.vm?.currentProcess;
+    if (!process) return 0;
+
+    const state = this.pathFollowers.get(process.id);
+    if (!state) return 0;
+
+    const path = this.paths.get(state.pathId);
+    if (!Array.isArray(path) || path.length === 0) {
+      this.pathFollowers.delete(process.id);
+      return 0;
+    }
+
+    if (state.index >= path.length) {
+      return 2;
+    }
+
+    const dt = Math.max(0, Number(this.vm?.dt) || 0);
+    let remaining = Math.max(0, Number(speedPerSecond) || 0) * dt;
+    if (remaining <= 0) {
+      return 1;
+    }
+
+    const radius = Math.max(0, Number(arriveRadius) || 0);
+
+    while (remaining > 0 && state.index < path.length) {
+      const target = path[state.index];
+      const cx = (Number(process.x) || 0) + (Number(process.width) || 0) * 0.5;
+      const cy = (Number(process.y) || 0) + (Number(process.height) || 0) * 0.5;
+      const dx = (Number(target.x) || 0) - cx;
+      const dy = (Number(target.y) || 0) - cy;
+      const dist = Math.hypot(dx, dy);
+
+      if (dist <= radius) {
+        state.index += 1;
+        continue;
+      }
+
+      const move = Math.min(remaining, dist);
+      const nx = dist > 1e-9 ? dx / dist : 1;
+      const ny = dist > 1e-9 ? dy / dist : 0;
+
+      const nextX = (Number(process.x) || 0) + nx * move;
+      const nextY = (Number(process.y) || 0) + ny * move;
+      process.x = nextX;
+      process.y = nextY;
+      process.locals[0] = nextX;
+      process.locals[1] = nextY;
+
+      const facing = this.toDivAngleFromRadians(Math.atan2(dy, dx));
+      process.angle = facing;
+      process.locals[7] = facing;
+
+      remaining -= move;
+      if (move >= dist - 1e-9) {
+        state.index += 1;
+      } else {
+        break;
+      }
+    }
+
+    if (state.index >= path.length) {
+      return 2;
+    }
+
+    return 1;
+  }
+
   loadGraphicNative(src, sx, sy, sw, sh) {
     if (!src) {
       return 0;
@@ -899,6 +1600,213 @@ export class CanvasEngineRuntime {
 
   loadTileNative(src, sx, sy, sw, sh) {
     return this.loadGraphicNative(src, sx, sy, sw, sh);
+  }
+
+  reserveGraphLibrary() {
+    const id = this.nextGraphLibraryId++;
+    this.graphLibraries.set(id, {
+      id,
+      loaded: false,
+      error: null,
+      graphs: new Map()
+    });
+    return id;
+  }
+
+  loadMapNative(src) {
+    if (!src) {
+      return 0;
+    }
+
+    // Return a direct graph id, same shape as load_graphic/load_tile.
+    const graphId = Graphics.create(1, 1);
+    const url = String(src);
+
+    loadDivMapFromUrl(url)
+      .then((map) => {
+        Graphics.setCanvas(graphId, map.canvas);
+        this.ensureGraph(0, graphId, map.width, map.height);
+      })
+      .catch((error) => {
+        this.logFn(`[warn] load_map failed (${url}): ${error?.message || String(error)}`);
+      });
+
+    return graphId;
+  }
+
+  loadFpgNative(src) {
+    if (!src) {
+      return 0;
+    }
+
+    const libraryId = this.reserveGraphLibrary();
+    const entry = this.graphLibraries.get(libraryId);
+    const url = String(src);
+
+    loadDivFpgFromUrl(url)
+      .then((fpg) => {
+        for (const map of fpg.maps) {
+          const assetId = Graphics.addCanvas(map.canvas);
+          entry.graphs.set(Number(map.code) || 0, assetId);
+          this.ensureGraph(libraryId, map.code, map.width, map.height);
+        }
+        entry.loaded = true;
+      })
+      .catch((error) => {
+        entry.error = error?.message || String(error);
+        this.logFn(`[warn] load_fpg failed (${url}): ${entry.error}`);
+      });
+
+    return libraryId;
+  }
+
+  loadFntNative(src) {
+    if (!src) {
+      return 0;
+    }
+
+    const id = this.reserveBitmapFont();
+    const entry = this.bitmapFonts.get(id);
+    const url = String(src);
+
+    loadDivFntFromUrl(url)
+      .then((fnt) => {
+        entry.font = {
+          kind: 'div_fnt',
+          glyphs: fnt.glyphs,
+          lineHeight: fnt.lineHeight,
+          fallbackAdvance: fnt.fallbackAdvance
+        };
+        entry.loaded = true;
+      })
+      .catch((error) => {
+        entry.error = error?.message || String(error);
+        this.logFn(`[warn] load_fnt failed (${url}): ${entry.error}`);
+      });
+
+    return id;
+  }
+
+  reserveBitmapFont() {
+    const id = this.nextBitmapFontId++;
+    this.bitmapFonts.set(id, {
+      id,
+      loaded: false,
+      error: null,
+      font: null
+    });
+    return id;
+  }
+
+  loadBdfFontTextNative(text) {
+    if (!text) {
+      return 0;
+    }
+
+    const id = this.reserveBitmapFont();
+    const entry = this.bitmapFonts.get(id);
+    try {
+      entry.font = parseBennuBdfFont(String(text));
+      entry.loaded = true;
+    } catch (error) {
+      entry.error = error?.message || String(error);
+      this.logFn(`[warn] load_bdf_font_text failed: ${entry.error}`);
+    }
+    return id;
+  }
+
+  loadBdfFontNative(src) {
+    if (!src) {
+      return 0;
+    }
+
+    const id = this.reserveBitmapFont();
+    const entry = this.bitmapFonts.get(id);
+    const url = String(src);
+
+    fetch(url)
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        return response.text();
+      })
+      .then((text) => {
+        entry.font = parseBennuBdfFont(text);
+        entry.loaded = true;
+      })
+      .catch((error) => {
+        entry.error = error?.message || String(error);
+        this.logFn(`[warn] load_bdf_font failed (${url}): ${entry.error}`);
+      });
+
+    return id;
+  }
+
+  drawBitmapText(fontId, x, y, align, text) {
+    const entry = this.bitmapFonts.get(Number(fontId) || 0);
+    if (!entry || !entry.loaded || !entry.font) {
+      return false;
+    }
+
+    const str = String(text);
+    const font = entry.font;
+    const lines = str.split('\n');
+    const lineWidths = lines.map((line) => {
+      let w = 0;
+      for (let i = 0; i < line.length; i++) {
+        const glyph = font.glyphs[line.charCodeAt(i) & 0xff];
+        w += glyph ? (glyph.xadvance || glyph.width || font.fallbackAdvance) : font.fallbackAdvance;
+      }
+      return w;
+    });
+
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      const line = lines[lineIndex];
+      const lineWidth = lineWidths[lineIndex] || 0;
+      let penX = Number(x) || 0;
+      const penY = (Number(y) || 0) + lineIndex * font.lineHeight;
+
+      // DIV align convention is broader; support common 0/1/2 values here.
+      if (align === 1) penX -= Math.round(lineWidth * 0.5);
+      else if (align === 2) penX -= lineWidth;
+
+      for (let i = 0; i < line.length; i++) {
+        const code = line.charCodeAt(i) & 0xff;
+        const glyph = font.glyphs[code];
+        if (!glyph) {
+          penX += font.fallbackAdvance;
+          continue;
+        }
+
+        const baseX = penX + (glyph.xoffset || 0);
+        const baseY = penY + (glyph.yoffset || 0);
+
+        if (glyph.canvas) {
+          this.ctx.drawImage(glyph.canvas, baseX, baseY);
+          penX += glyph.xadvance || glyph.width || font.fallbackAdvance;
+          continue;
+        }
+
+        if (!glyph.bitmap) {
+          penX += font.fallbackAdvance;
+          continue;
+        }
+
+        for (let gy = 0; gy < glyph.height; gy++) {
+          for (let gx = 0; gx < glyph.width; gx++) {
+            if (!glyph.bitmap[gy * glyph.width + gx]) {
+              continue;
+            }
+            this.ctx.fillRect(baseX + gx, baseY + gy, 1, 1);
+          }
+        }
+
+        penX += glyph.xadvance || glyph.width || font.fallbackAdvance;
+      }
+    }
+
+    return true;
   }
 
   registerNatives() {
@@ -925,6 +1833,23 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('floor', this.floorNative.bind(this));
     this.vm.registerNative('ceil', this.ceilNative.bind(this));
     this.vm.registerNative('round', this.roundNative.bind(this));
+    this.vm.registerNative('ping_pong', this.pingPongNative.bind(this));
+    this.vm.registerNative('wrap', this.wrapNative.bind(this));
+    this.vm.registerNative('lerp_angle', this.lerpAngleNative.bind(this));
+    this.vm.registerNative('clamp', this.clampNative.bind(this));
+    this.vm.registerNative('lerp', this.lerpNative.bind(this));
+    this.vm.registerNative('smoothstep', this.smoothStepNative.bind(this));
+    this.vm.registerNative('normalize_angle', this.normalizeAngleNative.bind(this));
+    this.vm.registerNative('sign', this.signNative.bind(this));
+    this.vm.registerNative('distance', this.distanceNative.bind(this));
+    this.vm.registerNative('distance_rect', this.distanceRectNative.bind(this));
+    this.vm.registerNative('fget_angle', this.fgetAngleNative.bind(this));
+    this.vm.registerNative('fget_distance', this.fgetDistanceNative.bind(this));
+    this.vm.registerNative('hermite', this.hermiteNative.bind(this));
+    this.vm.registerNative('get_distx', this.getDistXNative.bind(this));
+    this.vm.registerNative('get_disty', this.getDistYNative.bind(this));
+    this.vm.registerNative('torad', this.toRadNative.bind(this));
+    this.vm.registerNative('todeg', this.toDegNative.bind(this));
     this.vm.registerNative('rand_seed', this.randSeedNative.bind(this));
     this.vm.registerNative('rand', this.randNative.bind(this));
     this.vm.registerNative('random', this.randomNative.bind(this));
@@ -959,14 +1884,41 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('collision_circle', this.collisionCircleNative.bind(this));
     this.vm.registerNative('collision_obb', this.collisionOBBNative.bind(this));
     this.vm.registerNative('collision_point', this.collisionPointNative.bind(this));
+    this.vm.registerNative('set_collision_shape', this.setCollisionShapeNative.bind(this));
+    this.vm.registerNative('get_collision_shape', this.getCollisionShapeNative.bind(this));
+    this.vm.registerNative('clear_collision_boxes', this.clearCollisionBoxesNative.bind(this));
+    this.vm.registerNative('add_collision_box', this.addCollisionBoxNative.bind(this));
+    this.vm.registerNative('add_collision_circle', this.addCollisionCircleNative.bind(this));
+    this.vm.registerNative('set_collision_radius', this.setCollisionRadiusNative.bind(this));
+    this.vm.registerNative('get_collision_radius', this.getCollisionRadiusNative.bind(this));
+    this.vm.registerNative('set_collision_scale', this.setCollisionScaleNative.bind(this));
+    this.vm.registerNative('get_collision_scale', this.getCollisionScaleNative.bind(this));
+    this.vm.registerNative('penetration_x', this.getPenetrationXNative.bind(this));
+    this.vm.registerNative('penetration_y', this.getPenetrationYNative.bind(this));
+    this.vm.registerNative('collider_cbox', this.getColliderCBoxNative.bind(this));
+    this.vm.registerNative('collided_cbox', this.getCollidedCBoxNative.bind(this));
     this.vm.registerNative('place_meeting', this.placeMeetingNative.bind(this));
     this.vm.registerNative('place_free', this.placeFreeNative.bind(this));
     this.vm.registerNative('signal', this.signalNative.bind(this));
     this.vm.registerNative('let_me_alone', this.letMeAloneNative.bind(this));
     this.vm.registerNative('load_graphic', this.loadGraphicNative.bind(this));
     this.vm.registerNative('load_tile', this.loadTileNative.bind(this));
+    this.vm.registerNative('load_map', this.loadMapNative.bind(this));
+    this.vm.registerNative('load_fpg', this.loadFpgNative.bind(this));
+    this.vm.registerNative('load_fnt', this.loadFntNative.bind(this));
+    this.vm.registerNative('load_bdf_font', this.loadBdfFontNative.bind(this));
+    this.vm.registerNative('load_bdf_font_text', this.loadBdfFontTextNative.bind(this));
     this.vm.registerNative('__get_path', this.getPathNative.bind(this));
     this.vm.registerNative('__set_path', this.setPathNative.bind(this));
+    this.vm.registerNative('path_find', this.pathFindNative.bind(this));
+    this.vm.registerNative('path_length', this.pathLengthNative.bind(this));
+    this.vm.registerNative('path_get_x', this.pathGetXNative.bind(this));
+    this.vm.registerNative('path_get_y', this.pathGetYNative.bind(this));
+    this.vm.registerNative('path_clear', this.pathClearNative.bind(this));
+    this.vm.registerNative('path_assign', this.pathAssignNative.bind(this));
+    this.vm.registerNative('path_step', this.pathStepNative.bind(this));
+    this.vm.registerNative('path_stop', this.pathStopNative.bind(this));
+    this.vm.registerNative('path_index', this.pathIndexNative.bind(this));
     this.vm.registerNative('fade_off', (speed = 1) => { this._fadeStart(0, 0, 0, speed ?? 1, 1); return 0; });
     this.vm.registerNative('fade_on',  (speed = 1) => { this._fadeStart(0, 0, 0, speed ?? 1, 0); return 0; });
     this.vm.registerNative('fade',     (r, g, b, speed, target) => { this._fadeStart(r ?? 0, g ?? 0, b ?? 0, speed ?? 1, target ?? 1); return 0; });
@@ -1128,8 +2080,19 @@ export class CanvasEngineRuntime {
   }
 
   getGraphAsset(fileId, graphId) {
-    // graphId is the real graphic id returned by load_graphic/load_tile.
-    return Graphics.get(Number(graphId) || 0) || null;
+    const fid = Number(fileId) || 0;
+    const gid = Number(graphId) || 0;
+
+    if (fid > 0) {
+      const lib = this.graphLibraries.get(fid);
+      const mapped = lib?.graphs?.get(gid);
+      if (mapped) {
+        return Graphics.get(mapped) || null;
+      }
+    }
+
+    // Fallback: graphId directly references a graphic id.
+    return Graphics.get(gid) || null;
   }
 
   drawGraphSprite(fileId, graphId, x, y, angle, size, flags, baseWidth, baseHeight) {
@@ -1319,7 +2282,12 @@ export class CanvasEngineRuntime {
         }
 
         if (cmd.type === 'text') {
-          this.ctx.fillText(cmd.text, pos.x, pos.y);
+          const drewBitmap = cmd.fontId > 0
+            ? this.drawBitmapText(cmd.fontId, pos.x, pos.y, cmd.align || 0, cmd.text)
+            : false;
+          if (!drewBitmap) {
+            this.ctx.fillText(cmd.text, pos.x, pos.y);
+          }
           return;
         }
 

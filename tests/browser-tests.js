@@ -336,6 +336,40 @@ async function testLoadGraphicAndTileDirectIds() {
   assert(!!a2 && a2.id === g2, 'graphId devia mapear direto para asset id (load_tile)');
 }
 
+async function testLoadAndDrawBdfBitmapFont() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  const bdf = `STARTFONT 2.1
+FONTBOUNDINGBOX 8 8 0 0
+DWIDTH 8 0
+STARTCHAR A
+ENCODING 65
+DWIDTH 8 0
+BBX 8 8 0 0
+BITMAP
+FF
+FF
+FF
+FF
+FF
+FF
+FF
+FF
+ENDCHAR
+ENDFONT`;
+
+  const fontId = runtime.loadBdfFontTextNative(bdf);
+  assert(Number.isInteger(fontId) && fontId > 0, `load_bdf_font_text devia devolver id valido, obtido ${fontId}`);
+
+  runtime.setColorNative('#ffffff');
+  runtime.writeNative(fontId, 10, 10, 0, 'A');
+  runtime.drawCommandsToCanvas();
+
+  const pixel = runtime.ctx.getImageData(10, 10, 1, 1).data;
+  assert(pixel[3] > 0, `texto bitmap BDF devia desenhar no canvas, alpha obtido ${pixel[3]}`);
+}
+
 async function testXAdvanceMovesByAngle() {
   const vm = new VM();
   const runtime = createRuntime(vm);
@@ -400,6 +434,91 @@ async function testXAdvanceHandlesAnglesAboveHalfCircle() {
   runtime.xadvanceNative(10, 270000);
   assert(approx(process.locals[0], 0, 0.01), `x esperado ~0 apos xadvance(10, 270000), obtido ${process.locals[0]}`);
   assert(approx(process.locals[1], -10, 0.01), `y esperado -10 apos xadvance(10, 270000), obtido ${process.locals[1]}`);
+}
+
+async function testMathHelpersPingPongWrapAndLerpAngle() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  const pp = runtime.pingPongNative(13, 10);
+  assert(approx(pp, 7), `ping_pong(13,10) esperado 7, obtido ${pp}`);
+
+  const ppNeg = runtime.pingPongNative(-3, 10);
+  assert(approx(ppNeg, 3), `ping_pong(-3,10) esperado 3, obtido ${ppNeg}`);
+
+  const w1 = runtime.wrapNative(365, 0, 360);
+  assert(approx(w1, 5), `wrap(365,0,360) esperado 5, obtido ${w1}`);
+
+  const w2 = runtime.wrapNative(-10, 0, 360);
+  assert(approx(w2, 350), `wrap(-10,0,360) esperado 350, obtido ${w2}`);
+
+  // Shortest turn from 350deg to 10deg should go through 0deg (+20deg arc),
+  // so halfway is 0deg in DIV units (0 or 360000 equivalent).
+  const a = runtime.lerpAngleNative(350000, 10000, 0.5);
+  const normalized = runtime.wrapNative(a, 0, 360000);
+  assert(approx(normalized, 0), `lerp_angle shortest path esperado ~0, obtido ${normalized}`);
+
+  const c1 = runtime.clampNative(12, 0, 10);
+  assert(approx(c1, 10), `clamp(12,0,10) esperado 10, obtido ${c1}`);
+
+  const c2 = runtime.clampNative(-3, 0, 10);
+  assert(approx(c2, 0), `clamp(-3,0,10) esperado 0, obtido ${c2}`);
+
+  const l = runtime.lerpNative(10, 20, 0.25);
+  assert(approx(l, 12.5), `lerp(10,20,0.25) esperado 12.5, obtido ${l}`);
+
+  const sMid = runtime.smoothStepNative(0, 10, 5);
+  assert(approx(sMid, 0.5), `smoothstep(0,10,5) esperado 0.5, obtido ${sMid}`);
+
+  const sLow = runtime.smoothStepNative(0, 10, -2);
+  assert(approx(sLow, 0), `smoothstep abaixo do min esperado 0, obtido ${sLow}`);
+
+  const sHigh = runtime.smoothStepNative(0, 10, 20);
+  assert(approx(sHigh, 1), `smoothstep acima do max esperado 1, obtido ${sHigh}`);
+}
+
+async function testMathGeometryHelperPack() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  const n1 = runtime.normalizeAngleNative(370000);
+  assert(approx(n1, 10000), `normalize_angle(370000) esperado 10000, obtido ${n1}`);
+
+  const n2 = runtime.normalizeAngleNative(-1000);
+  assert(approx(n2, 359000), `normalize_angle(-1000) esperado 359000, obtido ${n2}`);
+
+  assert(runtime.signNative(-3) === -1, `sign(-3) esperado -1, obtido ${runtime.signNative(-3)}`);
+  assert(runtime.signNative(0) === 0, `sign(0) esperado 0, obtido ${runtime.signNative(0)}`);
+  assert(runtime.signNative(2) === 1, `sign(2) esperado 1, obtido ${runtime.signNative(2)}`);
+
+  const d = runtime.distanceNative(0, 0, 3, 4);
+  assert(approx(d, 5), `distance(0,0,3,4) esperado 5, obtido ${d}`);
+
+  const drOutside = runtime.distanceRectNative(0, 0, 10, 10, 10, 10);
+  assert(approx(drOutside, Math.hypot(10, 10)), `distance_rect fora esperado ${Math.hypot(10, 10)}, obtido ${drOutside}`);
+
+  const drInside = runtime.distanceRectNative(15, 15, 10, 10, 10, 10);
+  assert(approx(drInside, 0), `distance_rect dentro esperado 0, obtido ${drInside}`);
+
+  const fa = runtime.fgetAngleNative(0, 0, 0, 10);
+  assert(approx(fa, 90000), `fget_angle para cima esperado 90000, obtido ${fa}`);
+
+  const fd = runtime.fgetDistanceNative(0, 0, 6, 8);
+  assert(approx(fd, 10), `fget_distance esperado 10, obtido ${fd}`);
+
+  const h = runtime.hermiteNative(0, 10, 0.5);
+  assert(approx(h, 5), `hermite(0,10,0.5) esperado 5, obtido ${h}`);
+
+  const gx = runtime.getDistXNative(10, 0);
+  const gy = runtime.getDistYNative(10, 90000);
+  assert(approx(gx, 10), `get_distx(10,0) esperado 10, obtido ${gx}`);
+  assert(approx(gy, 10), `get_disty(10,90000) esperado 10, obtido ${gy}`);
+
+  const rad = runtime.toRadNative(180000);
+  assert(approx(rad, Math.PI), `torad(180000) esperado PI, obtido ${rad}`);
+
+  const deg = runtime.toDegNative(Math.PI / 2);
+  assert(approx(deg, 90000), `todeg(PI/2) esperado 90000, obtido ${deg}`);
 }
 
 async function testKeywordLogicalOperatorsCompileAndRun() {
@@ -1975,6 +2094,141 @@ async function testCollisionByType() {
   assert(collidingId === enemy.id, `collision TYPE esperado id ${enemy.id}, obtido ${collidingId}`);
 }
 
+async function testCircleCollisionUsesExplicitRadius() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  // width/height are tiny, so default radius would be too small to collide.
+  const a = vm.processManager.create('a', { x: 10, y: 10, width: 8, height: 8 });
+  const b = vm.processManager.create('b', { x: 50, y: 10, width: 8, height: 8 });
+
+  vm.currentProcess = a;
+  runtime.setCollisionRadiusNative(30);
+
+  const bType = vm.processManager.getTypeCode('b');
+  const hit = runtime.collisionCircleNative(bType);
+  assert(hit === b.id, `collision_circle com raio explicito esperado id ${b.id}, obtido ${hit}`);
+}
+
+async function testExplicitCollisionBoxesOverrideLargeImplicitBounds() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  // Two huge sprites overlapping if implicit width/height is used.
+  const a = vm.processManager.create('a', { x: 100, y: 100, width: 200, height: 200 });
+  const b = vm.processManager.create('b', { x: 220, y: 120, width: 200, height: 200 });
+
+  vm.currentProcess = a;
+  runtime.clearCollisionBoxesNative();
+  runtime.addCollisionBoxNative(0, 0, 20, 20, 11);
+
+  vm.currentProcess = b;
+  runtime.clearCollisionBoxesNative();
+  runtime.addCollisionBoxNative(180, 180, 20, 20, 22);
+
+  vm.currentProcess = a;
+  const typeB = vm.processManager.getTypeCode('b');
+  const hit = runtime.collisionNative(typeB);
+  assert(hit === 0, `cboxes explicitas pequenas nao deviam colidir, obtido id ${hit}`);
+}
+
+async function testCBoxBoxCollisionPenetrationSignAndCodes() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  const a = vm.processManager.create('a', { x: 100, y: 100, width: 32, height: 32, angle: 0 });
+  const b = vm.processManager.create('b', { x: 124, y: 104, width: 32, height: 32, angle: 0 });
+
+  vm.currentProcess = a;
+  runtime.clearCollisionBoxesNative();
+  runtime.addCollisionBoxNative(0, 0, 32, 32, 101);
+
+  vm.currentProcess = b;
+  runtime.clearCollisionBoxesNative();
+  runtime.addCollisionBoxNative(0, 0, 32, 32, 202);
+
+  vm.currentProcess = a;
+  const typeB = vm.processManager.getTypeCode('b');
+  const hit = runtime.collisionNative(typeB);
+
+  assert(hit === b.id, `box-box: esperado id ${b.id}, obtido ${hit}`);
+  assert(runtime.getColliderCBoxNative() === 101, `box-box collider_cbox esperado 101, obtido ${runtime.getColliderCBoxNative()}`);
+  assert(runtime.getCollidedCBoxNative() === 202, `box-box collided_cbox esperado 202, obtido ${runtime.getCollidedCBoxNative()}`);
+  assert(runtime.getPenetrationXNative() < 0, `box-box: com A a esquerda de B, penetration_x devia ser negativo, obtido ${runtime.getPenetrationXNative()}`);
+}
+
+async function testCBoxCircleCircleCollisionAndCodes() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  const a = vm.processManager.create('a', { x: 100, y: 100, width: 40, height: 40, angle: 0 });
+  const b = vm.processManager.create('b', { x: 130, y: 100, width: 40, height: 40, angle: 0 });
+
+  vm.currentProcess = a;
+  runtime.clearCollisionBoxesNative();
+  runtime.addCollisionCircleNative(20, 20, 18, 301);
+
+  vm.currentProcess = b;
+  runtime.clearCollisionBoxesNative();
+  runtime.addCollisionCircleNative(20, 20, 18, 302);
+
+  vm.currentProcess = a;
+  const typeB = vm.processManager.getTypeCode('b');
+  const hit = runtime.collisionNative(typeB);
+
+  assert(hit === b.id, `circle-circle: esperado id ${b.id}, obtido ${hit}`);
+  assert(runtime.getColliderCBoxNative() === 301, `circle-circle collider_cbox esperado 301, obtido ${runtime.getColliderCBoxNative()}`);
+  assert(runtime.getCollidedCBoxNative() === 302, `circle-circle collided_cbox esperado 302, obtido ${runtime.getCollidedCBoxNative()}`);
+  assert(runtime.getPenetrationXNative() < 0, `circle-circle: com A a esquerda de B, penetration_x devia ser negativo, obtido ${runtime.getPenetrationXNative()}`);
+}
+
+async function testCBoxBoxCircleCollisionAndCodes() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  const a = vm.processManager.create('a', { x: 100, y: 100, width: 40, height: 40, angle: 0 });
+  const b = vm.processManager.create('b', { x: 126, y: 104, width: 40, height: 40, angle: 0 });
+
+  vm.currentProcess = a;
+  runtime.clearCollisionBoxesNative();
+  runtime.addCollisionBoxNative(0, 0, 24, 24, 401);
+
+  vm.currentProcess = b;
+  runtime.clearCollisionBoxesNative();
+  runtime.addCollisionCircleNative(12, 12, 12, 402);
+
+  vm.currentProcess = a;
+  const typeB = vm.processManager.getTypeCode('b');
+  const hit = runtime.collisionNative(typeB);
+
+  assert(hit === b.id, `box-circle: esperado id ${b.id}, obtido ${hit}`);
+  assert(runtime.getColliderCBoxNative() === 401, `box-circle collider_cbox esperado 401, obtido ${runtime.getColliderCBoxNative()}`);
+  assert(runtime.getCollidedCBoxNative() === 402, `box-circle collided_cbox esperado 402, obtido ${runtime.getCollidedCBoxNative()}`);
+}
+
+async function testCBoxPenetrationYAxisSign() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  const a = vm.processManager.create('a', { x: 100, y: 100, width: 32, height: 32, angle: 0 });
+  const b = vm.processManager.create('b', { x: 104, y: 124, width: 32, height: 32, angle: 0 });
+
+  vm.currentProcess = a;
+  runtime.clearCollisionBoxesNative();
+  runtime.addCollisionBoxNative(0, 0, 32, 32, 501);
+
+  vm.currentProcess = b;
+  runtime.clearCollisionBoxesNative();
+  runtime.addCollisionBoxNative(0, 0, 32, 32, 502);
+
+  vm.currentProcess = a;
+  const typeB = vm.processManager.getTypeCode('b');
+  const hit = runtime.collisionNative(typeB);
+
+  assert(hit === b.id, `box-box Y: esperado id ${b.id}, obtido ${hit}`);
+  assert(runtime.getPenetrationYNative() < 0, `box-box Y: com A acima de B, penetration_y devia ser negativo, obtido ${runtime.getPenetrationYNative()}`);
+}
+
 async function testCrossProcessFixedSlotsAreLiveWithinSameFrame() {
   // vm.js's runProcess() used to sync only x/y from locals back onto the
   // Process object right after each process yields, while width, height,
@@ -2570,6 +2824,89 @@ async function testPathNativesScrollState() {
   assert(active === 1, `get_path active esperado 1, obtido ${active}`);
 }
 
+async function testPathFindAvoidsObstacleType() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  // Vertical wall blocking direct route from left to right at y=8.
+  vm.processManager.create('wall', { x: 32, y: 0, width: 16, height: 64, angle: 0 });
+  const wallType = vm.processManager.getTypeCode('wall');
+
+  const pathId = runtime.pathFindNative(8, 8, 88, 8, wallType, 16, 0, 8192);
+  assert(pathId > 0, `path_find devia devolver id valido, obtido ${pathId}`);
+
+  const len = runtime.pathLengthNative(pathId);
+  assert(len >= 2, `path_length esperado >=2, obtido ${len}`);
+
+  const x0 = runtime.pathGetXNative(pathId, 0);
+  const y0 = runtime.pathGetYNative(pathId, 0);
+  const xN = runtime.pathGetXNative(pathId, len - 1);
+  const yN = runtime.pathGetYNative(pathId, len - 1);
+  assert(x0 === 8 && y0 === 8, `primeiro ponto esperado (8,8), obtido (${x0},${y0})`);
+  assert(xN === 88 && yN === 8, `ultimo ponto esperado (88,8), obtido (${xN},${yN})`);
+
+  let detoured = false;
+  for (let i = 0; i < len; i++) {
+    const py = runtime.pathGetYNative(pathId, i);
+    if (py !== 8) {
+      detoured = true;
+      break;
+    }
+  }
+  assert(detoured, 'path_find devia desviar do obstaculo (esperava pelo menos um ponto com y != 8)');
+
+  const cleared = runtime.pathClearNative(pathId);
+  assert(cleared === 1, `path_clear esperado 1, obtido ${cleared}`);
+  assert(runtime.pathLengthNative(pathId) === 0, 'path_clear devia remover path');
+}
+
+async function testPathAssignAndStepUsesDeltaTime() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  const bot = vm.processManager.create('bot', { x: 0, y: 0, width: 16, height: 16, angle: 0 });
+  vm.currentProcess = bot;
+
+  const pathId = runtime.pathFindNative(8, 8, 104, 8, 0, 16, 0, 4096);
+  assert(pathId > 0, `path_find esperado id valido, obtido ${pathId}`);
+  assert(runtime.pathAssignNative(pathId, 1) === 1, 'path_assign devia devolver 1');
+
+  vm.dt = 0.1;
+  const moving = runtime.pathStepNative(100, 1);
+  assert(moving === 1, `path_step inicial devia indicar em movimento (1), obtido ${moving}`);
+  assert(bot.x > 0, `bot devia mover no eixo X com dt, obtido x=${bot.x}`);
+
+  let state = moving;
+  for (let i = 0; i < 60 && state !== 2; i++) {
+    state = runtime.pathStepNative(100, 1);
+  }
+
+  assert(state === 2, `path_step devia eventualmente terminar com 2, obtido ${state}`);
+  assert(Math.abs(bot.x - 96) <= 1.5, `bot devia terminar perto de x=96 (centro em 104), obtido x=${bot.x}`);
+}
+
+async function testRelativeProcessFieldAccessFatherAndSon() {
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  const parent = vm.processManager.create('parent', { x: 10, y: 20 });
+  const child = vm.processManager.create('child', { x: 3, y: 4, parentId: parent.id });
+
+  vm.currentProcess = child;
+  const fatherX = runtime.getPathNative('father', 'x');
+  assert(fatherX === 10, `father.x esperado 10, obtido ${fatherX}`);
+
+  runtime.setPathNative('father', 'x', 42);
+  assert(parent.x === 42, `set father.x esperado parent.x=42, obtido ${parent.x}`);
+
+  vm.currentProcess = parent;
+  const sonX = runtime.getPathNative('son', 'x');
+  assert(sonX === 3, `son.x esperado 3, obtido ${sonX}`);
+
+  runtime.setPathNative('son', 'y', 77);
+  assert(child.y === 77, `set son.y esperado child.y=77, obtido ${child.y}`);
+}
+
 export async function runAllTests() {
   const tests = [
     ['lexer: keywords/operators/delimiters', testLexerKeywordsOperatorsAndDelimiters],
@@ -2585,13 +2922,25 @@ export async function runAllTests() {
     ['signal(id, s_kill) semantics', testSignalKillByIdUsesDivSemantics],
     ['ctype=c_scroll persists after frame', testCTypeScrollAssignmentPersistsAfterFrame],
     ['collision by TYPE', testCollisionByType],
+    ['collision_circle uses explicit radius when set', testCircleCollisionUsesExplicitRadius],
+    ['explicit cboxes override large implicit bounds', testExplicitCollisionBoxesOverrideLargeImplicitBounds],
+    ['cbox box-box: metadata + penetration sign', testCBoxBoxCollisionPenetrationSignAndCodes],
+    ['cbox circle-circle: metadata + penetration sign', testCBoxCircleCircleCollisionAndCodes],
+    ['cbox box-circle: metadata codes', testCBoxBoxCircleCollisionAndCodes],
+    ['cbox penetration Y sign (A above B)', testCBoxPenetrationYAxisSign],
     ['cross-process fixed slots (width/height/ctype/region/angle) are live within the same frame', testCrossProcessFixedSlotsAreLiveWithinSameFrame],
     ['let_me_alone kills others', testLetMeAloneKillsOthers],
     ['__get_path/__set_path scroll state', testPathNativesScrollState],
+    ['path_find (A*) avoids TYPE obstacle and exposes points', testPathFindAvoidsObstacleType],
+    ['path_assign/path_step follows path using delta time', testPathAssignAndStepUsesDeltaTime],
+    ['relative process field access: father.x and son.x', testRelativeProcessFieldAccessFatherAndSon],
     ['out_of_region / out_of_screen', testOutOfRegionAndScreen],
     ['load_graphic / load_tile direct ids', testLoadGraphicAndTileDirectIds],
+    ['load_bdf_font_text renders bitmap text', testLoadAndDrawBdfBitmapFont],
     ['xadvance movement', testXAdvanceMovesByAngle],
     ['xadvance handles angles above half circle correctly', testXAdvanceHandlesAnglesAboveHalfCircle],
+    ['math helpers: ping_pong, wrap, lerp_angle, clamp, lerp, smoothstep', testMathHelpersPingPongWrapAndLerpAngle],
+    ['math geometry helpers: normalize_angle/sign/distance pack', testMathGeometryHelperPack],
     ['keyword and/or/not operators', testKeywordLogicalOperatorsCompileAndRun],
     ['logical short-circuit skips side effects', testLogicalShortCircuitSkipsSideEffects],
     ['LOAD_GLOBAL preserves falsy', testLoadGlobalPreservesFalsyValues],

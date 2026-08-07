@@ -55,6 +55,50 @@ export class GraphicsManager {
     });
     return id;
   }
+
+  // Register an existing canvas/image-like object directly as a graphic
+  addCanvas(canvas, sx, sy, sw, sh) {
+    const id = this.nextId++;
+    const width = canvas?.width || 1;
+    const height = canvas?.height || 1;
+    const graphic = {
+      id,
+      image: canvas,
+      canvas,
+      loaded: true,
+      sw: sw || width,
+      sh: sh || height
+    };
+    if (sx !== undefined) {
+      graphic.sx = sx;
+      graphic.sy = sy || 0;
+    }
+    this.graphics.set(id, graphic);
+    return id;
+  }
+
+  // Replace a pre-reserved graphic id with decoded canvas data
+  setCanvas(id, canvas, sx, sy, sw, sh) {
+    const numericId = Number(id) || 0;
+    const width = canvas?.width || 1;
+    const height = canvas?.height || 1;
+    const current = this.graphics.get(numericId) || { id: numericId };
+    const next = {
+      ...current,
+      id: numericId,
+      image: canvas,
+      canvas,
+      loaded: true,
+      sw: sw || width,
+      sh: sh || height
+    };
+    if (sx !== undefined) {
+      next.sx = sx;
+      next.sy = sy || 0;
+    }
+    this.graphics.set(numericId, next);
+    return numericId;
+  }
   
   // Get graphic by ID
   get(id) {

@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DivJS - FPG/FNT Game Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 820px;
+      line-height: 1.4;
+    }
+    #log {
+      width: 800px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 52px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="800" height="500"></canvas>
+  <p>
+    Move com setas ou WASD. TAB liga/desliga debug de cboxes e vetor de penetração.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM div_fpg_fnt_game;
+
+GLOBAL g_lib = 0;
+GLOBAL g_fnt = 0;
+GLOBAL g_anim = 1;
+GLOBAL g_anim_dir = 1;
+GLOBAL g_tick = 0;
+GLOBAL g_score = 0;
+GLOBAL g_debug = 1;
+GLOBAL g_debug_key = 'Tab';
+GLOBAL g_debug_latch = 0;
+GLOBAL g_last_px = 0;
+GLOBAL g_last_py = 0;
+GLOBAL g_last_collider = -1;
+GLOBAL g_last_collided = -1;
+GLOBAL k_left = 'ArrowLeft';
+GLOBAL k_right = 'ArrowRight';
+GLOBAL k_up = 'ArrowUp';
+GLOBAL k_down = 'ArrowDown';
+GLOBAL k_a = 'a';
+GLOBAL k_d = 'd';
+GLOBAL k_w = 'w';
+GLOBAL k_s = 's';
+
+PROCESS enemy(px, py, g0, cbox_code);
+PRIVATE file = 0; graph = 0; base_y = 0; phase = 0;
+BEGIN
+  x = px;
+  y = py;
+  base_y = py;
+  width = 32;
+  height = 32;
+  file = g_lib;
+  graph = g0;
+  set_collision_shape(0);
+  clear_collision_boxes();
+  add_collision_box(6, 6, 20, 20, cbox_code);
+
+  LOOP
+    phase = phase + 5000;
+    y = base_y + sin(phase) * 6 / 100000;
+
+    IF (g_anim >= g0 AND g_anim <= g0 + 2)
+      graph = g_anim;
+    END
+
+    IF (g_debug)
+      set_color('#20d6ee33');
+      draw_rect(x + 6, y + 6, 20, 20);
+      set_color('#20d6ee');
+      circle(x + 16, y + 16, 2);
+    END
+
+    FRAME;
+  END
+END
+
+PROCESS player();
+PRIVATE file = 0; graph = 0; speed = 3; hit = 0;
+BEGIN
+  x = 390;
+  y = 360;
+  width = 32;
+  height = 32;
+  file = g_lib;
+  graph = 1;
+  set_collision_shape(0);
+  clear_collision_boxes();
+  add_collision_box(8, 8, 16, 16, 101);
+
+  LOOP
+     IF (key(k_left) OR key(k_a))  x = x - speed; END
+     IF (key(k_right) OR key(k_d)) x = x + speed; END
+     IF (key(k_up) OR key(k_w))    y = y - speed; END
+     IF (key(k_down) OR key(k_s))  y = y + speed; END
+
+    IF (x < 16) x = 16; END
+    IF (x > 784) x = 784; END
+    IF (y < 90) y = 90; END
+    IF (y > 470) y = 470; END
+
+    graph = g_anim;
+
+    hit = collision(TYPE enemy);
+    IF (hit)
+      g_score = g_score + 1;
+      g_last_px = penetration_x();
+      g_last_py = penetration_y();
+      g_last_collider = collider_cbox();
+      g_last_collided = collided_cbox();
+    ELSE
+      g_last_px = 0;
+      g_last_py = 0;
+      g_last_collider = -1;
+      g_last_collided = -1;
+    END
+
+    IF (g_debug)
+      set_color('#59ff8d33');
+      draw_rect(x + 8, y + 8, 16, 16);
+      set_color('#59ff8d');
+      circle(x + 16, y + 16, 2);
+
+      IF (g_last_px > 0)
+        draw_rect(x + 16, y + 15, g_last_px, 2);
+      END
+      IF (g_last_px < 0)
+        draw_rect(x + 16 + g_last_px, y + 15, -g_last_px, 2);
+      END
+
+      IF (g_last_py > 0)
+        draw_rect(x + 15, y + 16, 2, g_last_py);
+      END
+      IF (g_last_py < 0)
+        draw_rect(x + 15, y + 16 + g_last_py, 2, -g_last_py);
+      END
+
+      circle(x + 16 + g_last_px, y + 16 + g_last_py, 3);
+    END
+
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(800, 500);
+  screen_color('#0e1a29');
+
+  g_lib = load_fpg('../assets/div-support/tutor0.fpg');
+  g_fnt = load_fnt('../assets/div-support/tutor1.fnt');
+
+  enemy(170, 220, 4, 11);
+  enemy(320, 180, 8, 12);
+  enemy(520, 240, 12, 13);
+  enemy(660, 170, 16, 14);
+  player();
+
+  LOOP
+    g_tick = g_tick + 1;
+
+    IF (key(g_debug_key))
+      IF (g_debug_latch == 0)
+        g_debug = 1 - g_debug;
+      END
+      g_debug_latch = 1;
+    ELSE
+      g_debug_latch = 0;
+    END
+
+    IF (g_tick % 8 == 0)
+      g_anim = g_anim + g_anim_dir;
+      IF (g_anim >= 3)
+        g_anim = 3;
+        g_anim_dir = -1;
+      END
+      IF (g_anim <= 1)
+        g_anim = 1;
+        g_anim_dir = 1;
+      END
+    END
+
+    set_color('#9bc8f2');
+    write(g_fnt, 20, 18, 0, 'DIV FPG/FNT DEMO');
+    write(g_fnt, 20, 40, 0, 'SPRITES: tutor0.fpg');
+    write(g_fnt, 20, 62, 0, 'FONT: tutor1.fnt');
+    write(g_fnt, 20, 84, 0, 'COLLISIONS:');
+    write_int(g_fnt, 210, 84, 0, g_score);
+    write(g_fnt, 20, 106, 0, 'DEBUG TAB:');
+    write_int(g_fnt, 210, 106, 0, g_debug);
+    write(g_fnt, 20, 128, 0, 'PEN X:');
+    write_int(g_fnt, 210, 128, 0, g_last_px);
+    write(g_fnt, 20, 150, 0, 'PEN Y:');
+    write_int(g_fnt, 210, 150, 0, g_last_py);
+    write(g_fnt, 20, 172, 0, 'CBOX A/B:');
+    write_int(g_fnt, 210, 172, 0, g_last_collider);
+    write(g_fnt, 240, 172, 0, '/');
+    write_int(g_fnt, 260, 172, 0, g_last_collided);
+
+    xput(g_lib, g_anim, 740, 70, 0, 200, 0, 0);
+
+    FRAME;
+  END
+END`;
+
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const log = document.getElementById('log');
+
+    function logLine(line) {
+      log.textContent = String(line);
+    }
+
+    try {
+      runDivDemo({
+        canvas,
+        source: SOURCE,
+        clearColor: '#0e1a29',
+        onLog: (line) => { logLine(line); },
+        onError: (err) => {
+          logLine('error: ' + (err?.message || String(err)));
+          console.error(err);
+        }
+      });
+      logLine('running: load_fpg + load_fnt');
+    } catch (err) {
+      logLine('error: ' + (err?.message || String(err)));
+      console.error(err);
+    }
+  </script>
+</body>
+</html>

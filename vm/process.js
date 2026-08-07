@@ -5,6 +5,399 @@
 
 import { hashCode } from '../utils/hash.js';
 
+const DIV_ANGLE_TO_RAD = Math.PI / 180000;
+
+function toRadians(divAngle) {
+  return (Number(divAngle) || 0) * DIV_ANGLE_TO_RAD;
+}
+
+function getCenter(process, x = process.x, y = process.y) {
+  const w = Number(process.width) || 0;
+  const h = Number(process.height) || 0;
+  return {
+    cx: (Number(x) || 0) + w * 0.5,
+    cy: (Number(y) || 0) + h * 0.5,
+    w,
+    h
+  };
+}
+
+function getCorners(process, x = process.x, y = process.y) {
+  const { cx, cy, w, h } = getCenter(process, x, y);
+  const hw = w * 0.5;
+  const hh = h * 0.5;
+  const a = toRadians(process.angle);
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+
+  const rot = (lx, ly) => ({
+    x: cx + lx * c - ly * s,
+    y: cy + lx * s + ly * c
+  });
+
+  return [
+    rot(-hw, -hh),
+    rot(hw, -hh),
+    rot(hw, hh),
+    rot(-hw, hh)
+  ];
+}
+
+function getAABBFromCorners(corners) {
+  let minX = corners[0].x;
+  let maxX = corners[0].x;
+  let minY = corners[0].y;
+  let maxY = corners[0].y;
+  for (let i = 1; i < corners.length; i++) {
+    const p = corners[i];
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { minX, maxX, minY, maxY };
+}
+
+function aabbOverlap(a, b) {
+  return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+}
+
+function dot(ax, ay, bx, by) {
+  return ax * bx + ay * by;
+}
+
+function normalize(x, y) {
+  const len = Math.hypot(x, y);
+  if (len <= 1e-9) return { x: 1, y: 0 };
+  return { x: x / len, y: y / len };
+}
+
+function projectCorners(corners, axisX, axisY) {
+  let min = dot(corners[0].x, corners[0].y, axisX, axisY);
+  let max = min;
+  for (let i = 1; i < corners.length; i++) {
+    const p = dot(corners[i].x, corners[i].y, axisX, axisY);
+    if (p < min) min = p;
+    if (p > max) max = p;
+  }
+  return { min, max };
+}
+
+function overlapAmount(pa, pb) {
+  return Math.min(pa.max, pb.max) - Math.max(pa.min, pb.min);
+}
+
+function satBoxBox(cornersA, cornersB, centerDeltaX, centerDeltaY) {
+  const edges = [
+    { x: cornersA[1].x - cornersA[0].x, y: cornersA[1].y - cornersA[0].y },
+    { x: cornersA[3].x - cornersA[0].x, y: cornersA[3].y - cornersA[0].y },
+    { x: cornersB[1].x - cornersB[0].x, y: cornersB[1].y - cornersB[0].y },
+    { x: cornersB[3].x - cornersB[0].x, y: cornersB[3].y - cornersB[0].y }
+  ];
+
+  let bestOverlap = Number.POSITIVE_INFINITY;
+  let bestAxis = { x: 1, y: 0 };
+
+  for (const e of edges) {
+    const axis = normalize(-e.y, e.x);
+    const pa = projectCorners(cornersA, axis.x, axis.y);
+    const pb = projectCorners(cornersB, axis.x, axis.y);
+    const ov = overlapAmount(pa, pb);
+    if (ov <= 0) {
+      return { hit: false, mtvX: 0, mtvY: 0 };
+    }
+    if (ov < bestOverlap) {
+      bestOverlap = ov;
+      bestAxis = axis;
+    }
+  }
+
+  // Push A away from B
+  const dir = dot(centerDeltaX, centerDeltaY, bestAxis.x, bestAxis.y) < 0 ? -1 : 1;
+  return {
+    hit: true,
+    mtvX: bestAxis.x * bestOverlap * dir,
+    mtvY: bestAxis.y * bestOverlap * dir
+  };
+}
+
+function circleCircle(a, b, ax = a.x, ay = a.y, bx = b.x, by = b.y) {
+  const ac = getCenter(a, ax, ay);
+  const bc = getCenter(b, bx, by);
+  const ar = getCircleRadius(a, ac.w, ac.h);
+  const br = getCircleRadius(b, bc.w, bc.h);
+  const dx = ac.cx - bc.cx;
+  const dy = ac.cy - bc.cy;
+  const dist = Math.hypot(dx, dy);
+  const sum = ar + br;
+  if (dist > sum) {
+    return { hit: false, mtvX: 0, mtvY: 0 };
+  }
+  const n = dist <= 1e-9 ? { x: 1, y: 0 } : { x: dx / dist, y: dy / dist };
+  const pen = sum - dist;
+  return { hit: true, mtvX: n.x * pen, mtvY: n.y * pen };
+}
+
+function getCircleRadius(process, width, height) {
+  const explicit = Number(process.collisionRadius);
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+
+  const scaleRaw = Number(process.collisionScale);
+  const scale = Number.isFinite(scaleRaw) && scaleRaw > 0 ? scaleRaw : 1;
+  const fallback = Math.max(1, Math.min(Number(width) || 0, Number(height) || 0) * 0.5 * scale);
+  return fallback;
+}
+
+function boxCircle(box, circle, boxX = box.x, boxY = box.y, cx = circle.x, cy = circle.y) {
+  const corners = getCorners(box, boxX, boxY);
+  const center = getCenter(box, boxX, boxY);
+  const cc = getCenter(circle, cx, cy);
+  const r = getCircleRadius(circle, cc.w, cc.h);
+
+  const angle = toRadians(box.angle);
+  const c = Math.cos(-angle);
+  const s = Math.sin(-angle);
+  const lx = (cc.cx - center.cx) * c - (cc.cy - center.cy) * s;
+  const ly = (cc.cx - center.cx) * s + (cc.cy - center.cy) * c;
+
+  const hw = center.w * 0.5;
+  const hh = center.h * 0.5;
+  const qx = Math.max(-hw, Math.min(hw, lx));
+  const qy = Math.max(-hh, Math.min(hh, ly));
+  const dx = lx - qx;
+  const dy = ly - qy;
+  const d2 = dx * dx + dy * dy;
+  if (d2 > r * r) {
+    return { hit: false, mtvX: 0, mtvY: 0 };
+  }
+
+  const dist = Math.sqrt(d2);
+  let nx = 1;
+  let ny = 0;
+  let pen = r;
+  if (dist > 1e-9) {
+    nx = dx / dist;
+    ny = dy / dist;
+    pen = r - dist;
+  }
+
+  const wx = nx * Math.cos(angle) - ny * Math.sin(angle);
+  const wy = nx * Math.sin(angle) + ny * Math.cos(angle);
+  const dir = dot(center.cx - cc.cx, center.cy - cc.cy, wx, wy) < 0 ? -1 : 1;
+  return { hit: true, mtvX: wx * pen * dir, mtvY: wy * pen * dir };
+}
+
+function localToWorld(process, px, py, lx, ly) {
+  const { cx, cy, w, h } = getCenter(process, px, py);
+  const dx = Number(lx) - w * 0.5;
+  const dy = Number(ly) - h * 0.5;
+  const a = toRadians(process.angle);
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return {
+    x: cx + dx * c - dy * s,
+    y: cy + dx * s + dy * c
+  };
+}
+
+function cboxToShape(process, cbox, px = process.x, py = process.y) {
+  const shape = cbox?.shape === 'circle' ? 'circle' : 'box';
+  const code = Number(cbox?.code);
+  if (shape === 'circle') {
+    const center = localToWorld(process, px, py, Number(cbox.x) || 0, Number(cbox.y) || 0);
+    const radius = Math.max(1, Number(cbox.radius) || 1);
+    return {
+      shape,
+      code: Number.isInteger(code) ? code : -1,
+      cx: center.x,
+      cy: center.y,
+      r: radius,
+      aabb: {
+        minX: center.x - radius,
+        maxX: center.x + radius,
+        minY: center.y - radius,
+        maxY: center.y + radius
+      }
+    };
+  }
+
+  const x = Number(cbox?.x) || 0;
+  const y = Number(cbox?.y) || 0;
+  const w = Math.max(1, Number(cbox?.width) || 1);
+  const h = Math.max(1, Number(cbox?.height) || 1);
+  const corners = [
+    localToWorld(process, px, py, x, y),
+    localToWorld(process, px, py, x + w, y),
+    localToWorld(process, px, py, x + w, y + h),
+    localToWorld(process, px, py, x, y + h)
+  ];
+  return {
+    shape,
+    code: Number.isInteger(code) ? code : -1,
+    corners,
+    aabb: getAABBFromCorners(corners)
+  };
+}
+
+function getDefaultShapes(process, px = process.x, py = process.y, preferCircle = false) {
+  if (preferCircle || process.collisionShape === 'circle') {
+    const center = getCenter(process, px, py);
+    const r = getCircleRadius(process, center.w, center.h);
+    return [{
+      shape: 'circle',
+      code: -1,
+      cx: center.cx,
+      cy: center.cy,
+      r,
+      aabb: { minX: center.cx - r, maxX: center.cx + r, minY: center.cy - r, maxY: center.cy + r }
+    }];
+  }
+  const corners = getCorners(process, px, py);
+  return [{
+    shape: 'box',
+    code: -1,
+    corners,
+    aabb: getAABBFromCorners(corners)
+  }];
+}
+
+function getProcessShapes(process, px = process.x, py = process.y, preferCircle = false) {
+  if (Array.isArray(process.cboxes) && process.cboxes.length > 0) {
+    return process.cboxes.map((c) => cboxToShape(process, c, px, py));
+  }
+  return getDefaultShapes(process, px, py, preferCircle);
+}
+
+function circleCircleShapes(a, b) {
+  const dx = a.cx - b.cx;
+  const dy = a.cy - b.cy;
+  const dist = Math.hypot(dx, dy);
+  const sum = a.r + b.r;
+  if (dist > sum) return { hit: false, mtvX: 0, mtvY: 0 };
+  const n = dist <= 1e-9 ? { x: 1, y: 0 } : { x: dx / dist, y: dy / dist };
+  const pen = sum - dist;
+  return { hit: true, mtvX: n.x * pen, mtvY: n.y * pen };
+}
+
+function boxCircleShapes(boxShape, circleShape) {
+  const centerX = (boxShape.corners[0].x + boxShape.corners[2].x) * 0.5;
+  const centerY = (boxShape.corners[0].y + boxShape.corners[2].y) * 0.5;
+
+  // Build local basis from box edge vectors.
+  const ex = normalize(boxShape.corners[1].x - boxShape.corners[0].x, boxShape.corners[1].y - boxShape.corners[0].y);
+  const ey = normalize(boxShape.corners[3].x - boxShape.corners[0].x, boxShape.corners[3].y - boxShape.corners[0].y);
+  const hw = Math.hypot(boxShape.corners[1].x - boxShape.corners[0].x, boxShape.corners[1].y - boxShape.corners[0].y) * 0.5;
+  const hh = Math.hypot(boxShape.corners[3].x - boxShape.corners[0].x, boxShape.corners[3].y - boxShape.corners[0].y) * 0.5;
+
+  const relX = circleShape.cx - centerX;
+  const relY = circleShape.cy - centerY;
+  const lx = dot(relX, relY, ex.x, ex.y);
+  const ly = dot(relX, relY, ey.x, ey.y);
+  const qx = Math.max(-hw, Math.min(hw, lx));
+  const qy = Math.max(-hh, Math.min(hh, ly));
+  const dx = lx - qx;
+  const dy = ly - qy;
+  const d2 = dx * dx + dy * dy;
+  if (d2 > circleShape.r * circleShape.r) {
+    return { hit: false, mtvX: 0, mtvY: 0 };
+  }
+  const dist = Math.sqrt(d2);
+  const nx = dist <= 1e-9 ? 1 : dx / dist;
+  const ny = dist <= 1e-9 ? 0 : dy / dist;
+  const pen = dist <= 1e-9 ? circleShape.r : (circleShape.r - dist);
+  const wx = ex.x * nx + ey.x * ny;
+  const wy = ex.y * nx + ey.y * ny;
+  return { hit: true, mtvX: wx * pen, mtvY: wy * pen };
+}
+
+function collideShapePair(shapeA, shapeB) {
+  if (!aabbOverlap(shapeA.aabb, shapeB.aabb)) {
+    return { hit: false, mtvX: 0, mtvY: 0 };
+  }
+
+  if (shapeA.shape === 'box' && shapeB.shape === 'box') {
+    const ca = {
+      cx: (shapeA.corners[0].x + shapeA.corners[2].x) * 0.5,
+      cy: (shapeA.corners[0].y + shapeA.corners[2].y) * 0.5
+    };
+    const cb = {
+      cx: (shapeB.corners[0].x + shapeB.corners[2].x) * 0.5,
+      cy: (shapeB.corners[0].y + shapeB.corners[2].y) * 0.5
+    };
+    return satBoxBox(shapeA.corners, shapeB.corners, ca.cx - cb.cx, ca.cy - cb.cy);
+  }
+
+  if (shapeA.shape === 'circle' && shapeB.shape === 'circle') {
+    return circleCircleShapes(shapeA, shapeB);
+  }
+
+  if (shapeA.shape === 'box' && shapeB.shape === 'circle') {
+    return boxCircleShapes(shapeA, shapeB);
+  }
+
+  const inv = boxCircleShapes(shapeB, shapeA);
+  return inv.hit ? { hit: true, mtvX: -inv.mtvX, mtvY: -inv.mtvY } : inv;
+}
+
+function collideProcesses(a, b, ax = a.x, ay = a.y, bx = b.x, by = b.y, options = {}) {
+  const shapesA = getProcessShapes(a, ax, ay, !!options.preferCircle);
+  const shapesB = getProcessShapes(b, bx, by, !!options.preferCircle);
+
+  for (const sa of shapesA) {
+    for (const sb of shapesB) {
+      const hit = collideShapePair(sa, sb);
+      if (hit.hit) {
+        return {
+          hit: true,
+          mtvX: hit.mtvX,
+          mtvY: hit.mtvY,
+          cboxCodeA: sa.code,
+          cboxCodeB: sb.code
+        };
+      }
+    }
+  }
+  return { hit: false, mtvX: 0, mtvY: 0, cboxCodeA: -1, cboxCodeB: -1 };
+}
+
+function processAABB(process, x = process.x, y = process.y) {
+  if ((Number(process.angle) || 0) === 0) {
+    const px = Number(x) || 0;
+    const py = Number(y) || 0;
+    const w = Number(process.width) || 0;
+    const h = Number(process.height) || 0;
+    return { minX: px, maxX: px + w, minY: py, maxY: py + h };
+  }
+  return getAABBFromCorners(getCorners(process, x, y));
+}
+
+function collidesBoxBox(a, b, ax = a.x, ay = a.y, bx = b.x, by = b.y) {
+  const aabbA = processAABB(a, ax, ay);
+  const aabbB = processAABB(b, bx, by);
+  if (!aabbOverlap(aabbA, aabbB)) {
+    return { hit: false, mtvX: 0, mtvY: 0 };
+  }
+
+  const angleA = Number(a.angle) || 0;
+  const angleB = Number(b.angle) || 0;
+  if (angleA === 0 && angleB === 0) {
+    const left = aabbB.minX - aabbA.maxX;
+    const right = aabbB.maxX - aabbA.minX;
+    const top = aabbB.minY - aabbA.maxY;
+    const bottom = aabbB.maxY - aabbA.minY;
+    const px = Math.abs(left) < Math.abs(right) ? left : right;
+    const py = Math.abs(top) < Math.abs(bottom) ? top : bottom;
+    if (Math.abs(px) < Math.abs(py)) return { hit: true, mtvX: px, mtvY: 0 };
+    return { hit: true, mtvX: 0, mtvY: py };
+  }
+
+  const ca = getCenter(a, ax, ay);
+  const cb = getCenter(b, bx, by);
+  return satBoxBox(getCorners(a, ax, ay), getCorners(b, bx, by), ca.cx - cb.cx, ca.cy - cb.cy);
+}
+
 export const Signal = {
   S_KILL: 0,
   S_WAKEUP: 1,
@@ -53,6 +446,11 @@ export class Process {
     // (in front). Default 0 = creation order (same as before this existed).
     this.priority = params.priority ?? 0;
     this.parentId = params.parentId ?? 0;
+    // Optional explicit radius/scale used by circle collisions.
+    this.collisionRadius = Number(params.collisionRadius ?? params.collision_radius ?? 0) || 0;
+    this.collisionScale = Number(params.collisionScale ?? params.collision_scale ?? 1) || 1;
+    this.collisionShape = params.collisionShape === 'circle' ? 'circle' : 'box';
+    this.cboxes = [];
 
     // Private variables
     this.privates = params;
@@ -112,53 +510,18 @@ export class Process {
 
   // Check collision with another process
   collidesWith(other) {
-    const a = this.getBounds();
-    const b = other.getBounds();
-
-    return a.x < b.x + b.width &&
-           a.x + a.width > b.x &&
-           a.y < b.y + b.height &&
-           a.y + a.height > b.y;
+    return collideProcesses(this, other).hit;
   }
 
   // Circle vs circle: uses width/2 as radius for each process
   collidesCircle(other) {
-    const ra = this.width / 2;
-    const rb = other.width / 2;
-    const dx = this.x - other.x;
-    const dy = this.y - other.y;
-    const r = ra + rb;
-    return dx * dx + dy * dy <= r * r;
+    return collideProcesses(this, other, this.x, this.y, other.x, other.y, { preferCircle: true }).hit;
   }
 
   // OBB vs OBB using SAT (4 axes from the two boxes).
   // Falls back to AABB when both angles are 0.
   collidesOBB(other) {
-    if (this.angle === 0 && other.angle === 0) return this.collidesWith(other);
-
-    const DIV_TO_RAD = Math.PI / 180000;
-    const aa = this.angle * DIV_TO_RAD;
-    const ba = other.angle * DIV_TO_RAD;
-
-    const ahx = this.width / 2,  ahy = this.height / 2;
-    const bhx = other.width / 2, bhy = other.height / 2;
-
-    const axX = Math.cos(aa), axY = Math.sin(aa);
-    const ayX = -axY,         ayY = axX;
-    const bxX = Math.cos(ba), bxY = Math.sin(ba);
-    const byX = -bxY,         byY = bxX;
-
-    const dX = other.x - this.x, dY = other.y - this.y;
-
-    const proj = (axisX, axisY) => {
-      const pA = Math.abs(axX * axisX + axY * axisY) * ahx +
-                 Math.abs(ayX * axisX + ayY * axisY) * ahy;
-      const pB = Math.abs(bxX * axisX + bxY * axisY) * bhx +
-                 Math.abs(byX * axisX + byY * axisY) * bhy;
-      return Math.abs(dX * axisX + dY * axisY) <= pA + pB;
-    };
-
-    return proj(axX, axY) && proj(ayX, ayY) && proj(bxX, bxY) && proj(byX, byY);
+    return collideProcesses(this, other).hit;
   }
 
   // Get property
@@ -204,6 +567,17 @@ export class ProcessManager {
     this.nextId = 1;               // IDs comecam em 1 (0 = null)
     this._drawList = [];           // Cached sorted draw order
     this._drawDirty = true;        // Rebuild draw list before next render
+    this.lastPenetrationX = 0;
+    this.lastPenetrationY = 0;
+    this.lastColliderCBox = -1;
+    this.lastCollidedCBox = -1;
+  }
+
+  _setPenetration(mtv) {
+    this.lastPenetrationX = Math.round(Number(mtv?.mtvX) || 0);
+    this.lastPenetrationY = Math.round(Number(mtv?.mtvY) || 0);
+    this.lastColliderCBox = Number.isInteger(mtv?.cboxCodeA) ? mtv.cboxCodeA : -1;
+    this.lastCollidedCBox = Number.isInteger(mtv?.cboxCodeB) ? mtv.cboxCodeB : -1;
   }
 
   // Create process
@@ -324,8 +698,14 @@ export class ProcessManager {
     for (const id of processIds) {
       if (id === currentProcess.id) continue;
       const other = this.get(id);
-      if (other && other.active && currentProcess.collidesWith(other)) return id;
+      if (!other || !other.active) continue;
+      const hit = collideProcesses(currentProcess, other);
+      if (hit.hit) {
+        this._setPenetration(hit);
+        return id;
+      }
     }
+    this._setPenetration(null);
     return 0;
   }
 
@@ -335,8 +715,14 @@ export class ProcessManager {
     for (const id of processIds) {
       if (id === currentProcess.id) continue;
       const other = this.get(id);
-      if (other && other.active && currentProcess.collidesCircle(other)) return id;
+      if (!other || !other.active) continue;
+      const hit = collideProcesses(currentProcess, other, currentProcess.x, currentProcess.y, other.x, other.y, { preferCircle: true });
+      if (hit.hit) {
+        this._setPenetration(hit);
+        return id;
+      }
     }
+    this._setPenetration(null);
     return 0;
   }
 
@@ -346,8 +732,14 @@ export class ProcessManager {
     for (const id of processIds) {
       if (id === currentProcess.id) continue;
       const other = this.get(id);
-      if (other && other.active && currentProcess.collidesOBB(other)) return id;
+      if (!other || !other.active) continue;
+      const hit = collideProcesses(currentProcess, other);
+      if (hit.hit) {
+        this._setPenetration(hit);
+        return id;
+      }
     }
+    this._setPenetration(null);
     return 0;
   }
 
@@ -369,14 +761,19 @@ export class ProcessManager {
   placeMeeting(currentProcess, tx, ty, typeCode) {
     const processIds = this.byType.get(typeCode);
     if (!processIds) return 0;
-    const hw = currentProcess.width, hh = currentProcess.height;
+    const px = Number(tx) || 0;
+    const py = Number(ty) || 0;
     for (const id of processIds) {
       if (id === currentProcess.id) continue;
       const other = this.get(id);
       if (!other || !other.active) continue;
-      if (tx < other.x + other.width  && tx + hw > other.x &&
-          ty < other.y + other.height && ty + hh > other.y) return id;
+      const hit = collideProcesses(currentProcess, other, px, py, other.x, other.y);
+      if (hit.hit) {
+        this._setPenetration(hit);
+        return id;
+      }
     }
+    this._setPenetration(null);
     return 0;
   }
 

@@ -1,103 +1,57 @@
 # DivJS
 
-Div Games Studio-inspired language in JavaScript - VM + Parser + Canvas Renderer
+DivJS is a browser-first game scripting runtime inspired by DIV Games Studio and BennuGD.
+It includes a full language pipeline (tokenizer -> parser -> compiler -> VM), a process model,
+Canvas 2D rendering, collision, pathfinding, and utility natives for gameplay scripting.
 
-## Status
+## Current Capabilities
 
-- [x] Lexer (Tokenizer)
-- [x] Parser (AST)
-- [x] Compiler (Bytecode)
-- [x] VM (Virtual Machine)
-- [x] Process Manager (Indexed)
-- [x] Canvas 2D Renderer
-- [x] Input System
-- [x] Graphics Manager
-- [ ] Full integration test
+- Language pipeline: tokenizer, parser, AST, compiler, bytecode VM
+- Process-based game model with TYPE lookup and signaling
+- Canvas 2D renderer with draw commands and process rendering
+- Input: keyboard + mouse
+- Collision system: box/circle, explicit collision boxes, penetration metadata
+- Pathfinding: grid A* + timer-based path following
+- Asset support:
+  - Graphics (`load_graphic`, `load_tile`)
+  - DIV/Bennu assets (`load_map`, `load_fpg`, `load_fnt`)
+  - BDF bitmap fonts (`load_bdf_font`, `load_bdf_font_text`)
+- Gameplay math helpers:
+  - Trig/conversion (`sin`, `cos`, `atan2`, `torad`, `todeg`, `normalize_angle`)
+  - Interpolation and shaping (`lerp`, `lerp_angle`, `smoothstep`, `hermite`, `ping_pong`)
+  - Geometry helpers (`distance`, `distance_rect`, `fget_angle`, `fget_distance`, `get_distx`, `get_disty`)
 
-## Estrutura
+## Project Structure
 
-```
-├── parser/
-│   ├── lexer.js       # Tokenizer
-│   ├── ast.js         # Node types
-│   └── parser.js      # Parser
-│
-├── compiler/
-│   ├── bytecode.js    # Opcodes
-│   └── compiler.js    # AST → Bytecode
-│
-├── vm/
-│   ├── vm.js          # Virtual Machine
-│   ├── process.js     # Process manager (indexed)
-│   ├── frame.js       # Frame system
-│   └── runtime.js     # Native functions
-│
-├── graph/
-│   ├── canvas2d.js    # Canvas 2D renderer
-│   ├── graphics.js    # Graphics manager
-│   └── input.js       # Input system
-│
-└── examples/
-    ├── platformer.div # DivLang code
-    └── index.html     # Example
+```text
+compiler/      Bytecode opcodes, compiler, disassembler
+parser/        Language parser
+vm/            VM, process manager, runtime natives, DIV/BDF loaders
+graph/         Graphics asset registry
+demos/         Browser demos
+examples/      Minimal runnable examples
+tests/         Browser-oriented test suite + pipeline tests
 ```
 
-## Exemplo
+## Quick Start
 
-```div
-program "Platformer";
-
-global
-  player_graph;
-
-process player(x=100, y=400, width=32, height=32);
-private
-  graph = 0;
-  vy = 0;
-  grounded = false;
-
-begin
-  repeat
-    if (key_down("right")) x += 200 * _dt; end
-    if (key_down("left")) x -= 200 * _dt; end
-    if (key_down("space") && grounded) vy = -400; end
-    
-    vy += 500 * _dt;
-    y += vy * _dt;
-    
-    if (collision(TYPE ground))
-      vy = 0;
-      y = ground.y - height;
-      grounded = true;
-    end
-    
-    frame;
-  until (false)
-end
-```
-
-## Uso
+Run the pipeline tests:
 
 ```bash
-# Open in browser
+npm run test:pipeline
+```
+
+Open examples in a browser:
+
+```bash
 open examples/index.html
-```
-
-Teste smoke (browser-first, com preload de assets):
-
-```bash
 open examples/browser-smoke.html
-```
-
-Teste unitario VM (browser, corre tudo numa pagina):
-
-```bash
 open tests/test.html
 ```
 
-## API de arranque rapido
+## Fast Demo Bootstrap API
 
-Para reduzir boilerplate nas demos, usa a API unica:
+Use `runDivDemo` to start a script with minimal setup:
 
 ```js
 import { runDivDemo } from './divjs.js';
@@ -108,11 +62,39 @@ runDivDemo({
 });
 ```
 
-Isso faz automaticamente:
-- lexer + parser + compiler
-- criacao da VM
-- registo dos natives do runtime
-- input de teclado
-- game loop com render
+This handles:
+
+- compile + VM load
+- runtime native registration
+- input listeners
+- game loop + render
+
+## Demo Pages
+
+```bash
+open demos/div-assets.html
+open demos/div-fpg-fnt-game.html
+open demos/pathfind.html
+open demos/platformer.html
+open demos/shmup.html
+open demos/breakout.html
+open demos/bunnymark.html
+```
+
+## Notes on Async Asset Loading
+
+Some loaders return an ID immediately and complete in the background:
+
+- `load_map(url)` -> graph id
+- `load_fpg(url)` -> library/file id
+- `load_fnt(url)` -> font id
+- `load_bdf_font(url)` -> font id
+
+During loading, scripts can keep running; draw calls will start using assets once ready.
+
+## Status
+
+DivJS is feature-rich for prototyping and arcade-style gameplay.
+The codebase is actively evolving, with new runtime natives and demos added frequently.
 
  
