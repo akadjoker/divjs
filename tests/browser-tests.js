@@ -361,6 +361,47 @@ async function testXAdvanceMovesByAngle() {
   assert(approx(process.locals[1], 0), `y esperado 0 apos xadvance, obtido ${process.locals[1]}`);
 }
 
+async function testXAdvanceHandlesAnglesAboveHalfCircle() {
+  // xadvanceNative() used to try auto-detecting argument order —
+  // xadvance(distance, angle) vs xadvance(angle, distance) — by guessing
+  // that whichever argument has magnitude > 180000 "must be" the
+  // distance, since a DIV angle "shouldn't" exceed 180000 (180.000°).
+  // That assumption is wrong: toRadiansFromDivAngle() never wraps or
+  // clamps its input, and this project's own shipped demo increments an
+  // angle unboundedly frame after frame, confirming angles routinely
+  // span the full 0-360000 convention (a full turn), not just half of
+  // it. Any legitimate angle between 180001 and 360000 (180°-360° — the
+  // entire back half of a circle) used to get silently misclassified as
+  // "must be the distance", producing a movement wildly wrong in both
+  // magnitude and direction. Fixed to a plain fixed (distance, angle)
+  // order, matching advanceNative() exactly, instead of guessing.
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+
+  const process = {
+    id: 1,
+    name: 'mock',
+    locals: [],
+    x: 0,
+    y: 0,
+    width: 10,
+    height: 10,
+    angle: 0
+  };
+  process.locals[0] = 0;
+  process.locals[1] = 0;
+  process.locals[7] = 0;
+
+  vm.currentProcess = process;
+
+  // 270000 (270°) points straight up in this engine's trig convention —
+  // under the old heuristic, 270000 > 180000 would have been
+  // misclassified as the distance, with 10 misread as the angle.
+  runtime.xadvanceNative(10, 270000);
+  assert(approx(process.locals[0], 0, 0.01), `x esperado ~0 apos xadvance(10, 270000), obtido ${process.locals[0]}`);
+  assert(approx(process.locals[1], -10, 0.01), `y esperado -10 apos xadvance(10, 270000), obtido ${process.locals[1]}`);
+}
+
 async function testKeywordLogicalOperatorsCompileAndRun() {
   const source = `program logical_keywords;
 
@@ -1846,6 +1887,7 @@ export async function runAllTests() {
     ['out_of_region / out_of_screen', testOutOfRegionAndScreen],
     ['load_graphic / load_tile direct ids', testLoadGraphicAndTileDirectIds],
     ['xadvance movement', testXAdvanceMovesByAngle],
+    ['xadvance handles angles above half circle correctly', testXAdvanceHandlesAnglesAboveHalfCircle],
     ['keyword and/or/not operators', testKeywordLogicalOperatorsCompileAndRun],
     ['logical short-circuit skips side effects', testLogicalShortCircuitSkipsSideEffects],
     ['LOAD_GLOBAL preserves falsy', testLoadGlobalPreservesFalsyValues],

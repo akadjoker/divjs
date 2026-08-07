@@ -396,22 +396,26 @@ export class CanvasEngineRuntime {
     return this.moveCurrentProcess(distance, angle);
   }
 
-  xadvanceNative(arg1, arg2) {
-    // Accept both conventions:
-    // xadvance(distance, angle) and xadvance(angle, distance)
-    // Prefer distance-first when 2nd argument looks like an angle.
-    const a = Number(arg1) || 0;
-    const b = Number(arg2) || 0;
-
-    if (Math.abs(b) <= 180000 && Math.abs(a) > 180000) {
-      return this.moveCurrentProcess(a, b);
-    }
-
-    if (Math.abs(a) <= 180000 && Math.abs(b) > 180000) {
-      return this.moveCurrentProcess(b, a);
-    }
-
-    return this.moveCurrentProcess(a, b);
+  xadvanceNative(distance, angle) {
+    // Previously tried to auto-detect argument order — xadvance(distance,
+    // angle) vs xadvance(angle, distance) — by guessing that whichever
+    // argument has magnitude > 180000 "must be" the distance, since a
+    // DIV angle "shouldn't" exceed 180000 (180.000°). That assumption is
+    // wrong: toRadiansFromDivAngle() never wraps or clamps its input, and
+    // this engine's own shipped demo (index.html: "angle_step = angle_step
+    // + 3000;", unbounded, cycling naturally through trig's own
+    // periodicity) confirms angles routinely span the full 0-360000
+    // convention, not just 0-180000. Any legitimate angle between 180001
+    // and 360000 (180°-360° — the entire back half of a full turn) would
+    // silently get misclassified as "must be the distance", producing a
+    // wildly wrong movement in both magnitude and direction. There's no
+    // magnitude threshold that can fix this: on-screen distances
+    // routinely reach into the hundreds or low thousands (screen width/
+    // height, a scrolled level's extent), which overlaps the legitimate
+    // angle range too broadly for guessing to ever be reliable. Fixed
+    // argument order — matching advanceNative(distance, angle) exactly —
+    // instead of guessing.
+    return this.moveCurrentProcess(distance, angle);
   }
 
   xputNative() {

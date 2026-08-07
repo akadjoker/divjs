@@ -42,14 +42,11 @@ See `BUGS.md` #4. `CASE 1, 2, 3` now works, with short-circuit evaluation
 verified. One regression test with four sub-cases (match at each list
 position, fall-through, short-circuit) added.
 
-### Systematically test scroll/region/path natives and signal trees
-See `BUGS.md` #7. Same treatment the rest of the language got this
-session: build a matrix of small `.div` programs exercising
-`start_scroll`/`stop_scroll`/`define_region`/`__get_path`/`__set_path`
-and the four `*_TREE` signal variants against nested process hierarchies,
-run them, see what falls out. Given how much turned up in exhaustive
-testing of loops/expressions/forward-references earlier, this is the
-most likely remaining place for a real bug to still be hiding.
+### ~~Systematically test scroll/region/path natives and signal trees~~ — DONE
+See `BUGS.md` #7. 16/16 on scroll/region/path/signal-tree matrix tests —
+no bugs found there. Found and fixed one real bug along the way,
+unrelated to what the matrix was targeting: `xadvance`'s argument-order
+auto-detection was structurally broken for angles above 180°.
 
 ---
 

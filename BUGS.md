@@ -187,18 +187,52 @@ touching this code for another reason anyway.
 
 ---
 
-## 7. Native geometric functions (`scroll`, `region`, `xput`, `xadvance`) and signal trees not exhaustively tested
+## 7. ~~Native geometric functions and signal trees not exhaustively tested~~ — DONE, one real bug found and fixed
 
-**Severity: unknown — this is a coverage gap, not a confirmed bug.**
+**Severity: was unknown, now resolved.**
 
-The parser/compiler/VM correctness passes this session (loops,
-expressions, forward references, `SWITCH`, error locations) were
-exhaustive. The scroll/region/path natives (`vm/runtime.js`'s
-`__get_path`/`__set_path` machinery, `start_scroll`/`stop_scroll`,
-`define_region`) and the signal-tree operations
-(`S_KILL_TREE`/`S_WAKEUP_TREE`/`S_SLEEP_TREE`/`S_FREEZE_TREE`) only have
-the test coverage that existed before this session
-(`tests/browser-tests.js`'s `testPathNativesScrollState` and
-`testSignalKillTreeAndWakeupByType`) — nothing here got the same
-systematic matrix-testing treatment. Could well be fine; hasn't been
-checked with the same rigor as everything else.
+Ran the same systematic matrix-testing treatment the rest of the
+language got this session against `scroll`/`region`/`define_region`/
+`__get_path`/`__set_path`/`advance`/`xadvance` and all four signal-tree
+variants (`S_KILL_TREE`/`S_WAKEUP_TREE`/`S_SLEEP_TREE`/`S_FREEZE_TREE`),
+including 3-level process hierarchies (grandparent → parent → child) and
+TYPE-based tree signals affecting multiple independent trees at once.
+
+**Results: 16/16 on scroll/region/path/signal-tree tests — no bugs
+found there.** `let_me_alone`, `S_KILL` (non-tree, target only) vs.
+`S_KILL_TREE` (target + all descendants), sleep/wakeup trees, and
+type-based tree signals across multiple trees all behaved exactly as
+expected.
+
+**One real bug found and fixed in `xadvance`.** See the "Fix applied"
+note below — `xadvanceNative`'s argument-order auto-detection heuristic
+was structurally wrong (not just miscalibrated), and any angle between
+180°-360° passed as the second argument would silently be misread as a
+distance, producing wildly wrong movement.
+
+### Fix applied
+
+`xadvanceNative(arg1, arg2)` used to guess whether it was called as
+`xadvance(distance, angle)` or `xadvance(angle, distance)` by checking
+which argument's magnitude exceeds 180000 (assuming "an angle shouldn't
+exceed 180000"). That assumption doesn't hold in this engine:
+`toRadiansFromDivAngle()` never wraps or clamps its input, and the
+project's own shipped demo (`index.html`) increments an angle
+unboundedly frame after frame, confirming angles routinely span the
+full 0-360000 convention (a complete turn), not just half of it. Any
+angle between 180001-360000 passed as the second argument would be
+misclassified as "must be the distance", producing movement wrong in
+both magnitude and direction — e.g. `xadvance(10, 270000)` (10 units at
+270°, straight up) used to move ~270000 units in nearly the wrong
+direction instead. There's no magnitude threshold that fixes this: on-
+screen distances routinely reach into the hundreds or low thousands too,
+overlapping the legitimate angle range too broadly for guessing to ever
+be reliable in general.
+
+Fixed to a plain, fixed `(distance, angle)` argument order — matching
+`advanceNative()` exactly — instead of guessing. The one existing test
+(`testXAdvanceMovesByAngle`, calling `xadvance(10, 0)`) only exercised
+the ambiguous small-magnitude case and still passes unchanged. Added
+`testXAdvanceHandlesAnglesAboveHalfCircle`, calling `xadvance(10,
+270000)` and asserting the correct straight-up movement, as a
+regression test for exactly this case.
