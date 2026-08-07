@@ -90,16 +90,27 @@ export class VM {
     this.running = true;
     this.halted = false;
 
+    // Snapshot the process count *before* running MAIN, not after.
+    // SPAWN_PROCESS now runs a freshly spawned process's own init code
+    // immediately, up to its first FRAME (see its handler in execute()) —
+    // matching real DIV, and needed so a process renders with its actual
+    // graph/x/y instead of empty defaults the instant it's created. That
+    // means any process created during this tick — whether spawned by
+    // MAIN or by another process — already got its one run for this tick
+    // via the spawn itself. Capturing procCount here (rather than after
+    // MAIN, which would let MAIN-spawned processes match the loop bound
+    // below and get run a *second* time this tick) keeps that consistent
+    // for every spawn, not just process-spawns-process.
+    const procs = this.processManager.processes;
+    const procCount = procs.length;
+
     // Run MAIN script first (can spawn processes).
     if (!this.mainFinished) {
       this.runMain();
     }
 
     // Iterate processes by index so newly-spawned processes (appended
-    // after this point) are never visited in the same tick — same
-    // semantics as the old [...snapshot] but without the array allocation.
-    const procs = this.processManager.processes;
-    const procCount = procs.length;
+    // after this point) are never visited in the same tick.
 
     // Execute each process until FRAME or finished
     for (let pi = 0; pi < procCount; pi++) {
@@ -702,6 +713,31 @@ export class VM {
             }
           }
         }
+
+        // Real DIV runs a spawned process's own code immediately, up to
+        // its first FRAME, in the same tick as the spawn — so by the time
+        // the creator's frame renders, the child already has its graph/x/y
+        // etc. set up. Our scheduler's tick() intentionally skips newly
+        // appended processes for the rest of *this* tick (see its comment),
+        // so without this, a freshly spawned process would render once
+        // with default/empty locals (graph=0 -> fallback placeholder, etc.)
+        // before ever running its own init code. Run it here, then restore
+        // the spawning context exactly as it was — this call reassigns
+        // this.ip/stack/locals/callStack/currentProcess to the child while
+        // it runs, and those belong to whoever is mid-`execute()` right now.
+        const savedProcess = this.currentProcess;
+        const savedIp = this.ip;
+        const savedStack = this.stack;
+        const savedLocals = this.locals;
+        const savedCallStack = this.callStack;
+
+        this.runProcess(newProcess);
+
+        this.currentProcess = savedProcess;
+        this.ip = savedIp;
+        this.stack = savedStack;
+        this.locals = savedLocals;
+        this.callStack = savedCallStack;
 
         // Process calls behave like expressions; return spawned process id.
         this.push(newProcess.id);

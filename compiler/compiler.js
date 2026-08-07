@@ -333,7 +333,8 @@ export class Compiler {
 
     // Reset locals for this process
     // Slots fixos: 0=x, 1=y, 2=width, 3=height, 4=ctype, 5=id, 6=region,
-    // 7=angle, 8=red, 9=green, 10=blue, 11=alpha, 12=tag, 13=priority
+    // 7=angle, 8=red, 9=green, 10=blue, 11=alpha, 12=tag, 13=priority,
+    // 14=resolution
     this.localMap = new Map();
     this.localMap.set('x', 0);
     this.localMap.set('y', 1);
@@ -350,9 +351,13 @@ export class Compiler {
     this.localMap.set('alpha', 11);
     this.localMap.set('tag', 12);
     this.localMap.set('priority', 13);
+    // DIV's RESOLUTION: divides x/y by this factor when drawing, letting
+    // a script work in sub-pixel units ("resolution=10" -> one decimal,
+    // so y=1800 draws at screen y=180). 0/unset means 1 (no division).
+    this.localMap.set('resolution', 14);
 
-    // Add params as locals (start at slot 14)
-    this.nextLocalSlot = 14;
+    // Add params as locals (start at slot 15)
+    this.nextLocalSlot = 15;
     for (const param of stmt.params) {
       // Keep canonical process fields in fixed slots.
       if (!this.localMap.has(param)) {
@@ -642,8 +647,27 @@ export class Compiler {
 
   // Compile for
   compileFor(stmt) {
-    const varIdx = this.nextLocalSlot++;
-    this.localMap.set(stmt.varName, varIdx);
+    // Reuse the existing slot when the loop variable is a name that's
+    // already declared in this scope — a canonical process field, a
+    // param/private, or an implicitly-created local — instead of always
+    // allocating a fresh one. Classic DIV animation loops drive a
+    // canonical field directly ("FROM graph=5 TO 10; FRAME; END" cycling
+    // through explosion frames), and blindly rebinding the name to a new
+    // slot here silently split it in two: earlier writes (`graph=4;`)
+    // had their old slot number already baked into emitted bytecode,
+    // while every later *read* — including the renderer's own
+    // getProcessLocalSlot('graph') lookup, which consults this map —
+    // resolved to the new slot. The process then drew with graph=0 (the
+    // fallback placeholder) no matter what either slot held.
+    let varIdx = this.localMap.get(stmt.varName);
+    if (varIdx === undefined) {
+      varIdx = this.nextLocalSlot++;
+      this.localMap.set(stmt.varName, varIdx);
+    } else if (typeof varIdx === 'object' && varIdx.isArray) {
+      throw new Error(
+        `Array "${stmt.varName}" cannot be used as a FOR loop variable${this.locSuffix(stmt)}`
+      );
+    }
 
     // When the step is a literal number — "STEP 2", "STEP -1", or the
     // implicit default of 1 when STEP is omitted entirely — its sign is
@@ -880,9 +904,15 @@ export class Compiler {
         this.emit(OpCodes.LOAD_CONST, this.addConstant(hashCode(expr.processName)));
         break;
 
+      case 'offset_operator':
+        this.compileOffsetOperator(expr);
+        break;
+
       case 'member_access':
       case 'index_access':
-        this.compilePathGet(expr);
+        if (!this.tryCompileMouseAccess(expr)) {
+          this.compilePathGet(expr);
+        }
         break;
 
       case 'assign':
@@ -914,7 +944,7 @@ export class Compiler {
       _left: 'ArrowLeft', _right: 'ArrowRight',
       _up: 'ArrowUp',     _down: 'ArrowDown',
       _space: ' ', _enter: 'Enter', _esc: 'Escape', _backspace: 'Backspace',
-      _tab: 'Tab', _shift: 'Shift', _ctrl: 'Control', _alt: 'Alt',
+      _tab: 'Tab', _shift: 'Shift', _ctrl: 'Control', _control: 'Control', _alt: 'Alt',
       _fire: 'z',
       _a: 'a', _b: 'b', _c: 'c', _d: 'd', _e: 'e', _f: 'f',
       _g: 'g', _h: 'h', _i: 'i', _j: 'j', _k: 'k', _l: 'l',
@@ -925,7 +955,13 @@ export class Compiler {
       _5: '5', _6: '6', _7: '7', _8: '8', _9: '9',
       c_screen: 0, c_scroll: 1, c_m7: 2,
       s_kill: 0, s_wakeup: 1, s_sleep: 2, s_freeze: 3,
-      s_kill_tree: 100, s_wakeup_tree: 101, s_sleep_tree: 102, s_freeze_tree: 103
+      s_kill_tree: 100, s_wakeup_tree: 101, s_sleep_tree: 102, s_freeze_tree: 103,
+      // Classic DIV single-argument SET_MODE resolution constants — see
+      // VIDEO_MODE_TABLE in runtime.js's setModeNative for the decode.
+      // Negative so they can never collide with a legitimate width value
+      // passed to the (width, height) two-argument form this engine's own
+      // demos already use.
+      m320x200: -1, m640x480: -2
     };
 
     // Check if local
@@ -948,9 +984,42 @@ export class Compiler {
     else if (Object.prototype.hasOwnProperty.call(builtinConstants, nameLower)) {
       this.emit(OpCodes.LOAD_CONST, this.addConstant(builtinConstants[nameLower]));
     }
+    // Real DIV exposes FPS as a bare read-only global (current frame
+    // rate), not a function call — rewritten into the get_fps native the
+    // runtime already provides, same trick as mouse.x/mouse.left in
+    // tryCompileMouseAccess. Only fires when nothing declared "fps" as a
+    // real local/global, so a script using it for its own variable still
+    // works normally.
+    else if (nameLower === 'fps') {
+      this.emit(OpCodes.CALL_NATIVE, 'get_fps', 0);
+    }
     else {
       throw new Error(`Unknown variable: ${name}${this.locSuffix(expr)}`);
     }
+  }
+
+  // OFFSET <global> — pushes a live-reference descriptor (not the current
+  // value) for the runtime's write/write_int to detect and re-resolve
+  // fresh on every frame it's drawn, rather than baking in a snapshot
+  // taken at the point OFFSET is evaluated. See runtime.js's
+  // writeNative/writeIntNative for the consuming half. Only GLOBALs are
+  // supported — that's the only scope a value can meaningfully outlive
+  // and keep changing across the single WRITE call site that named it
+  // once (a local belongs to one specific process's lifetime, which real
+  // DIV's OFFSET was never used for).
+  compileOffsetOperator(expr) {
+    const name = expr.name;
+    if (!this.globalMap.has(name)) {
+      throw new Error(
+        `OFFSET "${name}" — no such GLOBAL${this.locSuffix(expr)}. ` +
+        `OFFSET only works on a GLOBAL (real DIV usage: WRITE/WRITE_INT auto-refreshing as it changes).`
+      );
+    }
+    const entry = this.globalMap.get(name);
+    if (typeof entry === 'object' && entry.isArray) {
+      throw new Error(`OFFSET "${name}" — arrays aren't supported, index it first: OFFSET ${name}[i] isn't valid either${this.locSuffix(expr)}`);
+    }
+    this.emit(OpCodes.LOAD_CONST, this.addConstant({ __divOffsetGlobal: true, slot: entry }));
   }
 
   // Compile binary
@@ -1059,22 +1128,53 @@ export class Compiler {
 
   // Compile call
   compileCall(expr) {
+    // A callee that isn't a plain name (e.g. some future computed-call
+    // expression) has no dispatch rule below that would ever match it —
+    // reject it now, before compiling any args, instead of silently
+    // falling through: previously this compiled every argument expression
+    // (pushing them onto the stack) and then emitted no call instruction
+    // at all, leaving orphaned values on the stack with no error.
+    if (expr.callee.type !== 'identifier') {
+      throw new Error(`Cannot call a non-identifier expression${this.locSuffix(expr)}`);
+    }
+
+    const name = expr.callee.name;
+    const argc = expr.args.length;
+
+    // Process/function arity is known at compile time (unlike natives,
+    // which register themselves on the VM at runtime, after compilation
+    // has already finished — there's no static arity table for those to
+    // check against here). Neither supports default/optional params, so
+    // any mismatch here is unambiguously wrong, not just unusual.
+    const processInfo = this.processTable.get(name);
+    if (processInfo && argc !== processInfo.params.length) {
+      throw new Error(
+        `PROCESS "${name}" expects ${processInfo.params.length} argument(s), got ${argc}${this.locSuffix(expr)}`
+      );
+    }
+    const functionInfo = !processInfo ? this.functionTable.get(name) : undefined;
+    if (functionInfo && argc !== functionInfo.params.length) {
+      throw new Error(
+        `FUNCTION "${name}" expects ${functionInfo.params.length} argument(s), got ${argc}${this.locSuffix(expr)}`
+      );
+    }
+
     // Compile args
     for (const arg of expr.args) {
       this.compileExpression(arg);
     }
 
     // Check if process call
-    if (expr.callee.type === 'identifier' && this.processTable.has(expr.callee.name)) {
-      this.emit(OpCodes.SPAWN_PROCESS, expr.callee.name, expr.args.length);
+    if (processInfo) {
+      this.emit(OpCodes.SPAWN_PROCESS, name, argc);
     }
     // Check if function call
-    else if (expr.callee.type === 'identifier' && this.functionTable.has(expr.callee.name)) {
-      this.emit(OpCodes.CALL, expr.callee.name, expr.args.length);
+    else if (functionInfo) {
+      this.emit(OpCodes.CALL, name, argc);
     }
-    // Check if native
-    else if (expr.callee.type === 'identifier') {
-      this.emit(OpCodes.CALL_NATIVE, expr.callee.name, expr.args.length);
+    // Native — arity isn't known at compile time, see above.
+    else {
+      this.emit(OpCodes.CALL_NATIVE, name, argc);
     }
   }
 
@@ -1208,6 +1308,44 @@ export class Compiler {
     }
   }
 
+  // DIV syntax exposes the mouse as a pseudo-struct: mouse.x, mouse.y,
+  // mouse.left/right/middle. There's no real "mouse" local/global/struct —
+  // this rewrites those member accesses into the mouse_x/mouse_y/mouse_button
+  // native calls the runtime already provides. Returns false (and leaves the
+  // expression untouched) if `mouse` was shadowed by a real declared
+  // variable, so a genuine struct named "mouse" still works normally.
+  tryCompileMouseAccess(expr) {
+    if (expr.type !== 'member_access') {
+      return false;
+    }
+    const obj = expr.object;
+    if (!obj || obj.type !== 'identifier' || obj.name.toLowerCase() !== 'mouse') {
+      return false;
+    }
+    if (this.localMap.has(obj.name) || this.globalMap.has(obj.name)) {
+      return false;
+    }
+
+    const mouseFields = {
+      x: { native: 'mouse_x', args: [] },
+      y: { native: 'mouse_y', args: [] },
+      left: { native: 'mouse_button', args: [0] },
+      right: { native: 'mouse_button', args: [1] },
+      middle: { native: 'mouse_button', args: [2] },
+      button: { native: 'mouse_button', args: [0] }
+    };
+    const field = mouseFields[String(expr.property).toLowerCase()];
+    if (!field) {
+      throw new Error(`Unknown mouse field: mouse.${expr.property}${this.locSuffix(expr)}`);
+    }
+
+    for (const value of field.args) {
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(value));
+    }
+    this.emit(OpCodes.CALL_NATIVE, field.native, field.args.length);
+    return true;
+  }
+
   compilePathGet(expr) {
     const path = this.collectPath(expr);
 
@@ -1254,6 +1392,19 @@ export class Compiler {
       return;
     }
 
+    // "someVar.field" where someVar is a declared scalar holding a
+    // process id — DIV's cross-process field read ("raquet1.y", with
+    // raquet1 = raquet(...) storing the spawned id). The generic
+    // __get_path below can't express this: it passes the root as a
+    // *name* string, but here the root's runtime *value* identifies the
+    // process. Resolve it through a dedicated native instead.
+    if (this.isProcessRefRoot(path)) {
+      this.compileIdentifier({ type: 'identifier', name: path.root });
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(path.segments[0].value));
+      this.emit(OpCodes.CALL_NATIVE, '__get_process_field', 2);
+      return;
+    }
+
     this.emit(OpCodes.LOAD_CONST, this.addConstant(path.root));
 
     for (const segment of path.segments) {
@@ -1265,6 +1416,29 @@ export class Compiler {
     }
 
     this.emit(OpCodes.CALL_NATIVE, '__get_path', 1 + path.segments.length);
+  }
+
+  // True for "<declared scalar>.<field>" — a single property segment off
+  // a plain local/global (not an array, not a struct, not one of the
+  // runtime's own special roots like scroll/region/father/son, all of
+  // which are handled earlier or by __get_path). That shape is DIV's
+  // cross-process field access, where the variable holds a process id.
+  isProcessRefRoot(path) {
+    if (path.segments.length !== 1 || path.segments[0].kind !== 'prop') {
+      return false;
+    }
+    const reserved = new Set(['scroll', 'region', 'father', 'son', 'mouse']);
+    if (reserved.has(String(path.root).toLowerCase())) {
+      return false;
+    }
+    const entry = this.localMap.has(path.root)
+      ? this.localMap.get(path.root)
+      : (this.globalMap.has(path.root) ? this.globalMap.get(path.root) : undefined);
+    if (entry === undefined) {
+      return false;
+    }
+    // Arrays/structs are objects here; only plain scalar slots qualify.
+    return typeof entry !== 'object';
   }
 
   compilePathSet(targetExpr, valueExpr) {
@@ -1300,6 +1474,16 @@ export class Compiler {
         this.compileExpression(valueExpr);
         this.emit(OpCodes.STORE_GLOBAL_IDX, sr.base, sr.totalSize);
       }
+      return;
+    }
+
+    // Write half of the cross-process field access described in
+    // compilePathGet ("raquet1.y = 100").
+    if (this.isProcessRefRoot(path)) {
+      this.compileIdentifier({ type: 'identifier', name: path.root });
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(path.segments[0].value));
+      this.compileExpression(valueExpr);
+      this.emit(OpCodes.CALL_NATIVE, '__set_process_field', 3);
       return;
     }
 

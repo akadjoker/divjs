@@ -232,6 +232,16 @@ export class TypeOperator {
   }
 }
 
+// OFFSET <global> — a live reference to a GLOBAL, used with WRITE/WRITE_INT
+// so the on-screen text auto-refreshes as the global changes instead of
+// needing to be redrawn every frame by hand.
+export class OffsetOperator {
+  constructor(name) {
+    this.type = 'offset_operator';
+    this.name = name;
+  }
+}
+
 // fields: [{name, defaultValue|null, size|null, nested:StructDecl|null}]
 // initializers: flat array of value expressions | null
 export class StructDecl {

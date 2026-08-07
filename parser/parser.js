@@ -258,7 +258,7 @@ export class Parser {
     }
 
     this.expect(TokenType.RPAREN, 'Expected ) after function params');
-    this.expect(TokenType.SEMICOLON, 'Expected ; after function header');
+    this.match(TokenType.SEMICOLON); // optional ; for DIV/Fenix compatibility
 
     // Body
     const body = this.parseBeginEndBlock('Expected BEGIN before function body', 'Expected END after function body');
@@ -283,7 +283,7 @@ export class Parser {
     }
 
     this.expect(TokenType.RPAREN, 'Expected ) after process params');
-    this.expect(TokenType.SEMICOLON, 'Expected ; after process header');
+    this.match(TokenType.SEMICOLON); // optional ; for DIV/Fenix compatibility
 
     // Parse private section (PRIVATE ... declarations ... BEGIN)
     const privates = [];
@@ -396,9 +396,16 @@ export class Parser {
       return this.parseSwitch();
     }
 
-    // For
+    // For (Fenix/BennuGD spelling — no ; before the body)
     if (this.match(TokenType.FOR)) {
-      return this.parseFor();
+      return this.parseFor(false);
+    }
+
+    // From (classic-DIV spelling of the same loop — e.g.
+    // "FROM graph=5 TO 10; FRAME; END" — requires a ; right after the
+    // TO/STEP range, before the body, unlike FOR)
+    if (this.match(TokenType.FROM)) {
+      return this.parseFor(true);
     }
 
     // While
@@ -524,8 +531,10 @@ export class Parser {
     return new ast.Switch(subject, cases, defaultBody);
   }
 
-  // Parse for
-  parseFor() {
+  // Parse for/from — same loop, two DIV-family spellings. FROM
+  // (requireSemicolonBeforeBody) additionally expects a ; right after the
+  // TO/STEP range and before the body, e.g. "FROM x=1 TO 8; asteroid(); END".
+  parseFor(requireSemicolonBeforeBody) {
     const varName = this.readIdentifierLike('Expected FOR variable name');
 
     this.expect(TokenType.EQUALS, 'Expected = after FOR var');
@@ -539,6 +548,10 @@ export class Parser {
     let step = new ast.Number(1);
     if (this.match(TokenType.STEP)) {
       step = this.parseExpression();
+    }
+
+    if (requireSemicolonBeforeBody) {
+      this.expect(TokenType.SEMICOLON, 'Expected ; after FROM range');
     }
 
     const body = this.parseBlock();
@@ -566,7 +579,7 @@ export class Parser {
     this.expect(TokenType.UNTIL, 'Expected UNTIL after REPEAT body');
 
     const condition = this.parseExpression();
-    this.expect(TokenType.SEMICOLON, 'Expected ; after UNTIL condition');
+    this.match(TokenType.SEMICOLON); // optional ; for DIV/Fenix compatibility
 
     return new ast.Repeat(body, condition);
   }
@@ -610,7 +623,25 @@ export class Parser {
       return assign;
     }
 
+    // Compound assignment (+=, -=, *=, /=) desugars to `left = left OP right`.
+    const compoundOp = this.matchCompoundAssign();
+    if (compoundOp) {
+      const right = this.parseAssignment();
+      const assign = new ast.Assign(left, new ast.Binary(left, compoundOp, right));
+      assign.line = startToken.line;
+      assign.col = startToken.col;
+      return assign;
+    }
+
     return left;
+  }
+
+  matchCompoundAssign() {
+    if (this.match(TokenType.PLUS_ASSIGN)) return '+';
+    if (this.match(TokenType.MINUS_ASSIGN)) return '-';
+    if (this.match(TokenType.STAR_ASSIGN)) return '*';
+    if (this.match(TokenType.SLASH_ASSIGN)) return '/';
+    return null;
   }
 
   // Parse or
@@ -702,6 +733,16 @@ export class Parser {
       }
       this.pos++;
       return new ast.TypeOperator(token.value);
+    }
+
+    if (this.match(TokenType.OFFSET)) {
+      const token = this.current();
+      if (!this.isIdentifierLike(token)) {
+        this.expect(TokenType.IDENTIFIER, 'Expected variable name after OFFSET');
+        return new ast.OffsetOperator(this.previous().value);
+      }
+      this.pos++;
+      return new ast.OffsetOperator(token.value);
     }
 
     if (this.match(TokenType.MINUS) || this.match(TokenType.NOT)) {

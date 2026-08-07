@@ -18,6 +18,7 @@ export const TokenType = {
   IF: 'IF',
   ELSE: 'ELSE',
   FOR: 'FOR',
+  FROM: 'FROM', // classic-DIV spelling of FOR ... TO ...; body END
   TO: 'TO',
   STEP: 'STEP',
   WHILE: 'WHILE',
@@ -35,6 +36,7 @@ export const TokenType = {
   AND: 'AND',
   OR: 'OR',
   TYPE: 'TYPE',
+  OFFSET: 'OFFSET',
 
   // Operators
   EQUALS: 'EQUALS',     // = (assignment)
@@ -49,6 +51,10 @@ export const TokenType = {
   STAR: 'STAR',        // *
   SLASH: 'SLASH',      // /
   PERCENT: 'PERCENT',  // %
+  PLUS_ASSIGN: 'PLUS_ASSIGN',   // +=
+  MINUS_ASSIGN: 'MINUS_ASSIGN', // -=
+  STAR_ASSIGN: 'STAR_ASSIGN',   // *=
+  SLASH_ASSIGN: 'SLASH_ASSIGN', // /=
 
   // Delimiters
   LPAREN: 'LPAREN',
@@ -87,6 +93,7 @@ const KEYWORDS = {
   'IF': TokenType.IF,
   'ELSE': TokenType.ELSE,
   'FOR': TokenType.FOR,
+  'FROM': TokenType.FROM,
   'TO': TokenType.TO,
   'STEP': TokenType.STEP,
   'WHILE': TokenType.WHILE,
@@ -103,7 +110,8 @@ const KEYWORDS = {
   'NOT': TokenType.NOT,
   'AND': TokenType.AND,
   'OR': TokenType.OR,
-  'TYPE': TokenType.TYPE
+  'TYPE': TokenType.TYPE,
+  'OFFSET': TokenType.OFFSET
 };
 
 // Lexer class
@@ -319,6 +327,34 @@ export class Lexer {
         this.advance();
         this.advance();
         this.tokens.push(new Token(TokenType.GTE, '>=', line, col));
+        continue;
+      }
+
+      if (char === '+' && this.peek() === '=') {
+        this.advance();
+        this.advance();
+        this.tokens.push(new Token(TokenType.PLUS_ASSIGN, '+=', line, col));
+        continue;
+      }
+
+      if (char === '-' && this.peek() === '=') {
+        this.advance();
+        this.advance();
+        this.tokens.push(new Token(TokenType.MINUS_ASSIGN, '-=', line, col));
+        continue;
+      }
+
+      if (char === '*' && this.peek() === '=') {
+        this.advance();
+        this.advance();
+        this.tokens.push(new Token(TokenType.STAR_ASSIGN, '*=', line, col));
+        continue;
+      }
+
+      if (char === '/' && this.peek() === '=') {
+        this.advance();
+        this.advance();
+        this.tokens.push(new Token(TokenType.SLASH_ASSIGN, '/=', line, col));
         continue;
       }
 

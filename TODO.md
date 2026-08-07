@@ -151,47 +151,33 @@ used to make `score` read back as `100` instead of `0`). Fixed with a
 one-line change (`addConstant(0)` instead of the bare literal `0`); the
 only other `LOAD_CONST` site in the whole compiler with this pattern.
 
-### Arrays and structs
-Confirmed: neither exists at all. `grep`ing `compiler/ast.js` and
-`compiler/compiler.js` for anything array- or struct-shaped turns up
-nothing — the only bracket-index syntax that exists (`scroll[0]`,
-`region[id]`) isn't a general array, it's `IndexAccess` routed through
-`__get_path`/`__set_path` into a fixed, special-cased `state` object
-(see the "Rendering / engine features" collider entry below for more on
-this path mechanism) — it works *only* for the handful of root names the
-runtime already knows about (`scroll`, `region`), not for a `VAR`/
-`GLOBAL` an author declares themselves. There's no way today to write
-`VAR enemies[10];` or loop over a collection of values without one
-`VAR`/`GLOBAL`/`PRIVATE` per slot.
+### ~~Arrays and structs~~ — DONE, this section was stale
+Both exist now (confirmed directly against `compiler/compiler.js` and
+`parser/parser.js`, not just against this file's own claims — this
+section previously said "neither exists at all," which a code review
+caught as flatly contradicted by the compiler):
 
-This is a substantial language feature, not a small parser tweak — worth
-scoping the two separately since they're different in kind:
+- **Arrays**: `GLOBAL foo[10];` and `PRIVATE foo[10];` (inside a
+  process) both work — fixed-size, compile-time-checked (an
+  out-of-bounds *literal* index, e.g. `foo[10]` on a size-10 array, is a
+  compile error via `checkConstantArrayIndex`; a variable index out of
+  range is checked at runtime instead, since its value isn't known until
+  the VM runs). Indexed access compiles to `LOAD_LOCAL_IDX`/
+  `STORE_LOCAL_IDX` (and the `_GLOBAL_` equivalents) with a
+  runtime-computed offset, not a fixed slot. `VAR foo[10];` is **not**
+  supported yet — only `GLOBAL`/`PRIVATE` accept the `[size]` form; a
+  plain `VAR` stays a single scalar slot.
+- **Structs**: `STRUCT name[count] field; field2; ... END` declares a
+  fixed-size global array of records (see `demos/breakout.html`'s
+  `STRUCT bricks[40] active; col; END`, accessed as `bricks[i].active`).
+  Supports nested structs, per-field default values, and an optional
+  trailing initializer list (`= val, val, N DUP(val), ...;`). This is a
+  top-level declaration shape, not a "type you instantiate with a
+  constructor call" — there's no `VAR p = point(1, 2);` syntax.
 
-- **Arrays** need: a new value type at the VM level (today every local/
-  global slot holds a single JS primitive — number, string, or the
-  implicit `0`; nothing holds a reference to a growable/indexable
-  collection), array-literal syntax in the parser, index-read and
-  index-write opcodes (or reuse `LOAD_LOCAL`/`STORE_LOCAL` with a
-  runtime-computed offset instead of a compile-time-fixed slot index,
-  which is a bigger change to how locals addressing works throughout the
-  compiler — today every `LOAD_LOCAL`/`STORE_LOCAL` operand is a literal
-  slot number baked in at compile time, never computed at runtime).
-- **Structs** (named field groups, e.g. `STRUCT point { x; y; }` then
-  `VAR p = point(1, 2); print(p.x);`) need a way to declare a shape (field
-  names + order), and — since `.` access already exists syntactically via
-  `MemberAccess` — could piggyback on the *general* cross-process-field
-  mechanism described below (once that exists) rather than needing an
-  entirely separate implementation: a struct instance and a "read another
-  process's fields by reference" mechanism are conceptually similar
-  problems (a handle plus named field lookup), so it may be worth
-  designing them together rather than as two unrelated features that
-  happen to reuse the same `.` syntax.
-
-Given the size of this, it's worth deciding early whether both are
-actually needed for this project's goals, or whether one (arrays are
-generally more load-bearing for real game logic — inventories, wave
-lists, tile data — than structs, which are more of a code-organization
-nicety) is enough to start with.
+Still open, if useful later: `VAR`-scoped (non-global, non-private)
+arrays, and dynamically-sized/growable arrays (today every array's size
+is a compile-time constant baked into the instance layout).
 
 ### ~~Canonical `red`/`green`/`blue`/`alpha`/`tag` process fields~~ — DONE (`lang-features` branch)
 Five new fixed slots (8-12), following the exact pattern already used

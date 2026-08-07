@@ -11,12 +11,19 @@ function toRadians(divAngle) {
   return (Number(divAngle) || 0) * DIV_ANGLE_TO_RAD;
 }
 
+// process.x/y IS the graphic's pivot (control point 0, the geometric
+// center by default) in world space — same convention real DIV uses, not
+// a top-left corner — so the center is just (x, y) directly. See
+// drawProcessAt() in runtime.js for the matching render-side fix.
 function getCenter(process, x = process.x, y = process.y) {
   const w = Number(process.width) || 0;
   const h = Number(process.height) || 0;
+  // x/y are in the process's own RESOLUTION units; divide to get real
+  // screen-space coordinates (see Process.getResolution).
+  const res = typeof process.getResolution === 'function' ? process.getResolution() : 1;
   return {
-    cx: (Number(x) || 0) + w * 0.5,
-    cy: (Number(y) || 0) + h * 0.5,
+    cx: (Number(x) || 0) / res,
+    cy: (Number(y) || 0) / res,
     w,
     h
   };
@@ -263,7 +270,7 @@ function getDefaultShapes(process, px = process.x, py = process.y, preferCircle 
   }];
 }
 
-function getProcessShapes(process, px = process.x, py = process.y, preferCircle = false) {
+export function getProcessShapes(process, px = process.x, py = process.y, preferCircle = false) {
   if (Array.isArray(process.cboxes) && process.cboxes.length > 0) {
     return process.cboxes.map((c) => cboxToShape(process, c, px, py));
   }
@@ -364,11 +371,13 @@ function collideProcesses(a, b, ax = a.x, ay = a.y, bx = b.x, by = b.y, options 
 
 function processAABB(process, x = process.x, y = process.y) {
   if ((Number(process.angle) || 0) === 0) {
-    const px = Number(x) || 0;
-    const py = Number(y) || 0;
-    const w = Number(process.width) || 0;
-    const h = Number(process.height) || 0;
-    return { minX: px, maxX: px + w, minY: py, maxY: py + h };
+    // (x, y) is the process's center (see getCenter) — same as the box's
+    // own axis-aligned bounds when angle is 0, so halve out from there.
+    // getCenter also applies RESOLUTION, which this path needs too.
+    const { cx, cy } = getCenter(process, x, y);
+    const hw = (Number(process.width) || 0) * 0.5;
+    const hh = (Number(process.height) || 0) * 0.5;
+    return { minX: cx - hw, maxX: cx + hw, minY: cy - hh, maxY: cy + hh };
   }
   return getAABBFromCorners(getCorners(process, x, y));
 }
@@ -445,6 +454,10 @@ export class Process {
     // Draw order: lower priority draws first (behind), higher draws last
     // (in front). Default 0 = creation order (same as before this existed).
     this.priority = params.priority ?? 0;
+    // DIV's RESOLUTION: x/y are divided by this when drawing/colliding,
+    // so a script can work in sub-pixel units (resolution=100 -> two
+    // decimals). 0 means "unset", treated as 1 (no division).
+    this.resolution = params.resolution ?? 0;
     this.parentId = params.parentId ?? 0;
     // Optional explicit radius/scale used by circle collisions.
     this.collisionRadius = Number(params.collisionRadius ?? params.collision_radius ?? 0) || 0;
@@ -481,7 +494,7 @@ export class Process {
 
     // Sincronizar com locals (slots fixos: 0=x, 1=y, 2=width, 3=height,
     // 4=ctype, 5=id, 6=region, 7=angle, 8=red, 9=green, 10=blue,
-    // 11=alpha, 12=tag, 13=priority)
+    // 11=alpha, 12=tag, 13=priority, 14=resolution)
     this.locals[0] = this.x;
     this.locals[1] = this.y;
     this.locals[2] = this.width;
@@ -496,6 +509,7 @@ export class Process {
     this.locals[11] = this.alpha;
     this.locals[12] = this.tag;
     this.locals[13] = this.priority;
+    this.locals[14] = this.resolution;
   }
 
   // Get bounds (for collision)
@@ -556,12 +570,22 @@ export class Process {
     this.alpha = this.locals[11] ?? this.alpha;
     this.tag = this.locals[12] ?? this.tag;
     this.priority = this.locals[13] ?? this.priority;
+    this.resolution = this.locals[14] ?? this.resolution;
+  }
+
+  // Divisor applied to x/y for drawing and collision (DIV's RESOLUTION).
+  // 0/unset/invalid all mean 1 — no scaling — so processes that never
+  // touch the field behave exactly as before.
+  getResolution() {
+    const r = Number(this.resolution) || 0;
+    return r > 0 ? r : 1;
   }
 }
 
 export class ProcessManager {
   constructor() {
     this.processes = [];           // Array de todos os processos
+    this.byId = new Map();         // Map<processId, process> — O(1) get()
     this.byType = new Map();       // Map<type, Set<processId>>
     this.byName = new Map();       // Map<name, Set<processId>>
     this.nextId = 1;               // IDs comecam em 1 (0 = null)
@@ -589,6 +613,7 @@ export class ProcessManager {
     process.locals[7] = process.angle;
 
     this.processes.push(process);
+    this.byId.set(process.id, process);
     this._drawDirty = true;
 
     // Index por tipo
@@ -606,10 +631,10 @@ export class ProcessManager {
     return process;
   }
 
-  // Get process by ID
+  // Get process by ID — O(1) via byId, kept in sync in create()/sweep().
   get(id) {
     if (id === 0) return null; // 0 = null
-    return this.processes.find(p => p.id === id);
+    return this.byId.get(id) || null;
   }
 
   // Get all processes
@@ -676,6 +701,7 @@ export class ProcessManager {
       const process = this.processes[i];
       if (process.dead || process.finished) {
         // Remove from indexes
+        this.byId.delete(process.id);
         this.byType.get(process.type)?.delete(process.id);
         this.byName.get(process.name)?.delete(process.id);
 
@@ -749,9 +775,12 @@ export class ProcessManager {
     if (!processIds) return 0;
     for (const id of processIds) {
       const p = this.get(id);
-      if (p && p.active &&
-          px >= p.x && px <= p.x + p.width &&
-          py >= p.y && py <= p.y + p.height) return id;
+      if (!p || !p.active) continue;
+      // p.x/p.y is the process's center (see getCenter in this file).
+      const hw = (Number(p.width) || 0) * 0.5;
+      const hh = (Number(p.height) || 0) * 0.5;
+      if (px >= p.x - hw && px <= p.x + hw &&
+          py >= p.y - hh && py <= p.y + hh) return id;
     }
     return 0;
   }
@@ -899,6 +928,7 @@ export class ProcessManager {
   // Clear all processes
   clear() {
     this.processes = [];
+    this.byId.clear();
     this.byType.clear();
     this.byName.clear();
     this.nextId = 1;

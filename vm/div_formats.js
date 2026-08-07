@@ -212,9 +212,10 @@ export function parseDivMapBuffer(buffer) {
   const cpointCount = reader.readUInt16();
   const cpoints = [];
   for (let i = 0; i < cpointCount; i++) {
-    const x = reader.readUInt16();
-    const y = reader.readUInt16();
-    cpoints.push({ x, y });
+    const x = reader.readInt16();
+    const y = reader.readInt16();
+    // -1,-1 marks an undefined control point (DIV convention)
+    cpoints.push(x === -1 && y === -1 ? { x: -1, y: -1, undefined: true } : { x, y });
   }
 
   const decoded = decodeMapPixels(reader, width, height, bpp, palette);
@@ -245,16 +246,19 @@ export function parseDivFpgBuffer(buffer) {
   }
 
   const maps = [];
-  const chunkSize = 48; // code(4) + name(32) + width(4) + height(4) + flags(4)
+  // code(4) + regsize(4) + name[32] + fpname[12] + width(4) + height(4) + flags/ncpoints(4)
+  const chunkSize = 64;
 
   while (reader.remaining() >= chunkSize) {
     const code = reader.readInt32();
+    reader.skip(4); // regsize, unused when loading
     const name = readCString(reader.readBytes(32));
+    reader.skip(12); // fpname, unused
     const width = reader.readInt32();
     const height = reader.readInt32();
     const cpointCount = reader.readInt32();
 
-    if (code < 0 || code > 999 || width <= 0 || height <= 0) {
+    if (code < 0 || code > 999 || width <= 0 || height <= 0 || cpointCount < 0 || cpointCount > 10000) {
       break;
     }
 
@@ -265,7 +269,8 @@ export function parseDivFpgBuffer(buffer) {
       }
       const x = reader.readInt16();
       const y = reader.readInt16();
-      cpoints.push({ x, y });
+      // -1,-1 marks an undefined control point (DIV convention)
+      cpoints.push(x === -1 && y === -1 ? { x: -1, y: -1, undefined: true } : { x, y });
     }
 
     const decoded = decodeMapPixels(reader, width, height, bpp, palette);
