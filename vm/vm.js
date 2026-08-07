@@ -230,11 +230,12 @@ export class VM {
         this.ip++;
         break;
 
-      case OpCodes.DUP:
+      case OpCodes.DUP: {
         const top = this.peek();
         this.push(top);
         this.ip++;
         break;
+      }
 
       // Load/Store
       case OpCodes.LOAD_LOCAL:
@@ -257,134 +258,154 @@ export class VM {
         this.ip++;
         break;
 
-      // Arithmetic
-      case OpCodes.ADD:
-        const b1 = this.pop();
-        const a1 = this.pop();
-        this.push(a1 + b1);
+      // Arithmetic. Every one of these used to declare its operands as
+      // "const b1"/"const a1", "const b2"/"const a2", ... — a separately
+      // numbered pair per case, purely to dodge a SyntaxError, because
+      // none of these case blocks had their own braces and so all shared
+      // one lexical scope with every other case in this switch. Adding a
+      // new binary opcode and reaching for the natural "const a"/"const
+      // b" names (as this file already does elsewhere, e.g. NOT's `val1`)
+      // would throw "Identifier 'a' has already been declared" and take
+      // the whole module down at import time — not just that instruction,
+      // every instruction. Bracing each case gives it its own scope, so
+      // "a"/"b" can be reused freely and mean the same thing everywhere.
+      case OpCodes.ADD: {
+        const b = this.pop();
+        const a = this.pop();
+        this.push(a + b);
         this.ip++;
         break;
+      }
 
-      case OpCodes.SUB:
-        const b2 = this.pop();
-        const a2 = this.pop();
-        this.push(a2 - b2);
+      case OpCodes.SUB: {
+        const b = this.pop();
+        const a = this.pop();
+        this.push(a - b);
         this.ip++;
         break;
+      }
 
-      case OpCodes.MUL:
-        const b3 = this.pop();
-        const a3 = this.pop();
-        this.push(a3 * b3);
+      case OpCodes.MUL: {
+        const b = this.pop();
+        const a = this.pop();
+        this.push(a * b);
         this.ip++;
         break;
+      }
 
-      case OpCodes.DIV:
-        const b4 = this.pop();
-        const a4 = this.pop();
-        this.push(a4 / b4);
+      case OpCodes.DIV: {
+        const b = this.pop();
+        const a = this.pop();
+        this.push(a / b);
         this.ip++;
         break;
+      }
 
-      case OpCodes.MOD:
-        const b5 = this.pop();
-        const a5 = this.pop();
-        this.push(a5 % b5);
+      case OpCodes.MOD: {
+        const b = this.pop();
+        const a = this.pop();
+        this.push(a % b);
         this.ip++;
         break;
+      }
 
-      case OpCodes.NEG:
+      case OpCodes.NEG: {
         const val = this.pop();
         this.push(-val);
         this.ip++;
         break;
+      }
 
       // Comparison
-      case OpCodes.EQ:
-        const b6 = this.pop();
-        const a6 = this.pop();
-        this.push(a6 === b6 ? 1 : 0);
+      case OpCodes.EQ: {
+        const b = this.pop();
+        const a = this.pop();
+        this.push(a === b ? 1 : 0);
         this.ip++;
         break;
+      }
 
-      case OpCodes.NEQ:
-        const b7 = this.pop();
-        const a7 = this.pop();
-        this.push(a7 !== b7 ? 1 : 0);
+      case OpCodes.NEQ: {
+        const b = this.pop();
+        const a = this.pop();
+        this.push(a !== b ? 1 : 0);
         this.ip++;
         break;
+      }
 
-      case OpCodes.LT:
-        const b8 = this.pop();
-        const a8 = this.pop();
-        this.push(a8 < b8 ? 1 : 0);
+      case OpCodes.LT: {
+        const b = this.pop();
+        const a = this.pop();
+        this.push(a < b ? 1 : 0);
         this.ip++;
         break;
+      }
 
-      case OpCodes.LTE:
-        const b9 = this.pop();
-        const a9 = this.pop();
-        this.push(a9 <= b9 ? 1 : 0);
+      case OpCodes.LTE: {
+        const b = this.pop();
+        const a = this.pop();
+        this.push(a <= b ? 1 : 0);
         this.ip++;
         break;
+      }
 
-      case OpCodes.GT:
-        const b10 = this.pop();
-        const a10 = this.pop();
-        this.push(a10 > b10 ? 1 : 0);
+      case OpCodes.GT: {
+        const b = this.pop();
+        const a = this.pop();
+        this.push(a > b ? 1 : 0);
         this.ip++;
         break;
+      }
 
-      case OpCodes.GTE:
-        const b11 = this.pop();
-        const a11 = this.pop();
-        this.push(a11 >= b11 ? 1 : 0);
+      case OpCodes.GTE: {
+        const b = this.pop();
+        const a = this.pop();
+        this.push(a >= b ? 1 : 0);
         this.ip++;
         break;
+      }
 
-      // Logical
-      case OpCodes.NOT:
+      // Logical. AND/OR opcodes used to live here too, but the compiler
+      // has emitted short-circuit AND/OR entirely via JUMP_IF_TRUE/
+      // JUMP_IF_FALSE chains since f949496 — nothing has produced an
+      // OpCodes.AND/OpCodes.OR instruction since, and no test constructs
+      // one by hand either (unlike OpCodes.BREAK/CONTINUE, which a
+      // regression test *does* reference directly, as a sentinel the
+      // compiler must never emit — see testBreakContinueLowering in
+      // tests/browser-tests.js). Removed rather than left as unreachable
+      // "working" cases that invite a future reader to wonder whether
+      // something out there still depends on them.
+      case OpCodes.NOT: {
         const val1 = this.pop();
         this.push(this.isTruthy(val1) ? 0 : 1);
         this.ip++;
         break;
-
-      case OpCodes.AND:
-        const b12 = this.pop();
-        const a12 = this.pop();
-        this.push((this.isTruthy(a12) && this.isTruthy(b12)) ? 1 : 0);
-        this.ip++;
-        break;
-
-      case OpCodes.OR:
-        const b13 = this.pop();
-        const a13 = this.pop();
-        this.push((this.isTruthy(a13) || this.isTruthy(b13)) ? 1 : 0);
-        this.ip++;
-        break;
+      }
 
       // Control flow
       case OpCodes.JUMP:
         this.ip = operands[0];
         break;
 
-      case OpCodes.JUMP_IF_FALSE:
-        const cond1 = this.pop();
-        if (!this.isTruthy(cond1)) {
+      case OpCodes.JUMP_IF_FALSE: {
+        const cond = this.pop();
+        if (!this.isTruthy(cond)) {
           this.ip = operands[0];
         } else {
           this.ip++;
         }
         break;
+      }
 
-      case OpCodes.JUMP_IF_TRUE:
-        const cond2 = this.pop();
-        if (this.isTruthy(cond2)) {
+      case OpCodes.JUMP_IF_TRUE: {
+        const cond = this.pop();
+        if (this.isTruthy(cond)) {
           this.ip = operands[0];
         } else {
           this.ip++;
         }
         break;
+      }
 
       case OpCodes.LOOP:
         this.ip = operands[0];
@@ -401,7 +422,7 @@ export class VM {
         break;
 
       // Call
-      case OpCodes.CALL:
+      case OpCodes.CALL: {
         const funcName = operands[0];
         const funcArgc = operands[1];
         const funcArgs = [];
@@ -433,8 +454,9 @@ export class VM {
           this.locals[i] = funcArgs[i];
         }
         break;
+      }
 
-      case OpCodes.RETURN:
+      case OpCodes.RETURN: {
         // Function calls push [returnAddress, previousLocals] onto callStack.
         const returningToCaller = this.callStack.length >= 2;
         const returnValue = this.stack.length > 0 ? this.pop() : 0;
@@ -461,8 +483,9 @@ export class VM {
           this.push(returnValue);
         }
         break;
+      }
 
-      case OpCodes.CALL_NATIVE:
+      case OpCodes.CALL_NATIVE: {
         const nativeName = operands[0];
         const nativeArgc = operands[1];
         const nativeArgs = [];
@@ -482,8 +505,9 @@ export class VM {
 
         this.ip++;
         break;
+      }
 
-      case OpCodes.SPAWN_PROCESS:
+      case OpCodes.SPAWN_PROCESS: {
         const processName = operands[0];
         const processArgc = operands[1];
         const processArgs = [];
@@ -532,6 +556,7 @@ export class VM {
 
         this.ip++;
         break;
+      }
 
       case OpCodes.FRAME:
         if (operands[0] === 1) {

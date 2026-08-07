@@ -31,10 +31,10 @@ export const OpCodes = {
   GT: 0x34,          // Greater than
   GTE: 0x35,         // Greater than or equal
   
-  // Logical
+  // Logical. AND/OR removed: the compiler has emitted short-circuit
+  // AND/OR entirely via JUMP_IF_TRUE/JUMP_IF_FALSE chains since f949496,
+  // and nothing else in this codebase ever referenced these two values.
   NOT: 0x40,         // Logical not
-  AND: 0x41,         // Logical and
-  OR: 0x42,          // Logical or
   
   // Control flow
   JUMP: 0x50,        // Unconditional jump
@@ -66,79 +66,3 @@ export const OpCodeNames = {};
 for (const [name, value] of Object.entries(OpCodes)) {
   OpCodeNames[value] = name;
 }
-
-// Bytecode instruction
-class Instruction {
-  constructor(opcode, ...operands) {
-    this.opcode = opcode;
-    this.operands = operands;
-  }
-  
-  toString() {
-    const name = OpCodeNames[this.opcode] || `UNKNOWN(${this.opcode})`;
-    const ops = this.operands.map(o => o.toString()).join(', ');
-    return `${name} ${ops}`.trim();
-  }
-}
-
-// Bytecode program
-class Bytecode {
-  constructor() {
-    this.instructions = [];
-    this.constants = [];
-    this.constantMap = new Map();
-  }
-  
-  // Add instruction
-  emit(opcode, ...operands) {
-    this.instructions.push(new Instruction(opcode, ...operands));
-    return this.instructions.length - 1;
-  }
-  
-  // Add constant
-  addConstant(value) {
-    const key = JSON.stringify(value);
-    if (this.constantMap.has(key)) {
-      return this.constantMap.get(key);
-    }
-    
-    const index = this.constants.length;
-    this.constants.push(value);
-    this.constantMap.set(key, index);
-    return index;
-  }
-  
-  // Get instruction at index
-  getInstruction(index) {
-    return this.instructions[index];
-  }
-  
-  // Get instruction count
-  instructionCount() {
-    return this.instructions.length;
-  }
-  
-  // Patch jump instruction
-  patchJump(index, target) {
-    this.instructions[index].operands[0] = target;
-  }
-  
-  // Disassemble (for debugging)
-  disassemble(name = 'bytecode') {
-    console.log(`== ${name} ==`);
-    
-    for (let i = 0; i < this.instructions.length; i++) {
-      const instr = this.instructions[i];
-      console.log(`${i.toString().padStart(4)}: ${instr}`);
-    }
-    
-    if (this.constants.length > 0) {
-      console.log('\nConstants:');
-      this.constants.forEach((c, i) => {
-        console.log(`  ${i}: ${JSON.stringify(c)}`);
-      });
-    }
-  }
-}
-
-export { Instruction, Bytecode };
