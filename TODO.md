@@ -71,6 +71,269 @@ explicitly rather than discovered by reading source.
 
 ---
 
+## Language ergonomics
+
+### Multi-variable declarations: `VAR x, y, z;` instead of one keyword per name
+`VAR`, `GLOBAL`, and `PRIVATE` all currently require a separate
+statement — and a repeated keyword — per variable:
+
+```div
+VAR x = 0;
+VAR y = 0;
+VAR z = 0;
+```
+
+instead of the more natural
+
+```div
+VAR x = 0, y = 0, z = 0;
+```
+
+Confirmed in `parser/parser.js`: `parseVar()`, `parseGlobal()`, and
+`parsePrivate()` each read exactly one `readIdentifierLike()` name,
+optionally `= expr`, then unconditionally `expect(SEMICOLON)` — there's
+no comma-handling at all in any of the three, so `VAR x, y;` is a syntax
+error today (`,` where `;` is expected).
+
+Fix shape: each of the three parse methods becomes a loop reading
+`name [= expr]` separated by `COMMA`, terminated by the existing
+`SEMICOLON` expectation — very close to the pattern `parseFunction()`/
+`parseProcess()` already use for comma-separated parameter lists. The
+compiler side needs no change at all: `compileVar`/`compileGlobal`/
+`compilePrivate` already take one declaration at a time; the parser
+would just emit one `ast.Var`/`ast.Global`/`ast.Private` node per name
+in the list (so `VAR x, y = 5;` becomes two ordinary `Var` statements
+under the hood — `x` defaulting to `0` same as it does today, `y`
+initialized to `5`), rather than needing a new multi-name AST shape.
+
+Worth deciding up front: does `VAR x, y = 5;` mean "both default to
+`0`, then `y` is reassigned" or "`x` defaults to `0`, `y` is initialized
+to `5`"? The second reading (each name gets its own optional initializer,
+scanned left to right) is what most C-family languages with this syntax
+do, and matches what a DIV author coming from that background would
+expect — worth being explicit about it in whatever tests get written for
+this, since it's an easy thing to get subtly backwards.
+
+### `GLOBAL` block form: `GLOBAL` on its own line, then one name per line until the next non-name
+The user's phrasing ("como global tudo que vem a seguir são variáveis")
+describes the classic DIV/Fenix block style:
+
+```div
+GLOBAL
+  score;
+  lives;
+  high_score = 0;
+```
+
+— a bare `GLOBAL` keyword, then every following line is a name (with an
+optional initializer) until something that isn't one. This is a
+*different* feature from the comma-separated form above (this one has no
+commas or semicolons separating names at all, relying on line position),
+and the two aren't mutually exclusive — a from-scratch DIV port would
+probably want both, since real DIV/Fenix source in the wild uses this
+block style heavily. Lower priority than the comma-separated form above
+since it's a bigger grammar change (needs a way to decide "is the next
+line another name, or the start of something else" without relying on
+significant whitespace, which this tokenizer doesn't track at all right
+now).
+
+---
+
+## Rendering / engine features
+
+### Process depth (z-order) for rendering, without a per-frame sort becoming the bottleneck
+There is currently **no depth/priority concept at all**: confirmed in
+`vm/runtime.js`'s `drawProcessesFallback()` — it iterates
+`this.vm.processManager.getAll()` and draws in whatever order that
+returns processes, which is creation order (processes are appended to a
+plain array in `ProcessManager.create()` and never reordered). A process
+spawned later always draws on top of one spawned earlier, with no way
+for a DIV author to control it. Real games need this — a UI overlay
+process, a background layer, a "this enemy is behind that wall" case —
+and DIV/Fenix conventionally expose it as a per-process depth/priority
+value you can read and write like `x`/`y`.
+
+The concern about **not making this a sort bottleneck** is worth taking
+seriously given what the bunnymark found: scaling is roughly linear
+today, and a naive `processes.slice().sort((a, b) => a.depth - b.depth)`
+called fresh every single frame is `O(n log n)` — at the process counts
+the bunnymark tested (tens of thousands), that's a real, avoidable cost
+added to *every* frame even when depths rarely change. Options, roughly
+best-to-worst for this:
+
+- **Maintain a sorted structure incrementally** instead of re-sorting
+  from scratch: keep the draw list sorted, and when a process's depth
+  changes, remove-and-reinsert just that one process (binary search for
+  the insertion point) rather than re-sorting everything. Depth changes
+  are typically rare relative to how often a frame renders, so this
+  turns an `O(n log n)` per-frame cost into an `O(log n)` cost only when
+  something's depth actually changes, plus `O(n)` to iterate the
+  already-sorted list for drawing.
+- **Bucket by depth** if depth values are small-integer "layers" (a
+  common convention — background/game/UI, or a handful of named layers)
+  rather than a continuous value: an array-of-arrays indexed by layer,
+  append on spawn, and draw layer 0's array, then layer 1's, etc. `O(1)`
+  insertion, `O(n)` draw, no sort ever, at the cost of losing fine-
+  grained ordering *within* a layer (processes in the same layer still
+  draw in spawn order).
+- **Only re-sort when something actually changed**: keep a dirty flag,
+  set it whenever a process's depth field is written (would need
+  `STORE_LOCAL` to the depth slot to flag it, or a native setter instead
+  of direct field access — the fixed-slot writes are direct-to-array
+  today, so this needs either a native or a VM-level hook on that
+  specific slot), full re-sort only on the frame after a change. Simpler
+  than incremental reinsertion, worse worst-case (if depth changes every
+  frame for even one process, this degrades to sorting every frame
+  anyway).
+
+Implementation shape, whichever ordering strategy is picked: this is
+naturally a 9th canonical fixed slot, following the exact pattern already
+established for `ctype`/`region`/`angle` — add it to the fixed-slot table
+in `compiler/compiler.js`, `vm/vm.js`'s `SPAWN_PROCESS`, and
+`vm/process.js`'s `Process` constructor/`sync()`, then have
+`drawProcessesFallback()` consult it instead of raw creation order.
+
+### Tilemap support
+Nothing today: `load_tile` loads a single tile graphic by id (one image,
+treated as one drawable unit, same machinery as `load_graphic`), not a
+grid of tiles referencing a shared tileset with per-cell indices — there's
+no map-data structure, no "draw this grid of tile indices from this
+tileset" native, and no collision-against-the-map concept (`collision()`
+only ever checks process-vs-process by TYPE). A real tilemap feature
+needs: a map-data format (even just a 2D array of tile indices passed in
+somehow), a native that draws the visible portion of it each frame
+(ideally only the tiles inside the camera/viewport, not the whole map
+every frame — ties into the scroll/camera system that already exists),
+and probably a native or two for "what tile is at this world position"
+so a process can check tile-based collision (walking into a wall tile)
+without that being process-based `collision()`.
+
+### A real collider — shaped collision, not just AABB rectangles
+`collidesWith()` (`vm/process.js`) is a plain axis-aligned bounding-box
+overlap test — confirmed while reviewing `collision()` earlier this
+session. No circles, no polygons, no rotated rectangles (an `angle`
+field exists per-process but collision never consults it). Fine for a
+lot of games; not fine for anything wanting a circular hitbox (natural
+for a lot of enemies/bullets) or precise polygon collision.
+
+Two real directions here, genuinely different in scope and worth
+deciding between deliberately rather than drifting into by accident:
+
+- **Build a real shaped-collider system in this codebase.** Define
+  shapes per process (circle with radius, polygon with a point list —
+  probably as additional canonical fields or a small shape-descriptor
+  object attached to the process), implement the actual intersection
+  tests (circle-circle is trivial; circle-polygon and polygon-polygon
+  need real geometry, SAT — separating axis theorem — being the standard
+  approach for convex polygons). This stays entirely within the existing
+  architecture and dependency-free, but is real, nontrivial geometry code
+  to write and get right, and doesn't give physics (restitution,
+  friction, joints, gravity as a first-class concept beyond "add to y
+  each frame by hand") — just better collision *detection*, not
+  collision *response*.
+- **Integrate an existing 2D physics engine** — Box2D itself (via a WASM
+  port) or **Planck.js** (a pure-JS/TypeScript port of Box2D, no WASM
+  toolchain needed, easier to embed) as a native binding: DIV processes
+  would own a physics body, natives would step the physics world once
+  per tick and sync body position back onto the process's `x`/`y`
+  (mirroring how `sync()` already moves data between VM locals and the
+  `Process` object), and expose things like `set_velocity`,
+  `apply_force`, joints, and real collision *response* (things bounce,
+  push each other, stack) — not just detection. Substantially more
+  capability for substantially more integration work: a new dependency,
+  a body-to-process lifecycle to manage (create the physics body on
+  spawn, destroy it on kill/sweep), and a real design decision about how
+  much of Planck's API surface to expose as DIV natives versus keep
+  simple.
+
+  Planck.js specifically is worth a look before Box2D-via-WASM: it's
+  pure JS (fits this project's zero-build-step, hand-written-parser
+  ethos much better than a WASM toolchain would), and physics stepping
+  cost is a separate, measurable question from what the bunnymark
+  measured (that was pure movement + bounce logic, no actual physics
+  simulation) — worth its own benchmark before committing to it at any
+  process count.
+
+  Given the project's current scope (VM/compiler correctness, a
+  hand-rolled canvas renderer) is already substantial on its own, this
+  is the bigger of the two directions and probably the one to defer
+  until the collision-detection-only route has been tried and found
+  wanting for a specific game that actually needs physics response.
+
+### Other DIV/Fenix-family features this engine doesn't have yet
+Surveyed the full native surface
+(`registerNative()` calls in `vm/runtime.js`) to ground this rather than
+guessing. Gaps, roughly in order of "how often a real 2D game needs it":
+
+- **No audio at all.** No `play_sound`, no music/fx natives, nothing —
+  confirmed absent from the native list. Any DIV-family game needs at
+  minimum a "play this sound once" and "play/loop this music" pair.
+- **No sprite-sheet animation helper.** `load_graphic`/`load_tile` load
+  one static image by id; a process wanting to *animate* has to
+  reassign its own `graph` field by hand every N frames, tracking the
+  frame index itself in a PRIVATE. A native like "cycle through frames
+  A to B of this sheet at rate R" (common in DIV/Fenix as `graph =
+  graph + 1` inside a `frame(N)`-throttled loop, which now actually
+  works correctly per this session's `frame(n)` fix) would remove a lot
+  of repeated boilerplate every game would otherwise hand-roll
+  identically.
+- **No particle system.** Common in this genre for explosions, trails,
+  weather; nothing here today beyond spawning individual processes by
+  hand for each particle (which the bunnymark shows scales fine
+  performance-wise, just no dedicated ergonomic API for it).
+- **Keyboard-only input.** `key`/`key_down`/`key_pressed` exist; no
+  mouse/pointer position or button natives, no gamepad. A lot of DIV-
+  family games are keyboard/joystick-first so this may be lower priority
+  than it looks, but mouse input specifically is a common enough want
+  (menus, point-and-click, aiming) to flag.
+- **No save/load or state serialization.** No way to snapshot a running
+  game's process tree and restore it later. Notably, `BUGS.md` already
+  flags that generators/coroutines (if the transpiler-to-JS-generators
+  approach from early in this project's exploration had been taken
+  instead of the bytecode VM that was actually built) would have made
+  this *harder*, not easier — the bytecode VM's explicit
+  `ip`/`stack`/`locals` per process is actually reasonably serializable
+  as-is, which is a real point in its favor if this ever gets built.
+- **No tween/easing helpers beyond raw trig.** `sin`/`cos`/`pow` etc.
+  exist as math primitives; no `ease_in_out(t)`-style helpers or a
+  "smoothly move this process from A to B over N frames" native, which
+  most small 2D games end up hand-rolling identically many times over.
+
+### Consider building the renderer on an existing engine (PixiJS) instead of hand-rolled canvas 2D
+Worth a deliberate decision, not a default. `CanvasEngineRuntime`
+(`vm/runtime.js`) draws directly via the 2D canvas context today —
+`fillRect`, `arc`, `drawImage`, one draw call per process per frame, no
+batching, no GPU acceleration beyond whatever the browser's own 2D
+canvas backend already does internally.
+
+**Case for PixiJS:** WebGL-backed, sprite batching (many sprites drawn
+in fewer GPU calls than one-draw-call-per-sprite), a mature scene-graph,
+built-in support for exactly the kind of animation/particle/tween gaps
+listed above. Given the bunnymark explicitly did *not* measure render
+cost (it isolated VM/scheduler throughput on purpose), and canvas 2D
+`drawImage` cost per sprite is a completely different, separately-
+measurable question from what was benchmarked — if a real game needs
+thousands of *visible, drawn* sprites (not just thousands of ticking
+processes with nothing on screen, which is what the bunnymark tested),
+render cost is very plausibly the actual bottleneck long before VM
+throughput is, and PixiJS is specifically built to push that ceiling far
+higher than hand-rolled canvas 2D calls can.
+
+**Case against, or at least for waiting:** it's a new dependency and a
+full rewrite of the drawing half of `CanvasEngineRuntime` (the VM/
+compiler/process side is entirely unaffected — this is purely a renderer
+swap, DIV programs wouldn't need to change at all, natives like
+`circle`/`draw_rect`/`xput` would just be reimplemented against Pixi's
+API underneath). Also: this hasn't actually been measured as a problem
+yet — the honest thing is to benchmark real render cost (a bunnymark
+variant that actually draws each bunny via `CanvasEngineRuntime.render()`,
+sweeping process count, measuring `render()` time specifically the way
+`bench/bunnymark.mjs` already isolates `tick()` time) *before* deciding
+whether hand-rolled canvas 2D is actually the bottleneck worth solving
+this way, rather than assuming it and rewriting preemptively.
+
+---
+
 ## Process notes (how this list was built, for whoever picks it up next)
 
 Everything in `BUGS.md` above the natives/signal-trees item (#7) was
@@ -83,3 +346,15 @@ build something real, run it, read what it actually says — found more
 than guessing at what might be wrong ever did. Worth repeating for #7
 rather than trying to reason about scroll/region correctness from reading
 the code alone.
+
+The "Language ergonomics" and "Rendering / engine features" sections
+above are different in kind from everything before them: not bugs, not
+things confirmed broken by testing, but a feature/roadmap wishlist —
+grounded in what the current grammar and native surface actually do (verified
+directly against the parser and runtime source, not guessed at) rather
+than invented from nothing, but genuinely open design questions rather
+than a spec ready to implement. Worth a real discussion about priority
+and scope before picking any one of them up, especially the collider/
+physics and PixiJS questions, both of which are significant enough
+architectural decisions to want deliberate buy-in first.
+
