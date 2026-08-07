@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:pipeline": "node test.mjs"
+    "test:pipeline": "node tests/test.mjs"
   }
 }

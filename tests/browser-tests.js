@@ -2361,6 +2361,200 @@ end`));
   assert(JSON.stringify(seen) === '[100,10,20,99]', `esperava [100,10,20,99], obtido ${JSON.stringify(seen)}`);
 }
 
+async function testPriorityDirtyFlagIgnoresUnrelatedFunctionLocals() {
+  // The VM notifies ProcessManager.markPriorityDirty() whenever
+  // STORE_LOCAL writes to slot 13 — the canonical `priority` field inside
+  // a PROCESS body. But a FUNCTION's own locals are a completely
+  // separate, freshly-allocated slot sequence starting at 0 — nothing
+  // stops a FUNCTION with 14 params/VARs from putting its own 14th local
+  // at slot 13 too, purely by coincidence. Without the currentProcess/
+  // callStack guard, calling such a function marked the draw list dirty
+  // on every call, for every process, even though no process's priority
+  // actually changed — silently undermining the whole point of caching
+  // the sorted draw list (confirmed reproducible: a FUNCTION with 14
+  // params does put its 14th local at slot 13). The guard requires being
+  // directly in a process's own top-level body (currentProcess set,
+  // callStack empty) — so a priority write from inside a FUNCTION the
+  // process itself calls doesn't trigger this path either, but that's
+  // not a real capability lost: `priority` inside a FUNCTION was never a
+  // reference to any process's canonical field to begin with (FUNCTION
+  // locals don't get the canonical slot table PROCESS bodies do) — it's
+  // just an ordinary, unrelated local variable there, with or without
+  // this fix.
+  const source = `program priority_false_positive;
+
+function f(a,b,c,d,e,g,h,i,j,k,l,m,n,o);
+begin
+  o = 1;
+  return o;
+end
+
+process p(x, y);
+begin
+  loop frame; end
+end
+
+begin
+  p(1, 1);
+  print(f(1,2,3,4,5,6,7,8,9,10,11,12,13,14));
+  frame;
+end`;
+
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  vm.registerNative('print', () => 0);
+
+  vm.tick();
+  vm.processManager.getDrawList(); // settle the initial spawn-triggered dirty flag
+
+  let sortCalls = 0;
+  const originalSort = Array.prototype.sort;
+  Array.prototype.sort = function (...args) { sortCalls += 1; return originalSort.apply(this, args); };
+  try {
+    vm.tick(); // calls f() again — used to spuriously mark the draw list dirty
+    vm.processManager.getDrawList();
+  } finally {
+    Array.prototype.sort = originalSort;
+  }
+
+  assert(sortCalls === 0,
+    `FUNCTION escrevendo no seu proprio slot 13 nao devia disparar um resort da draw list, obtido ${sortCalls} chamada(s) a sort()`);
+}
+
+async function testArrayAndStructBoundsChecking() {
+  // LOAD/STORE_LOCAL_IDX and LOAD/STORE_GLOBAL_IDX computed `base + index`
+  // directly with no validation at all. An out-of-bounds index silently
+  // read or wrote whatever unrelated global/local/struct-instance
+  // happened to sit at that computed offset — confirmed for GLOBAL
+  // arrays, PRIVATE arrays, and STRUCT arrays (including array-valued
+  // fields within a struct) alike, since they all route through the same
+  // four opcodes. A constant out-of-bounds index (the common case — an
+  // off-by-one literal, or a loop bound of `size` instead of `size-1`)
+  // is now a compile error; a variable index whose value isn't known
+  // until runtime is bounds-checked in the VM instead, rejecting the
+  // read/write rather than touching unrelated storage.
+
+  // Constant index out of bounds: compile-time rejection.
+  let threwOnConstantOOB = false;
+  try {
+    compileSource(`program array_const_oob;
+
+global a[3], b[3];
+
+begin
+  a[3] = 999;
+  frame;
+end`);
+  } catch (error) {
+    threwOnConstantOOB = true;
+  }
+  assert(threwOnConstantOOB, 'indice constante fora dos limites (a[3] com size 3) devia falhar a compilar');
+
+  let threwOnNegativeConstant = false;
+  try {
+    compileSource(`program array_negative_const;
+
+global guard = 777;
+global arr[3];
+
+begin
+  arr[-1] = 42;
+  frame;
+end`);
+  } catch (error) {
+    threwOnNegativeConstant = true;
+  }
+  assert(threwOnNegativeConstant, 'indice constante negativo devia falhar a compilar');
+
+  // Variable index out of bounds: runtime guard, neighboring GLOBAL array
+  // untouched instead of silently corrupted.
+  const runtimeSource = `program array_runtime_oob;
+
+global a[3], b[3];
+
+begin
+  b[0] = 111; b[1] = 222; b[2] = 333;
+  var i = 3;
+  a[i] = 999;
+  print(b[0]);
+  print(b[1]);
+  print(b[2]);
+  frame;
+end`;
+
+  const runtimeBytecode = compileSource(runtimeSource);
+  const runtimeVm = new VM();
+  runtimeVm.load(runtimeBytecode);
+  const runtimeSeen = [];
+  runtimeVm.registerNative('print', (v) => { runtimeSeen.push(v); return 0; });
+  runtimeVm.tick();
+  assert(JSON.stringify(runtimeSeen) === JSON.stringify([111, 222, 333]),
+    `array vizinho "b" devia ficar intacto apos escrita fora dos limites em "a", obtido ${JSON.stringify(runtimeSeen)}`);
+
+  // Valid, in-bounds usage must still work exactly as before.
+  const validSource = `program array_valid_usage;
+
+global arr[5];
+
+begin
+  for i = 0 to 4
+    arr[i] = i * i;
+  end
+  for i = 0 to 4
+    print(arr[i]);
+  end
+  frame;
+end`;
+
+  const validBytecode = compileSource(validSource);
+  const validVm = new VM();
+  validVm.load(validBytecode);
+  const validSeen = [];
+  validVm.registerNative('print', (v) => { validSeen.push(v); return 0; });
+  validVm.tick();
+  assert(JSON.stringify(validSeen) === JSON.stringify([0, 1, 4, 9, 16]),
+    `uso valido dentro dos limites nao devia ser afetado, obtido ${JSON.stringify(validSeen)}`);
+
+  // Same corruption class, confirmed for STRUCT arrays: an out-of-bounds
+  // index on one struct silently landed inside the next STRUCT declared
+  // right after it (structs share the same underlying global-slot
+  // counter as plain GLOBALs and each other). Checked here via the
+  // combined offset against the struct's total reserved footprint
+  // (count * instanceSize) rather than per-term, which — same caveat as
+  // the flat-array case — doesn't catch every pathological combination
+  // of a too-large index on one term offset by a negative one on
+  // another, but does catch the practical case: a single index running
+  // past the end of the struct's own block.
+  const structSource = `program struct_bounds_oob;
+
+struct enemyA[2]
+  x; y;
+end
+
+struct enemyB[2]
+  hp; mana;
+end
+
+begin
+  enemyB[0].hp = 111; enemyB[0].mana = 222;
+  var i = 2;
+  enemyA[i].x = 999;
+  print(enemyB[0].hp);
+  print(enemyB[0].mana);
+  frame;
+end`;
+
+  const structBytecode = compileSource(structSource);
+  const structVm = new VM();
+  structVm.load(structBytecode);
+  const structSeen = [];
+  structVm.registerNative('print', (v) => { structSeen.push(v); return 0; });
+  structVm.tick();
+  assert(JSON.stringify(structSeen) === JSON.stringify([111, 222]),
+    `enemyB devia ficar intacto apos escrita fora dos limites em enemyA, obtido ${JSON.stringify(structSeen)}`);
+}
+
 async function testPathNativesScrollState() {
   const vm = new VM();
   const runtime = createRuntime(vm);
@@ -2456,6 +2650,8 @@ export async function runAllTests() {
     ['STRUCT array field within struct', testStructArrayField],
     ['STRUCT initializer list + DUP syntax', testStructInitializerList],
     ['STRUCT nested structs', testStructNested],
+    ['priority dirty-flag ignores unrelated FUNCTION locals landing on slot 13', testPriorityDirtyFlagIgnoresUnrelatedFunctionLocals],
+    ['array and STRUCT bounds checking (compile-time constant + runtime variable)', testArrayAndStructBoundsChecking],
   );
 
   const results = [];

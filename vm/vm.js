@@ -322,7 +322,23 @@ export class VM {
       case OpCodes.STORE_LOCAL:
         this.locals[operands[0]] = this.pop();
         // Notify the draw-list cache when priority (slot 13) changes.
-        if (operands[0] === 13) this.processManager.markPriorityDirty();
+        // Guarded to only fire when this write is directly in a
+        // process's own top-level body — currentProcess set (excludes
+        // MAIN, which has no canonical slots at all) AND callStack empty
+        // (excludes any FUNCTION the process is currently calling, whose
+        // *own* locals happen to be swapped into this.locals for the
+        // call but have nothing to do with that process's priority).
+        // Without the callStack check, a FUNCTION with 14+ params/VARs
+        // writing to its own 14th local (landing on slot 13 purely by
+        // coincidence, same index as PROCESS's canonical `priority`
+        // slot) would mark the draw list dirty on every such call, for
+        // every process, even though no process's priority actually
+        // changed — silently undermining the whole point of caching the
+        // sorted draw list. Confirmed reproducible: a FUNCTION with 14
+        // params does put its 14th local at slot 13.
+        if (operands[0] === 13 && this.currentProcess !== null && this.callStack.length === 0) {
+          this.processManager.markPriorityDirty();
+        }
         this.ip++;
         break;
 
@@ -340,7 +356,19 @@ export class VM {
 
       case OpCodes.LOAD_LOCAL_IDX: {
         const li = this.pop();
-        this.push(this.locals[operands[0] + li] ?? 0);
+        // Bounds check for a runtime-computed index (a literal
+        // out-of-bounds index is already rejected at compile time — see
+        // checkConstantArrayIndex in compiler.js — this is the case that
+        // can't be: the index's actual value isn't known until now).
+        // Without this, base + li was used directly with no validation,
+        // silently reading whatever unrelated global/local happened to
+        // sit at that computed offset.
+        if (li < 0 || li >= operands[1] || !Number.isInteger(li)) {
+          console.error(`Array index out of bounds: [${li}] (valid range 0..${operands[1] - 1})`);
+          this.push(0);
+        } else {
+          this.push(this.locals[operands[0] + li] ?? 0);
+        }
         this.ip++;
         break;
       }
@@ -348,15 +376,24 @@ export class VM {
       case OpCodes.STORE_LOCAL_IDX: {
         const lv = this.pop();
         const li2 = this.pop();
-        this.locals[operands[0] + li2] = lv;
+        if (li2 < 0 || li2 >= operands[1] || !Number.isInteger(li2)) {
+          console.error(`Array index out of bounds: [${li2}] (valid range 0..${operands[1] - 1})`);
+        } else {
+          this.locals[operands[0] + li2] = lv;
+        }
         this.ip++;
         break;
       }
 
       case OpCodes.LOAD_GLOBAL_IDX: {
         const gi = this.pop();
-        const gv2 = this.globals.get(operands[0] + gi);
-        this.push(gv2 === undefined ? 0 : gv2);
+        if (gi < 0 || gi >= operands[1] || !Number.isInteger(gi)) {
+          console.error(`Array index out of bounds: [${gi}] (valid range 0..${operands[1] - 1})`);
+          this.push(0);
+        } else {
+          const gv2 = this.globals.get(operands[0] + gi);
+          this.push(gv2 === undefined ? 0 : gv2);
+        }
         this.ip++;
         break;
       }
@@ -364,7 +401,11 @@ export class VM {
       case OpCodes.STORE_GLOBAL_IDX: {
         const gval = this.pop();
         const gi2 = this.pop();
-        this.globals.set(operands[0] + gi2, gval);
+        if (gi2 < 0 || gi2 >= operands[1] || !Number.isInteger(gi2)) {
+          console.error(`Array index out of bounds: [${gi2}] (valid range 0..${operands[1] - 1})`);
+        } else {
+          this.globals.set(operands[0] + gi2, gval);
+        }
         this.ip++;
         break;
       }

@@ -1178,7 +1178,34 @@ export class Compiler {
       this.emit(OpCodes.ADD);
     }
 
-    return { handled: true, isStatic: false, base: st.base };
+    return { handled: true, isStatic: false, base: st.base, totalSize: st.count * st.instanceSize };
+  }
+
+  // If `indexExpr` is a compile-time constant (a bare number literal or a
+  // unary-minus-wrapped one — see getConstantNumericValue), reject it
+  // immediately as a compile error when it falls outside [0, size). This
+  // catches the single most common mistake — an off-by-one literal index,
+  // or writing size instead of size-1 as a loop bound — at compile time
+  // instead of letting it through to become a runtime bounds violation
+  // (see the STORE_LOCAL_IDX/STORE_GLOBAL_IDX bounds check in vm.js for
+  // the runtime half of this: a *variable* index out of range, which
+  // can't be caught here since its value isn't known until the VM runs).
+  // Without either check, LOAD/STORE_*_IDX computed `base + index`
+  // directly with no validation at all — an out-of-bounds index silently
+  // read or wrote whatever unrelated global/local happened to sit at
+  // that computed offset (confirmed: "GLOBAL a[3], b[3]; a[3] = 999;"
+  // silently corrupted b[0], since arrays are allocated in consecutive
+  // slots — and a negative index corrupts backwards past the array's
+  // own start the same way).
+  checkConstantArrayIndex(arrayName, indexExpr, size) {
+    const constIndex = getConstantNumericValue(indexExpr);
+    if (constIndex !== null && (constIndex < 0 || constIndex >= size || !Number.isInteger(constIndex))) {
+      throw new Error(
+        `Array index out of bounds: "${arrayName}[${constIndex}]" — ` +
+        `"${arrayName}" was declared with size ${size}, valid indices are 0..${size - 1}.` +
+        `${this.locSuffix(indexExpr)}`
+      );
+    }
   }
 
   compilePathGet(expr) {
@@ -1188,14 +1215,16 @@ export class Compiler {
     if (path.segments.length === 1 && path.segments[0].kind === 'index') {
       const localEntry = this.localMap.get(path.root);
       if (localEntry && typeof localEntry === 'object' && localEntry.isArray) {
+        this.checkConstantArrayIndex(path.root, path.segments[0].value, localEntry.size);
         this.compileExpression(path.segments[0].value);
-        this.emit(OpCodes.LOAD_LOCAL_IDX, localEntry.base);
+        this.emit(OpCodes.LOAD_LOCAL_IDX, localEntry.base, localEntry.size);
         return;
       }
       const globalEntry = this.globalMap.get(path.root);
       if (globalEntry && typeof globalEntry === 'object' && globalEntry.isArray) {
+        this.checkConstantArrayIndex(path.root, path.segments[0].value, globalEntry.size);
         this.compileExpression(path.segments[0].value);
-        this.emit(OpCodes.LOAD_GLOBAL_IDX, globalEntry.base);
+        this.emit(OpCodes.LOAD_GLOBAL_IDX, globalEntry.base, globalEntry.size);
         return;
       }
     }
@@ -1206,7 +1235,21 @@ export class Compiler {
       if (sr.isStatic) {
         this.emit(OpCodes.LOAD_GLOBAL, sr.slot);
       } else {
-        this.emit(OpCodes.LOAD_GLOBAL_IDX, sr.base);
+        // Bounds-checks the combined offset (every dynamic index term —
+        // the struct array index itself, plus any array-field index
+        // like anim[0].frames[j] — summed and multiplied together) against
+        // the struct's total reserved footprint (count * instanceSize).
+        // Without this, "enemyA[2].x" on a declared-2-instance struct
+        // array computed an offset that silently landed inside whatever
+        // was allocated right after enemyA — confirmed: it read/wrote a
+        // second, unrelated STRUCT declared immediately after it. This
+        // catches "the combined index runs past the end of this struct's
+        // own block" — the practical case that actually occurs from a
+        // single wrong index — though a pathological combination of a
+        // negative index on one term offsetting a too-large index on
+        // another could in principle still land in-range; the same
+        // caveat already applies to the simpler flat-array bounds check.
+        this.emit(OpCodes.LOAD_GLOBAL_IDX, sr.base, sr.totalSize);
       }
       return;
     }
@@ -1231,16 +1274,18 @@ export class Compiler {
     if (path.segments.length === 1 && path.segments[0].kind === 'index') {
       const localEntry = this.localMap.get(path.root);
       if (localEntry && typeof localEntry === 'object' && localEntry.isArray) {
+        this.checkConstantArrayIndex(path.root, path.segments[0].value, localEntry.size);
         this.compileExpression(path.segments[0].value);
         this.compileExpression(valueExpr);
-        this.emit(OpCodes.STORE_LOCAL_IDX, localEntry.base);
+        this.emit(OpCodes.STORE_LOCAL_IDX, localEntry.base, localEntry.size);
         return;
       }
       const globalEntry = this.globalMap.get(path.root);
       if (globalEntry && typeof globalEntry === 'object' && globalEntry.isArray) {
+        this.checkConstantArrayIndex(path.root, path.segments[0].value, globalEntry.size);
         this.compileExpression(path.segments[0].value);
         this.compileExpression(valueExpr);
-        this.emit(OpCodes.STORE_GLOBAL_IDX, globalEntry.base);
+        this.emit(OpCodes.STORE_GLOBAL_IDX, globalEntry.base, globalEntry.size);
         return;
       }
     }
@@ -1253,7 +1298,7 @@ export class Compiler {
         this.emit(OpCodes.STORE_GLOBAL, sr.slot);
       } else {
         this.compileExpression(valueExpr);
-        this.emit(OpCodes.STORE_GLOBAL_IDX, sr.base);
+        this.emit(OpCodes.STORE_GLOBAL_IDX, sr.base, sr.totalSize);
       }
       return;
     }
