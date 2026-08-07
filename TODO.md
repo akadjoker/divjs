@@ -151,6 +151,139 @@ used to make `score` read back as `100` instead of `0`). Fixed with a
 one-line change (`addConstant(0)` instead of the bare literal `0`); the
 only other `LOAD_CONST` site in the whole compiler with this pattern.
 
+### Arrays and structs
+Confirmed: neither exists at all. `grep`ing `compiler/ast.js` and
+`compiler/compiler.js` for anything array- or struct-shaped turns up
+nothing — the only bracket-index syntax that exists (`scroll[0]`,
+`region[id]`) isn't a general array, it's `IndexAccess` routed through
+`__get_path`/`__set_path` into a fixed, special-cased `state` object
+(see the "Rendering / engine features" collider entry below for more on
+this path mechanism) — it works *only* for the handful of root names the
+runtime already knows about (`scroll`, `region`), not for a `VAR`/
+`GLOBAL` an author declares themselves. There's no way today to write
+`VAR enemies[10];` or loop over a collection of values without one
+`VAR`/`GLOBAL`/`PRIVATE` per slot.
+
+This is a substantial language feature, not a small parser tweak — worth
+scoping the two separately since they're different in kind:
+
+- **Arrays** need: a new value type at the VM level (today every local/
+  global slot holds a single JS primitive — number, string, or the
+  implicit `0`; nothing holds a reference to a growable/indexable
+  collection), array-literal syntax in the parser, index-read and
+  index-write opcodes (or reuse `LOAD_LOCAL`/`STORE_LOCAL` with a
+  runtime-computed offset instead of a compile-time-fixed slot index,
+  which is a bigger change to how locals addressing works throughout the
+  compiler — today every `LOAD_LOCAL`/`STORE_LOCAL` operand is a literal
+  slot number baked in at compile time, never computed at runtime).
+- **Structs** (named field groups, e.g. `STRUCT point { x; y; }` then
+  `VAR p = point(1, 2); print(p.x);`) need a way to declare a shape (field
+  names + order), and — since `.` access already exists syntactically via
+  `MemberAccess` — could piggyback on the *general* cross-process-field
+  mechanism described below (once that exists) rather than needing an
+  entirely separate implementation: a struct instance and a "read another
+  process's fields by reference" mechanism are conceptually similar
+  problems (a handle plus named field lookup), so it may be worth
+  designing them together rather than as two unrelated features that
+  happen to reuse the same `.` syntax.
+
+Given the size of this, it's worth deciding early whether both are
+actually needed for this project's goals, or whether one (arrays are
+generally more load-bearing for real game logic — inventories, wave
+lists, tile data — than structs, which are more of a code-organization
+nicety) is enough to start with.
+
+### Canonical `red`/`green`/`blue`/`alpha`/`tag` process fields
+The 8 existing canonical fields (`x`, `y`, `width`, `height`, `ctype`,
+`id`, `region`, `angle` — confirmed in `compiler/compiler.js`'s
+`compileProcess()`, fixed slots 0-7) cover position/size/collision-type/
+identity/angle, but nothing for color or free-form gameplay tagging:
+
+- **`red`/`green`/`blue`/`alpha`** (or a single packed `color` field —
+  worth deciding which before implementing, since they're genuininely
+  different APIs for a DIV author: four separate numeric fields read/
+  written independently, versus one field holding a packed RGBA value
+  that needs a native to unpack/pack) would let a process tint or fade
+  itself without a native call for every color change — right now the
+  only way to affect a process's draw color is `set_color()` immediately
+  before a draw call inside that process's own loop, which is fine for a
+  single flat color but has no notion of *this process's own* persistent
+  tint/opacity the renderer could pick up automatically.
+- **`tag`** — a free-form number (or small string) a game author sets
+  and reads purely for their own gameplay logic (`IF (other.tag == 5)
+  ...`), distinct from `TYPE`/`process.type`, which is already spoken
+  for (the hash of the process's *declared name*, used by `collision()`
+  and `signal()` — confirmed in `vm/process.js`; not available for
+  reassignment or general-purpose categorization the way a Unity-style
+  "tag" would be).
+
+Implementation shape: extends the exact same fixed-slot pattern already
+used for `ctype`/`region`/`angle` — more entries in the slot table in
+`compiler/compiler.js`, `vm/vm.js`'s `SPAWN_PROCESS`, and
+`vm/process.js`'s `Process` constructor/`sync()`. Mechanically
+straightforward; the real decision is the color representation (4 fields
+vs. 1 packed value) and whether the renderer should actually *apply*
+`red`/`green`/`blue`/`alpha` automatically during `drawProcessAt()`
+(making them meaningful, not just storage) or whether that's left as a
+separate, later integration once the fields exist.
+
+### Cross-process field access: `father.x`, `son.x`
+Confirmed this doesn't work today, and confirmed exactly why. `.` access
+(`MemberAccess`) always compiles through `compilePathGet`/
+`compilePathSet` into `__get_path`/`__set_path`, which look up the root
+name in the runtime's `state` object (`this.state[String(rootName)]` in
+`vm/runtime.js`) — a fixed object used for `scroll`/`region` configuration,
+*not* a general process-reference mechanism. `father.x` would compile to
+`__get_path('father', 'x')`, which looks for `this.state.father` — always
+`undefined`, since nothing ever puts a process there. This is a
+completely different problem from the scroll/region path system, even
+though it reuses the same `.` syntax at the parser level.
+
+What *already exists* and is worth building this on top of: every
+process already carries `parentId` (set from `this.currentProcess.id` at
+spawn time — `vm/vm.js`'s `SPAWN_PROCESS`), and `ProcessManager` already
+has `getChildrenOf(parentId)` (used today by the signal-tree machinery —
+`S_KILL_TREE` and friends). So the *data* for "who's my parent" and "who
+are my children" is already there; what's missing is exposing it through
+`.` syntax as live field access rather than only through signals.
+
+Real design questions worth settling before implementing, since they
+shape the whole feature:
+
+- **What does `father` even resolve to syntactically?** A literal
+  keyword (`father`/`son` as new reserved words, matching classic DIV/
+  Fenix convention) meaning "my own `parentId`, looked up right now,
+  every time it's referenced" — versus a general mechanism where *any*
+  identifier holding a process id (returned from `spawn()`, found via
+  `collision()`, etc.) can be dereferenced with `.` — e.g.
+  `enemy_id.hp = enemy_id.hp - 10`. The second is strictly more general
+  and probably subsumes the first (`father` could just be sugar for "the
+  process at `parentId`"), but is a bigger compiler change: today
+  `compileIdentifier` always resolves a name to a local/global *value*
+  slot at compile time, never to "read this other process's locals at
+  runtime via an id computed by another expression" — that needs new
+  codegen, not just a new keyword.
+- **What can be accessed this way?** Just the 8 canonical fields (`x`/
+  `y`/`width`/`height`/etc, plus whatever comes out of the
+  red/green/blue/alpha/tag item above if that lands first) is the
+  straightforward case, since those always live in fixed, known slots
+  regardless of which process type you're pointing at. Reading another
+  process's *named* `PRIVATE`s (`father.speed` where `speed` is a
+  process-specific local, not a canonical field) is harder: two
+  different process types can use the same local name for different
+  purposes at different slot indices, so resolving `father.speed`
+  correctly needs to know at compile time (or look up at runtime) which
+  process *type* `father` actually is, not just trust the name — a real
+  design problem, not a mechanical extension of the canonical-fields
+  case.
+- **Read/write both, or read-only?** `son.hp = 50;` (a parent directly
+  modifying a child's state) is a natural and common pattern in DIV-style
+  hierarchies (a spawner process configuring what it just spawned) and
+  should probably work symmetrically with reads, using the same
+  `compilePathSet` pairing the existing `scroll[i].x = v` syntax already
+  has — no reason for this to be read-only if the scroll/region path
+  system it's modeled on isn't.
+
 ---
 
 ## Rendering / engine features
