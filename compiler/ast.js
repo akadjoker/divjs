@@ -72,7 +72,7 @@ export class Switch {
   constructor(subject, cases, defaultBody) {
     this.type = 'switch';
     this.subject = subject;
-    this.cases = cases; // Array<{ value: Expr, body: Block }>
+    this.cases = cases; // Array<{ values: Expr[], body: Block }> — a CASE can list several comma-separated values sharing one body
     this.defaultBody = defaultBody; // Block | null
   }
 }

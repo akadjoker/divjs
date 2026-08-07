@@ -379,7 +379,7 @@ export class Parser {
   //   SWITCH (expr)
   //     CASE value
   //       statements...
-  //     CASE value
+  //     CASE value1, value2, value3
   //       statements...
   //     DEFAULT
   //       statements...
@@ -387,8 +387,10 @@ export class Parser {
   // No colons (consistent with the rest of the language, which has none
   // anywhere) and no fallthrough between cases: each CASE's statements
   // run and control goes straight to END, so BREAK is never required to
-  // separate cases. At least one CASE is required; DEFAULT is optional
-  // and — if present — must be the last arm.
+  // separate cases. A CASE can list several comma-separated values
+  // sharing one body (matches if the subject equals *any* of them). At
+  // least one CASE is required; DEFAULT is optional and — if present —
+  // must be the last arm.
   parseSwitch() {
     this.expect(TokenType.LPAREN, 'Expected ( after SWITCH');
     const subject = this.parseExpression();
@@ -396,9 +398,12 @@ export class Parser {
 
     const cases = [];
     while (this.match(TokenType.CASE)) {
-      const value = this.parseExpression();
+      const values = [this.parseExpression()];
+      while (this.match(TokenType.COMMA)) {
+        values.push(this.parseExpression());
+      }
       const body = new ast.Block(this.parseBlockStatements());
-      cases.push({ value, body });
+      cases.push({ values, body });
     }
 
     if (cases.length === 0) {

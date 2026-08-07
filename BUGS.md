@@ -138,15 +138,19 @@ anywhere else.
 
 ---
 
-## 4. `SWITCH`/`CASE` only supports one value per case
+## 4. ~~`SWITCH`/`CASE` only supports one value per case~~ — FIXED in (this commit)
 
-**Severity: low — feature gap, not a bug in what exists.**
+**Severity: low — feature gap, not a bug in what exists. Fixed.**
 
-`CASE 1, 2, 3` (multiple values sharing one body) isn't supported — each
-`CASE` takes exactly one expression. Common in other switch-like
-constructs; not implemented here. `parseSwitch()`/`compileSwitch()` would
-need the case-value list to become an array compiled as a chain of `EQ`/
-`OR` checks against the subject instead of a single `EQ`.
+`CASE 1, 2, 3` (multiple values sharing one body) now works — matches
+if the subject equals any of them, short-circuiting on the first match
+(later values in the same list are never evaluated once an earlier one
+hits, verified with a side-effecting `mark()` call). `parseSwitch()`
+parses comma-separated values into a `values` array per case;
+`compileSwitch()` compiles all but the last as `EQ` + `JUMP_IF_TRUE`
+straight into the body, and the last as the existing single-value
+`EQ` + `JUMP_IF_FALSE`-to-next-case — so a CASE with exactly one value
+(the common case) compiles to exactly what it always did.
 
 ---
 

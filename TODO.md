@@ -37,11 +37,10 @@ pattern. Mainly benefits `compiler/disasm.js` output and any future
 debugger — variable names instead of bare slot numbers everywhere, not
 just inside process bodies.
 
-### `SWITCH` with multiple values per `CASE`
-See `BUGS.md` #4. `CASE 1, 2, 3` sharing one body. Needs
-`parseSwitch()`'s case-value to become a list, and `compileSwitch()` to
-compile each case as a chain of `EQ`/`OR` against the subject instead of
-one `EQ`. Not hard, just not done.
+### ~~`SWITCH` with multiple values per `CASE`~~ — DONE
+See `BUGS.md` #4. `CASE 1, 2, 3` now works, with short-circuit evaluation
+verified. One regression test with four sub-cases (match at each list
+position, fall-through, short-circuit) added.
 
 ### Systematically test scroll/region/path natives and signal trees
 See `BUGS.md` #7. Same treatment the rest of the language got this

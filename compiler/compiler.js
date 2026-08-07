@@ -482,11 +482,33 @@ export class Compiler {
         this.instructions[nextCaseJump].operands[0] = this.instructions.length;
       }
 
+      // A CASE with several comma-separated values ("CASE 1, 2, 3") runs
+      // its body if the subject matches *any* of them. Test every value
+      // but the last with JUMP_IF_TRUE straight into the body — no need
+      // to check the rest once one has already matched — and use the
+      // existing single-value JUMP_IF_FALSE-to-next-case test for the
+      // last one, so a CASE with exactly one value (the common case)
+      // compiles to exactly what it always did: the loop below simply
+      // doesn't run for it.
+      const matchJumps = [];
+      for (let i = 0; i < switchCase.values.length - 1; i++) {
+        this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
+        this.compileExpression(switchCase.values[i]);
+        this.emit(OpCodes.EQ);
+        this.emit(OpCodes.JUMP_IF_TRUE, 0); // Placeholder, patched to this case's body
+        matchJumps.push(this.instructions.length - 1);
+      }
+
       this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
-      this.compileExpression(switchCase.value);
+      this.compileExpression(switchCase.values[switchCase.values.length - 1]);
       this.emit(OpCodes.EQ);
       this.emit(OpCodes.JUMP_IF_FALSE, 0); // Placeholder, patched to next case/DEFAULT/end
       nextCaseJump = this.instructions.length - 1;
+
+      const bodyStart = this.instructions.length;
+      for (const jumpIdx of matchJumps) {
+        this.instructions[jumpIdx].operands[0] = bodyStart;
+      }
 
       this.compileBlock(switchCase.body);
 

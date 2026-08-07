@@ -1163,6 +1163,72 @@ end`;
     `BREAK dentro de um CASE devia quebrar o FOR envolvente (nao so o switch), obtido ${JSON.stringify(breakSeen)}`);
 }
 
+async function testSwitchCaseWithMultipleValues() {
+  // A CASE can list several comma-separated values sharing one body
+  // ("CASE 1, 2, 3"), matching if the subject equals *any* of them.
+  // Verify a match at each position in the list (first/middle/last),
+  // falling through to the next CASE when none match, and that testing
+  // stops as soon as one value matches — a later value in the same list
+  // must not be evaluated at all once an earlier one already hit.
+  const positions = [
+    [1, 100], // matches the first value in the list
+    [2, 100], // matches a middle value
+    [3, 100], // matches the last value
+    [4, 400]  // matches nothing in the first CASE, falls through
+  ];
+
+  for (const [subjectValue, expected] of positions) {
+    const source = `program switch_multi_value;
+
+begin
+  var x = ${subjectValue};
+  switch (x)
+    case 1, 2, 3
+      print(100);
+    case 4
+      print(400);
+  end
+  frame;
+end`;
+
+    const bytecode = compileSource(source);
+    const vm = new VM();
+    vm.load(bytecode);
+    const seen = [];
+    vm.registerNative('print', (v) => { seen.push(v); return 0; });
+    vm.tick();
+    assert(JSON.stringify(seen) === JSON.stringify([expected]),
+      `x=${subjectValue}: esperava imprimir ${expected}, obtido ${JSON.stringify(seen)}`);
+  }
+
+  // Short-circuit: once an earlier value in the list matches, later
+  // values in the *same* CASE must never be evaluated.
+  const shortCircuitSource = `program switch_multi_value_short_circuit;
+
+function mark(tag);
+begin
+  print(tag);
+  return tag;
+end
+
+begin
+  switch (2)
+    case mark(1), mark(2), mark(3)
+      print(100);
+  end
+  frame;
+end`;
+
+  const shortCircuitBytecode = compileSource(shortCircuitSource);
+  const shortCircuitVm = new VM();
+  shortCircuitVm.load(shortCircuitBytecode);
+  const shortCircuitSeen = [];
+  shortCircuitVm.registerNative('print', (v) => { shortCircuitSeen.push(v); return 0; });
+  shortCircuitVm.tick();
+  assert(JSON.stringify(shortCircuitSeen) === JSON.stringify([1, 2, 100]),
+    `mark(3) nao devia ser chamado (o subject ja bateu em mark(2)), obtido ${JSON.stringify(shortCircuitSeen)}`);
+}
+
 async function testSwitchWithZeroCasesIsCompileError() {
   // A SWITCH with no CASE at all is almost certainly a mistake (an empty
   // shell that can never do anything, DEFAULT included — DEFAULT without
@@ -1799,6 +1865,7 @@ export async function runAllTests() {
     ['frame(n) throttles execution frequency', testFrameValueThrottlesExecutionFrequency],
     ['switch/case has no fallthrough', testSwitchCaseHasNoFallthrough],
     ['switch subject evaluated once; break/continue pass through to enclosing loop', testSwitchSubjectEvaluatedOnceAndBreakPassesThroughToLoop],
+    ['switch CASE with multiple comma-separated values', testSwitchCaseWithMultipleValues],
     ['switch with zero cases is a compile error', testSwitchWithZeroCasesIsCompileError],
     ['compile errors include a source location', testCompileErrorsIncludeSourceLocation],
     ['constant pool deduplicates repeated literals', testConstantPoolIsDeduplicated],
