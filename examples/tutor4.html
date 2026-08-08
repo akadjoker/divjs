@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS - Tutorial 4</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    .container {
+      text-align: center;
+    }
+
+    h1 {
+      color: #fff;
+      margin-bottom: 20px;
+      font-size: 2em;
+    }
+
+    canvas {
+      border: 4px solid #4a9eff;
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(74, 158, 255, 0.3);
+      /* Native DIV resolution is 320x200; scale up for a modern display
+         while keeping the script's coordinates 1:1 with the original. */
+      width: 960px;
+      height: 600px;
+      image-rendering: pixelated;
+    }
+
+    .info {
+      color: #aaa;
+      margin-top: 15px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>🎮 DivJS Tutorial 4</h1>
+    <canvas id="gameCanvas" width="320" height="200"></canvas>
+    <div id="log">booting...</div>
+  </div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const source = `
+COMPILER_OPTIONS _extended_conditions;
+
+PROGRAM Tutorial_4;
+
+GLOBAL
+    worm_length=8;       // Worms tail length
+    apples=0;            // Number of apples on screen
+    score=0,topscore=0;  // Variables for topscore and score
+
+BEGIN
+
+    load_fpg('../assets/div-support/tutor4.fpg');    // Loads graphics' file
+    put_screen(0,1);                    // Puts background screen
+    // Puts score and topscore texts
+    set_color('#ff8');
+    write_int(0,64,8,0,&score);
+    write_int(0,256,8,0,&topscore);
+    set_fps(30);
+
+    // Creates worm head which controls the rest of the body
+    worm_head(8,96,8,0);
+
+    LOOP                                // Enters an endless loop
+        FRAME;                          // Shows everything on screen
+        // An apple is printed randomly
+        // or not at all, but always while there are less than 3 apples
+        IF (rand(0,32)==0 and apples<3)
+            // Puts an apple and increments apples' counter
+            apple(rand(1,38)*8,rand(3,23)*8);
+            apples++;
+        END
+    END
+END
+
+//--------------------------------------------------------------------
+// Process worm_head
+// Handles worm's head
+// Entries: x,y   = Graphic's coordinates
+//          xi,yi = Horizontal and vertical increments
+//--------------------------------------------------------------------
+
+PROCESS worm_head(x,y,ix,iy)
+
+PRIVATE
+    apple_id;  // Identifier to the apple process
+
+BEGIN
+    graph=2;                // Puts the graphic
+    // Circle collision instead of the default box. The worm moves on an
+    // 8-pixel grid with 8x8 sprites, so a full-size box sits flush
+    // against the neighbouring segment's box; a slightly smaller circle
+    // leaves clearance so only a real overlap counts as a crash.
+    set_collision_shape(1);
+    set_collision_radius(1);
+
+    // And a worm body is created, that creates the other ones
+    worm_segment(128,priority+1);
+
+    
+    REPEAT
+        FRAME(200);              // Visualizes everything
+
+        // Checks cursor keys, and changes increments
+        IF (key(_right))
+            ix=8; iy=0;
+        END
+        IF (key(_left))
+            ix=-8; iy=0;
+        END
+        IF (key(_down))
+            ix=0; iy=8;
+        END
+        IF (key(_up))
+            ix=0; iy=-8;
+        END
+
+        // Checks if worm has collided with apple
+        IF (apple_id=collision(TYPE apple))
+            // Eliminates that apple
+            signal(apple_id,s_kill);
+            apples--;         // Reduces apples' counter
+            worm_length+=4;   // Increments worm's tail
+            score+=10;        // Adds 10 points to score
+        END
+        // Moves worm on the desired direction
+        x=x+ix;
+        y=y+iy;
+    // Repeats until it crashes with the wall (get_pixel) or
+    // with it's own body
+    UNTIL (get_pixel(x,y)!=0 or collision(type worm_segment));
+    //UNTIL ( collision(type worm_segment));
+    //UNTIL (get_pixel(x,y)!=0 );
+    
+
+    // Fades screen on and off, for the next step
+    fade_off();
+    fade_on();
+
+    // Checks if topscore has been reached, and refreshes it
+    IF (score>topscore)
+        topscore=score;
+    END
+
+    // Reinitiates score and tail length variables
+    score=0;
+    worm_length=8;
+    // Eliminates all worm_segment type process
+    signal(son,s_kill_tree);
+    // Creates a new worm, creating it's head
+    worm_head(8,96,8,0);
+END
+
+//--------------------------------------------------------------------
+// Process worm_segment
+// Handles worm's body segments
+// Entries: n        = Number of body (total=128)
+//          priority = Priority of process in execution
+//--------------------------------------------------------------------
+
+PROCESS worm_segment(n,priority)
+
+BEGIN
+    // Match the head's collision shape (see worm_head).
+    set_collision_shape(1);
+    set_collision_radius(1);
+
+    x=father.x;
+    y=father.y;
+    // If it is not the last body, creates another one with higher priority
+    // and a minor number of body
+    IF (n>0) worm_segment(n-1,priority+1); END
+
+    LOOP        // Enters an endless loop
+
+        // Checks priority which indicates tail's order
+        // if it is within tail's length
+        IF (priority<worm_length)
+            // If it is within length, prints it
+            graph=2;
+        ELSE
+            // If not, doesn't put a graphic
+            graph=0;
+        END
+        
+        // Takes father's variables, the body that is ahead,
+        // without refreshing, that means, where it was
+        x=father.x;
+        y=father.y;
+        FRAME;
+    END
+END
+
+//--------------------------------------------------------------------
+// Process apple
+// Handles apples' graphics
+// Entraies: x,y = Graphics' coordinates
+//--------------------------------------------------------------------
+
+PROCESS apple(x,y)
+
+BEGIN
+    graph=3;    // Chooses the graphic, and enters an endless loop
+    LOOP FRAME; END
+END
+
+`;
+
+    const canvas = document.getElementById('gameCanvas');
+    const log = document.getElementById('log');
+
+    let statusLine = '';
+    function logLine(line) {
+      console.log(line);
+      log.textContent = statusLine ? `${line}  ||  ${statusLine}` : line;
+    }
+
+    try {
+      runDivDemo({
+        canvas,
+        source: source,
+        clearColor: '#000',
+        // Set to true to draw collision shapes, pivots and control
+        // points over every process (with a colour legend bottom-left).
+        debugDrawProcessBounds: false,
+        onLog: (line) => { logLine(line); },
+        onFrame: ({ runtime }) => {
+          const fps = Math.round(runtime.fpsValue || 0);
+          const procs = runtime.vm?.processManager?.getAll?.() || [];
+          const active = procs.filter(p => p.active && !p.suspended && !p.dead);
+
+        },
+        onError: (err) => {
+          logLine('error: ' + (err?.message || String(err)));
+          console.error(err);
+        }
+      });
+    } catch (err) {
+      logLine('error: ' + (err?.message || String(err)));
+      console.error(err);
+    }
+  </script>
+</body>
+
+</html>

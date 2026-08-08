@@ -3,6 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:pipeline": "node tests/test.mjs"
+    "test:pipeline": "node tests/test.mjs",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0"
   }
 }

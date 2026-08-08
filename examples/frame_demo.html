@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS - Frame Timing</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    .container {
+      text-align: center;
+    }
+
+    h1 {
+      color: #fff;
+      margin-bottom: 20px;
+      font-size: 2em;
+    }
+
+    canvas {
+      border: 4px solid #4a9eff;
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(74, 158, 255, 0.3);
+    }
+
+    .info {
+      color: #aaa;
+      margin-top: 15px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>🎮 DivJS Frame Timing</h1>
+    <canvas id="gameCanvas" width="480" height="240"></canvas>
+    <div id="log">booting...</div>
+  </div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const source = `
+PROGRAM ejemplo_frame;
+
+GLOBAL
+    g_flecha;
+
+BEGIN
+    set_title("Ejemplo de Frame");
+    set_mode(480, 240);
+    set_fps(60);
+
+    g_flecha = load_graphic('../assets/003.png');
+
+    // Same movement in every process; only FRAME(n) differs.
+    // FRAME(100) is one whole frame, so higher n means proportionally
+    // slower: 200 runs every other frame, 400 every fourth.
+    flecha(100, 40);
+    flecha(200, 90);
+    flecha(400, 140);
+    flecha(800, 190);
+
+    LOOP
+        FRAME;
+    END
+END
+
+PROCESS flecha(delay, y);
+BEGIN
+    graph = g_flecha;
+    size  = 50;
+
+    write(0, 240, y, 4, "frame(" + delay + ")");
+
+    LOOP
+        x += 5; IF (x > 500) x = -20; END
+
+        FRAME(delay);
+    END
+END
+
+`;
+
+    const canvas = document.getElementById('gameCanvas');
+    const log = document.getElementById('log');
+
+    let statusLine = '';
+    function logLine(line) {
+      console.log(line);
+      log.textContent = statusLine ? `${line}  ||  ${statusLine}` : line;
+    }
+
+    try {
+      runDivDemo({
+        canvas,
+        source: source,
+        clearColor: '#000',
+        // Set to true to draw collision shapes, pivots and control
+        // points over every process (with a colour legend bottom-left).
+        debugDrawProcessBounds: false,
+        onLog: (line) => { logLine(line); },
+        onFrame: ({ runtime }) => {
+          const fps = Math.round(runtime.fpsValue || 0);
+          const procs = runtime.vm?.processManager?.getAll?.() || [];
+          const active = procs.filter(p => p.active && !p.suspended && !p.dead);
+
+        },
+        onError: (err) => {
+          logLine('error: ' + (err?.message || String(err)));
+          console.error(err);
+        }
+      });
+    } catch (err) {
+      logLine('error: ' + (err?.message || String(err)));
+      console.error(err);
+    }
+  </script>
+</body>
+
+</html>

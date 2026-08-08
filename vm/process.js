@@ -1,6 +1,5 @@
 /**
  * DivLang Process Manager
- * Cada processo tem seu próprio contexto (ip, stack, locals)
  */
 
 import { hashCode } from '../utils/hash.js';
@@ -11,15 +10,39 @@ function toRadians(divAngle) {
   return (Number(divAngle) || 0) * DIV_ANGLE_TO_RAD;
 }
 
+// Resolves a process's current graphic pivot (control point 0) in
+// graphic-local pixels. Installed by the runtime, which is the only side
+// that can map a process to its loaded Graph - see setPivotResolver.
+let pivotResolver = null;
+
+export function setPivotResolver(fn) {
+  pivotResolver = typeof fn === 'function' ? fn : null;
+}
+
+// process.x/y is where the graphic's PIVOT (control point 0) sits in
+// world space - the same convention real DIV uses, and the same point
+// drawGraphSprite() draws from. The pivot defaults to the graphic's
+// geometric center, but an FPG can put it anywhere: tutor4's 8x8 sprites
+// declare cpoint 0 at (0,0), i.e. their top-left corner. So the box's
+// center is x/y shifted by however far the pivot is from the middle of
+// the graphic - without that, the collision box sat half a sprite away
+// from the sprite actually drawn on screen.
 function getCenter(process, x = process.x, y = process.y) {
   const w = Number(process.width) || 0;
   const h = Number(process.height) || 0;
-  return {
-    cx: (Number(x) || 0) + w * 0.5,
-    cy: (Number(y) || 0) + h * 0.5,
-    w,
-    h
-  };
+  // x/y are in the process's own RESOLUTION units; divide to get real
+  // screen-space coordinates (see Process.getResolution).
+  const res = typeof process.getResolution === 'function' ? process.getResolution() : 1;
+  let cx = (Number(x) || 0) / res;
+  let cy = (Number(y) || 0) / res;
+
+  const pivot = pivotResolver ? pivotResolver(process) : null;
+  if (pivot) {
+    cx += w * 0.5 - (Number(pivot.x) || 0);
+    cy += h * 0.5 - (Number(pivot.y) || 0);
+  }
+
+  return { cx, cy, w, h };
 }
 
 function getCorners(process, x = process.x, y = process.y) {
@@ -58,8 +81,15 @@ function getAABBFromCorners(corners) {
   return { minX, maxX, minY, maxY };
 }
 
+// Touching edges are NOT a collision  the boxes must genuinely overlap.
+// This matters for the very common grid-aligned case: 8x8 sprites placed
+// on an 8-pixel grid put a process's box exactly against its neighbour's
+// (e.g. spans 4..12 and 12..20). With a non-strict test those adjacent
+// cells always register as colliding, which made tutor4's worm collide
+// with the segment directly behind it on its very first move and die on
+// the spot, every time.
 function aabbOverlap(a, b) {
-  return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+  return !(a.maxX <= b.minX || a.minX >= b.maxX || a.maxY <= b.minY || a.minY >= b.maxY);
 }
 
 function dot(ax, ay, bx, by) {
@@ -130,7 +160,7 @@ function circleCircle(a, b, ax = a.x, ay = a.y, bx = b.x, by = b.y) {
   const dy = ac.cy - bc.cy;
   const dist = Math.hypot(dx, dy);
   const sum = ar + br;
-  if (dist > sum) {
+  if (dist >= sum) {
     return { hit: false, mtvX: 0, mtvY: 0 };
   }
   const n = dist <= 1e-9 ? { x: 1, y: 0 } : { x: dx / dist, y: dy / dist };
@@ -169,7 +199,7 @@ function boxCircle(box, circle, boxX = box.x, boxY = box.y, cx = circle.x, cy = 
   const dx = lx - qx;
   const dy = ly - qy;
   const d2 = dx * dx + dy * dy;
-  if (d2 > r * r) {
+  if (d2 >= r * r) {
     return { hit: false, mtvX: 0, mtvY: 0 };
   }
 
@@ -263,7 +293,7 @@ function getDefaultShapes(process, px = process.x, py = process.y, preferCircle 
   }];
 }
 
-function getProcessShapes(process, px = process.x, py = process.y, preferCircle = false) {
+export function getProcessShapes(process, px = process.x, py = process.y, preferCircle = false) {
   if (Array.isArray(process.cboxes) && process.cboxes.length > 0) {
     return process.cboxes.map((c) => cboxToShape(process, c, px, py));
   }
@@ -275,7 +305,7 @@ function circleCircleShapes(a, b) {
   const dy = a.cy - b.cy;
   const dist = Math.hypot(dx, dy);
   const sum = a.r + b.r;
-  if (dist > sum) return { hit: false, mtvX: 0, mtvY: 0 };
+  if (dist >= sum) return { hit: false, mtvX: 0, mtvY: 0 };
   const n = dist <= 1e-9 ? { x: 1, y: 0 } : { x: dx / dist, y: dy / dist };
   const pen = sum - dist;
   return { hit: true, mtvX: n.x * pen, mtvY: n.y * pen };
@@ -300,7 +330,7 @@ function boxCircleShapes(boxShape, circleShape) {
   const dx = lx - qx;
   const dy = ly - qy;
   const d2 = dx * dx + dy * dy;
-  if (d2 > circleShape.r * circleShape.r) {
+  if (d2 >= circleShape.r * circleShape.r) {
     return { hit: false, mtvX: 0, mtvY: 0 };
   }
   const dist = Math.sqrt(d2);
@@ -342,8 +372,29 @@ function collideShapePair(shapeA, shapeB) {
 }
 
 function collideProcesses(a, b, ax = a.x, ay = a.y, bx = b.x, by = b.y, options = {}) {
-  const shapesA = getProcessShapes(a, ax, ay, !!options.preferCircle);
-  const shapesB = getProcessShapes(b, bx, by, !!options.preferCircle);
+  // Fast path for the overwhelmingly common case in any real scene: two
+  // plain boxes, neither with explicit collision boxes nor a circle
+  // shape. getProcessShapes' default box shape allocates a closure and
+  // 4 corner-point objects per side (getCorners) plus an AABB and a
+  // shape-wrapper object, on every single pairwise test - collidesBoxBox
+  // does the same job (including the angle!=0 SAT fallback) with just 2
+  // AABB objects for the axis-aligned case, which is itself the common
+  // one (most sprites never rotate). See ProcessManager.collision() etc.
+  // for how often this runs: once per (caller, candidate-of-that-type)
+  // pair, every time a script calls collision()/collision_circle()/...
+  const preferCircleFlag = !!options.preferCircle;
+  if (
+    !preferCircleFlag &&
+    a.collisionShape !== 'circle' && b.collisionShape !== 'circle' &&
+    !(Array.isArray(a.cboxes) && a.cboxes.length > 0) &&
+    !(Array.isArray(b.cboxes) && b.cboxes.length > 0)
+  ) {
+    const hit = collidesBoxBox(a, b, ax, ay, bx, by);
+    return { hit: hit.hit, mtvX: hit.mtvX, mtvY: hit.mtvY, cboxCodeA: -1, cboxCodeB: -1 };
+  }
+
+  const shapesA = getProcessShapes(a, ax, ay, preferCircleFlag);
+  const shapesB = getProcessShapes(b, bx, by, preferCircleFlag);
 
   for (const sa of shapesA) {
     for (const sb of shapesB) {
@@ -364,11 +415,13 @@ function collideProcesses(a, b, ax = a.x, ay = a.y, bx = b.x, by = b.y, options 
 
 function processAABB(process, x = process.x, y = process.y) {
   if ((Number(process.angle) || 0) === 0) {
-    const px = Number(x) || 0;
-    const py = Number(y) || 0;
-    const w = Number(process.width) || 0;
-    const h = Number(process.height) || 0;
-    return { minX: px, maxX: px + w, minY: py, maxY: py + h };
+    // (x, y) is the process's center (see getCenter) - same as the box's
+    // own axis-aligned bounds when angle is 0, so halve out from there.
+    // getCenter also applies RESOLUTION, which this path needs too.
+    const { cx, cy } = getCenter(process, x, y);
+    const hw = (Number(process.width) || 0) * 0.5;
+    const hh = (Number(process.height) || 0) * 0.5;
+    return { minX: cx - hw, maxX: cx + hw, minY: cy - hh, maxY: cy + hh };
   }
   return getAABBFromCorners(getCorners(process, x, y));
 }
@@ -425,10 +478,10 @@ export class Process {
     this.angle = params.angle ?? 0;
     // Color tint (0-255, matching the conventional 8-bit RGB range) and
     // opacity (0-100, matching the 0-100 scale scroll[i].alpha already
-    // uses elsewhere in this runtime — kept consistent with that rather
+    // uses elsewhere in this runtime - kept consistent with that rather
     // than introducing a second, incompatible 0-255 alpha convention).
     // Storage only: nothing in the renderer applies these to a draw call
-    // automatically yet, same as every other canonical field — a
+    // automatically yet, same as every other canonical field - a
     // process's own LOOP body is responsible for calling set_color()
     // itself, same as today. red/green/blue default to 255 (full/no
     // tint) so a process that never touches them draws unaffected.
@@ -437,7 +490,7 @@ export class Process {
     this.blue = params.blue ?? 255;
     this.alpha = params.alpha ?? 100;
     // Free-form number a game author sets/reads purely for their own
-    // gameplay logic (IF (other.tag == 5) ...) — distinct from `type`
+    // gameplay logic (IF (other.tag == 5) ...) - distinct from `type`
     // just below, which is the hash of the process's *declared name*
     // and is already spoken for by collision()/signal(), not
     // reassignable or meant for general-purpose categorization.
@@ -445,6 +498,18 @@ export class Process {
     // Draw order: lower priority draws first (behind), higher draws last
     // (in front). Default 0 = creation order (same as before this existed).
     this.priority = params.priority ?? 0;
+    // DIV's Z - draw depth, independent of priority (which orders
+    // execution). Higher Z paints first, so it ends up behind.
+    this.z = params.z ?? 0;
+    // Canonical graphic fields (DIV keeps these as process fields too).
+    this.graph = params.graph ?? 0;
+    this.file = params.file ?? 0;
+    this.size = params.size ?? 100; // 100 = full scale
+    this.flags = params.flags ?? 0;
+    // DIV's RESOLUTION: x/y are divided by this when drawing/colliding,
+    // so a script can work in sub-pixel units (resolution=100 -> two
+    // decimals). 0 means "unset", treated as 1 (no division).
+    this.resolution = params.resolution ?? 0;
     this.parentId = params.parentId ?? 0;
     // Optional explicit radius/scale used by circle collisions.
     this.collisionRadius = Number(params.collisionRadius ?? params.collision_radius ?? 0) || 0;
@@ -461,18 +526,32 @@ export class Process {
     this.finished = false;
     this.dead = false; // Marked for removal
     this.frameValue = 100;
-    // Accumulator for frame(n) throttling — see the scheduler comment in
-    // vm.js's tick() for how this is spent. Starts at 100 so a freshly
-    // spawned process always gets to run on the very first tick it's
-    // scheduled for, before any frame(n) call it makes has had a chance
-    // to take effect.
-    this.frameCredit = 100;
+    // Skipped-frame counter for FRAME(n), mirroring DIV's _Frame
+    // (i.c:917): when it is >= 100 the scheduler skips the process for
+    // this frame and pays 100 off the debt, otherwise the process runs.
+    // FRAME(n) adds n-100, so FRAME(100) never accrues debt (runs every
+    // frame), FRAME(200) accrues 100 each time (runs every other frame),
+    // and FRAME(150) averages one run every 1.5 frames.
+    this.frameDebt = 0;
     // How many consecutive ticks in a row this process has run entirely
     // out of instruction budget without ever reaching FRAME or finishing
-    // — see runProcess()'s budget handling in vm.js for what this is
+    // - see runProcess()'s budget handling in vm.js for what this is
     // used for. Reset to 0 the moment the process successfully yields or
     // finishes normally.
     this.budgetExhaustedStreak = 0;
+    // Set once this process first reaches FRAME. Used by SPAWN_PROCESS
+    // (vm.js) to tell a real process apart from one DIV lets act as a
+    // plain function call: a process that runs to completion without
+    // ever reaching FRAME never registered as a scheduled process, so its
+    // RETURN value is what the spawn expression evaluates to instead of
+    // a process id. (isCollidable() used to also gate on this - removed:
+    // SPAWN_PROCESS already runs a freshly spawned process synchronously
+    // up to its own FRAME before any other same-tick process could query
+    // collision() against it, and the "several processes stacked at the
+    // constructor's default 0,0" case this guarded against is already
+    // covered by isCollidable()'s GRAPH check below, since GRAPH stays 0
+    // until the process explicitly assigns one.)
+    this.hasCompletedFrame = false;
 
     // VM context (coroutine)
     this.ip = 0;           // Instruction pointer
@@ -481,7 +560,8 @@ export class Process {
 
     // Sincronizar com locals (slots fixos: 0=x, 1=y, 2=width, 3=height,
     // 4=ctype, 5=id, 6=region, 7=angle, 8=red, 9=green, 10=blue,
-    // 11=alpha, 12=tag, 13=priority)
+    // 11=alpha, 12=tag, 13=priority, 14=resolution, 15=z,
+    // 16=graph, 17=file, 18=size, 19=flags)
     this.locals[0] = this.x;
     this.locals[1] = this.y;
     this.locals[2] = this.width;
@@ -496,6 +576,12 @@ export class Process {
     this.locals[11] = this.alpha;
     this.locals[12] = this.tag;
     this.locals[13] = this.priority;
+    this.locals[14] = this.resolution;
+    this.locals[15] = this.z;
+    this.locals[16] = this.graph;
+    this.locals[17] = this.file;
+    this.locals[18] = this.size;
+    this.locals[19] = this.flags;
   }
 
   // Get bounds (for collision)
@@ -556,12 +642,27 @@ export class Process {
     this.alpha = this.locals[11] ?? this.alpha;
     this.tag = this.locals[12] ?? this.tag;
     this.priority = this.locals[13] ?? this.priority;
+    this.resolution = this.locals[14] ?? this.resolution;
+    this.z = this.locals[15] ?? this.z;
+    this.graph = this.locals[16] ?? this.graph;
+    this.file = this.locals[17] ?? this.file;
+    this.size = this.locals[18] ?? this.size;
+    this.flags = this.locals[19] ?? this.flags;
+  }
+
+  // Divisor applied to x/y for drawing and collision (DIV's RESOLUTION).
+  // 0/unset/invalid all mean 1 - no scaling - so processes that never
+  // touch the field behave exactly as before.
+  getResolution() {
+    const r = Number(this.resolution) || 0;
+    return r > 0 ? r : 1;
   }
 }
 
 export class ProcessManager {
   constructor() {
     this.processes = [];           // Array de todos os processos
+    this.byId = new Map();         // Map<processId, process> - O(1) get()
     this.byType = new Map();       // Map<type, Set<processId>>
     this.byName = new Map();       // Map<name, Set<processId>>
     this.nextId = 1;               // IDs comecam em 1 (0 = null)
@@ -571,6 +672,43 @@ export class ProcessManager {
     this.lastPenetrationY = 0;
     this.lastColliderCBox = -1;
     this.lastCollidedCBox = -1;
+    // Whether any process has ever had a non-zero PRIORITY. When nothing
+    // uses it - the common case, and what the bunnymark exercises - the
+    // execution order is identical to creation order, so tick() can skip
+    // sorting the whole process list every frame.
+    this.usesPriority = false;
+  }
+
+  notePriorityUse() {
+    this.usesPriority = true;
+  }
+
+  // In DIV a process with no graphic (GRAPH = 0) has nothing to collide
+  // with - collision boxes come from the assigned graphic. Scripts use
+  // that deliberately: tutor4's worm_segment sets graph=0 for every
+  // segment past the current tail length, and those invisible segments
+  // must not be hittable even though they still trail behind the worm.
+  // The graph id lives in a dynamically-allocated local slot that only
+  // the runtime can resolve, so it installs this predicate (see
+  // registerNatives in runtime.js); without it, everything collides as
+  // before.
+  isCollidable(process) {
+    if (!process || !process.active || process.dead || process.finished) {
+      return false;
+    }
+    if (typeof this.graphIdOf !== 'function') {
+      return true;
+    }
+    return this.graphIdOf(process) > 0;
+  }
+
+  // Remembers which two processes last reported a collision, so the
+  // debug overlay can highlight exactly that pair (see
+  // drawProcessDebugOverlay in runtime.js). Cleared each frame by the
+  // renderer, so what's highlighted is always this frame's collision.
+  _recordCollisionPair(colliderId, collidedId) {
+    this.lastCollisionA = colliderId;
+    this.lastCollisionB = collidedId;
   }
 
   _setPenetration(mtv) {
@@ -588,7 +726,12 @@ export class ProcessManager {
     process.locals[6] = process.region;
     process.locals[7] = process.angle;
 
+    if (process.priority) {
+      this.usesPriority = true;
+    }
+
     this.processes.push(process);
+    this.byId.set(process.id, process);
     this._drawDirty = true;
 
     // Index por tipo
@@ -606,10 +749,10 @@ export class ProcessManager {
     return process;
   }
 
-  // Get process by ID
+  // Get process by ID - O(1) via byId, kept in sync in create()/sweep().
   get(id) {
     if (id === 0) return null; // 0 = null
-    return this.processes.find(p => p.id === id);
+    return this.byId.get(id) || null;
   }
 
   // Get all processes
@@ -622,13 +765,16 @@ export class ProcessManager {
   getDrawList() {
     if (this._drawDirty) {
       this._drawList = this.processes.slice();
-      this._drawList.sort((a, b) => a.priority - b.priority);
+      // DIV paints by Z, not by PRIORITY (i.c:1441 picks the greatest
+      // _Z each pass and paints it), so the highest Z is drawn first and
+      // ends up furthest back. PRIORITY is execution order only.
+      this._drawList.sort((a, b) => (b.z || 0) - (a.z || 0));
       this._drawDirty = false;
     }
     return this._drawList;
   }
 
-  // Called by the VM when priority slot (13) is written.
+  // Called by the VM when the z slot (15) is written.
   markPriorityDirty() {
     this._drawDirty = true;
   }
@@ -676,6 +822,7 @@ export class ProcessManager {
       const process = this.processes[i];
       if (process.dead || process.finished) {
         // Remove from indexes
+        this.byId.delete(process.id);
         this.byType.get(process.type)?.delete(process.id);
         this.byName.get(process.name)?.delete(process.id);
 
@@ -699,9 +846,11 @@ export class ProcessManager {
       if (id === currentProcess.id) continue;
       const other = this.get(id);
       if (!other || !other.active) continue;
+      if (!this.isCollidable(other)) continue;
       const hit = collideProcesses(currentProcess, other);
       if (hit.hit) {
         this._setPenetration(hit);
+        this._recordCollisionPair(currentProcess.id, id);
         return id;
       }
     }
@@ -716,9 +865,11 @@ export class ProcessManager {
       if (id === currentProcess.id) continue;
       const other = this.get(id);
       if (!other || !other.active) continue;
+      if (!this.isCollidable(other)) continue;
       const hit = collideProcesses(currentProcess, other, currentProcess.x, currentProcess.y, other.x, other.y, { preferCircle: true });
       if (hit.hit) {
         this._setPenetration(hit);
+        this._recordCollisionPair(currentProcess.id, id);
         return id;
       }
     }
@@ -733,9 +884,11 @@ export class ProcessManager {
       if (id === currentProcess.id) continue;
       const other = this.get(id);
       if (!other || !other.active) continue;
+      if (!this.isCollidable(other)) continue;
       const hit = collideProcesses(currentProcess, other);
       if (hit.hit) {
         this._setPenetration(hit);
+        this._recordCollisionPair(currentProcess.id, id);
         return id;
       }
     }
@@ -749,9 +902,36 @@ export class ProcessManager {
     if (!processIds) return 0;
     for (const id of processIds) {
       const p = this.get(id);
-      if (p && p.active &&
-          px >= p.x && px <= p.x + p.width &&
-          py >= p.y && py <= p.y + p.height) return id;
+      if (!p || !p.active) continue;
+      // p.x/p.y is the process's center (see getCenter in this file).
+      const hw = (Number(p.width) || 0) * 0.5;
+      const hh = (Number(p.height) || 0) * 0.5;
+      if (px >= p.x - hw && px <= p.x + hw &&
+        py >= p.y - hh && py <= p.y + hh) return id;
+    }
+    return 0;
+  }
+
+  // Returns ID of the first process of typeCode whose AABB overlaps the
+  // given rectangle - used by path_find's grid-blocking test (_nodeBlocked
+  // in runtime.js) instead of a single point sample at the cell's center.
+  // A center-only test lets a path clip a wall's corner or squeeze
+  // through whenever the grid's cell size doesn't line up exactly with
+  // the wall's own size/position (the common case - a wall dragged to an
+  // arbitrary pixel position on a coarser pathfinding grid), which reads
+  // as "the bot cuts through walls" even though A* itself is working
+  // correctly off of what the blocked-check told it.
+  rectOverlapsType(minX, maxX, minY, maxY, typeCode) {
+    const processIds = this.byType.get(typeCode);
+    if (!processIds) return 0;
+    for (const id of processIds) {
+      const p = this.get(id);
+      if (!p || !p.active) continue;
+      const aabb = processAABB(p);
+      if (aabb.maxX <= minX || aabb.minX >= maxX || aabb.maxY <= minY || aabb.minY >= maxY) {
+        continue;
+      }
+      return id;
     }
     return 0;
   }
@@ -767,9 +947,11 @@ export class ProcessManager {
       if (id === currentProcess.id) continue;
       const other = this.get(id);
       if (!other || !other.active) continue;
+      if (!this.isCollidable(other)) continue;
       const hit = collideProcesses(currentProcess, other, px, py, other.x, other.y);
       if (hit.hit) {
         this._setPenetration(hit);
+        this._recordCollisionPair(currentProcess.id, id);
         return id;
       }
     }
@@ -873,6 +1055,15 @@ export class ProcessManager {
       if (process.id === currentProcess.id) {
         continue;
       }
+      // MAIN is the script itself - killing it would stop the program,
+      // which is not what let_me_alone() means. The mouse is an
+      // engine-owned process with no compiled body of its own (real DIV's
+      // mouse is a separate struct, never a killable process) - killing
+      // it here would permanently remove the cursor for the rest of the
+      // run, which let_me_alone() was never meant to affect either.
+      if (process.isMain || process.isMouse) {
+        continue;
+      }
       if (!process.dead && !process.finished) {
         process.kill();
         removed += 1;
@@ -899,6 +1090,7 @@ export class ProcessManager {
   // Clear all processes
   clear() {
     this.processes = [];
+    this.byId.clear();
     this.byType.clear();
     this.byName.clear();
     this.nextId = 1;

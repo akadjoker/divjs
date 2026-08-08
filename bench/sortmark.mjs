@@ -3,14 +3,14 @@
 //
 // Measures the cost of sorting processes by a depth/priority field at render
 // time, comparing three strategies at each process count:
-//   none       — baseline, no sort (current behaviour)
-//   naive      — slice().sort() every tick (O(n log n) unconditionally)
-//   dirty-flag — full sort only when the dirty flag is set; we set it on
+//   none       - baseline, no sort (current behaviour)
+//   naive      - slice().sort() every tick (O(n log n) unconditionally)
+//   dirty-flag - full sort only when the dirty flag is set; we set it on
 //                every tick here (worst-case for dirty-flag: something changes
 //                every frame) so this matches naive in sort frequency but
 //                shows the flag-check overhead in isolation
-//   every-Nth  — sort every 10 ticks (simulates static or slowly-changing
-//                depth — a more realistic game scenario)
+//   every-Nth  - sort every 10 ticks (simulates static or slowly-changing
+//                depth - a more realistic game scenario)
 //
 // The sort itself runs at the JS level after vm.tick(), exactly where
 // drawProcessesFallback() would run it. Each variant uses the same spawned
@@ -124,7 +124,7 @@ const counts = args.length > 0 ? args : [500, 1000, 2000, 5000, 10000, 20000];
 const strategies = ['none', 'naive', 'dirty-flag', 'every-10'];
 const COL = 10;
 
-console.log(`sortmark: ${TICKS} ticks/strategy, no rendering — sort cost vs baseline\n`);
+console.log(`sortmark: ${TICKS} ticks/strategy, no rendering - sort cost vs baseline\n`);
 console.log(
   'processes'.padStart(COL) +
   strategies.map(s => s.padStart(13)).join('') +

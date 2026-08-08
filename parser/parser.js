@@ -86,8 +86,30 @@ export class Parser {
     this.pos++;
   }
 
+  // Consume a leading "COMPILER_OPTIONS ...;" directive, if present.
+  // It isn't a keyword in the tokenizer - it arrives as a plain
+  // IDENTIFIER - so match on the name and skip through the terminating
+  // semicolon, whatever options were listed.
+  skipCompilerOptions() {
+    const token = this.current();
+    if (!token || token.type !== TokenType.IDENTIFIER ||
+      String(token.value).toUpperCase() !== 'COMPILER_OPTIONS') {
+      return;
+    }
+    while (!this.is(TokenType.EOF) && !this.is(TokenType.SEMICOLON)) {
+      this.pos++;
+    }
+    this.match(TokenType.SEMICOLON);
+  }
+
   // Parse program
   parse() {
+    // Optional COMPILER_OPTIONS directive before PROGRAM, e.g.
+    // "COMPILER_OPTIONS _extended_conditions;" - a classic-DIV
+    // compile-time switch with no runtime meaning here, so consume the
+    // whole statement and move on rather than rejecting the file.
+    this.skipCompilerOptions();
+
     // Program header: PROGRAM name;
     this.expect(TokenType.PROGRAM, 'Expected PROGRAM keyword');
     const name = this.current().value;
@@ -99,6 +121,8 @@ export class Parser {
     const processes = [];
     const functions = [];
     const mainBlock = [];
+    const mainPrivates = [];
+    const locals = [];
 
     // Parse all top-level declarations
     while (!this.is(TokenType.EOF)) {
@@ -119,6 +143,24 @@ export class Parser {
         process.line = declToken.line;
         process.col = declToken.col;
         processes.push(process);
+      } else if (this.is(TokenType.LOCAL)) {
+        // DIV's LOCAL: variables every process owns a copy of (readable
+        // from outside as `processid.name`). Collected here and given
+        // fixed slots in every process, just after the canonical block.
+        this.pos++;
+        while (!this.is(TokenType.BEGIN) && !this.is(TokenType.EOF) &&
+          !this.is(TokenType.PRIVATE) && !this.is(TokenType.PROCESS) &&
+          !this.is(TokenType.FUNCTION) && !this.is(TokenType.GLOBAL)) {
+          locals.push(...this.parsePrivate());
+        }
+      } else if (this.is(TokenType.PRIVATE)) {
+        // MAIN's own PRIVATE section. In DIV the main script is a
+        // process, so it may declare privates exactly like one - they
+        // become locals of MAIN.
+        this.pos++;
+        while (!this.is(TokenType.BEGIN) && !this.is(TokenType.EOF)) {
+          mainPrivates.push(...this.parsePrivate());
+        }
       } else if (this.is(TokenType.BEGIN)) {
         // Main block
         const block = this.parseBeginEndBlock('Expected BEGIN before main block', 'Expected END after main block');
@@ -128,7 +170,7 @@ export class Parser {
       }
     }
 
-    return new ast.Program(name, globals, structs, processes, functions, mainBlock);
+    return new ast.Program(name, globals, structs, processes, functions, mainBlock, mainPrivates, locals);
   }
 
   parseStructDecl() {
@@ -142,7 +184,7 @@ export class Parser {
     const fields = [];
     while (!this.is(TokenType.END) && !this.is(TokenType.EOF)) {
       if (this.is(TokenType.STRUCT)) {
-        // Nested struct — becomes a composite field
+        // Nested struct - becomes a composite field
         const nested = this.parseStructDecl();
         fields.push({ name: nested.name, nested, defaultValue: null, size: null });
         continue;
@@ -170,13 +212,20 @@ export class Parser {
   }
 
   parseStructInitializers() {
+    const values = this.parseInitializerList();
+    this.expect(TokenType.SEMICOLON, 'Expected ; after struct initializer list');
+    return values;
+  }
+
+  // "value, value, N DUP(value), ..." up to (not including) the ';'.
+  parseInitializerList() {
     const values = [];
     while (!this.is(TokenType.SEMICOLON) && !this.is(TokenType.EOF)) {
-      // N DUP(expr) — N is a number literal, DUP is an identifier
+      // N DUP(expr) - N is a number literal, DUP is an identifier
       if (this.current().type === TokenType.NUMBER &&
-          this.peek(1).type === TokenType.IDENTIFIER &&
-          this.peek(1).value.toUpperCase() === 'DUP' &&
-          this.peek(2).type === TokenType.LPAREN) {
+        this.peek(1).type === TokenType.IDENTIFIER &&
+        this.peek(1).value.toUpperCase() === 'DUP' &&
+        this.peek(2).type === TokenType.LPAREN) {
         const dupCount = this.current().value;
         this.pos += 2; // consume N and DUP
         this.expect(TokenType.LPAREN, 'Expected ( after DUP');
@@ -190,13 +239,12 @@ export class Parser {
         this.expect(TokenType.COMMA, 'Expected , or ; in initializer list');
       }
     }
-    this.expect(TokenType.SEMICOLON, 'Expected ; after struct initializer list');
     return values;
   }
 
   // Parse global
   // Parse global. Supports both the single-declaration form
-  // ("GLOBAL score = 10;") and the classic DIV/Fenix block form — a bare
+  // ("GLOBAL score = 10;") and the classic DIV/Fenix block form - a bare
   // GLOBAL keyword, then every following line is a name (with an
   // optional initializer) until something that isn't one:
   //   GLOBAL
@@ -205,7 +253,7 @@ export class Parser {
   //     high_score = 0;
   // Both forms are the exact same loop: read a name [= expr];, then keep
   // going as long as the next token is still identifier-like. A single
-  // declaration just means the loop runs once — isIdentifierLike()
+  // declaration just means the loop runs once - isIdentifierLike()
   // already excludes GLOBAL/PROCESS/FUNCTION/BEGIN (see its definition),
   // so the loop naturally stops at the next section without any special
   // casing for where a GLOBAL block "ends".
@@ -219,13 +267,21 @@ export class Parser {
         const name = this.readIdentifierLike('Expected global name');
         let value = null;
         let size;
+        let initializers = null;
         if (this.match(TokenType.LBRACKET)) {
           size = this.parseExpression();
           this.expect(TokenType.RBRACKET, 'Expected ] after array size');
+          // An array may also carry an initializer list, using the same
+          // "value, value, N DUP(value)" syntax STRUCT accepts -
+          // e.g. tutor6's "GLOBAL board[99] = 100 dup (1);".
+          if (this.match(TokenType.EQUALS)) {
+            initializers = this.parseInitializerList();
+          }
         } else if (this.match(TokenType.EQUALS)) {
           value = this.parseExpression();
         }
         const global = new ast.Global(name, value, size);
+        global.initializers = initializers;
         global.line = declToken.line;
         global.col = declToken.col;
         globals.push(global);
@@ -258,7 +314,7 @@ export class Parser {
     }
 
     this.expect(TokenType.RPAREN, 'Expected ) after function params');
-    this.expect(TokenType.SEMICOLON, 'Expected ; after function header');
+    this.match(TokenType.SEMICOLON); // optional ; for DIV/Fenix compatibility
 
     // Body
     const body = this.parseBeginEndBlock('Expected BEGIN before function body', 'Expected END after function body');
@@ -283,7 +339,7 @@ export class Parser {
     }
 
     this.expect(TokenType.RPAREN, 'Expected ) after process params');
-    this.expect(TokenType.SEMICOLON, 'Expected ; after process header');
+    this.match(TokenType.SEMICOLON); // optional ; for DIV/Fenix compatibility
 
     // Parse private section (PRIVATE ... declarations ... BEGIN)
     const privates = [];
@@ -326,16 +382,16 @@ export class Parser {
   // and parseSwitch (each CASE/DEFAULT arm stops here without consuming
   // the next arm's own keyword). CASE and DEFAULT are reserved keywords,
   // so no ordinary block outside a SWITCH could legitimately contain one
-  // as a statement — adding them to this shared set is safe everywhere.
+  // as a statement - adding them to this shared set is safe everywhere.
   parseBlockStatements() {
     const statements = [];
 
     while (!this.is(TokenType.EOF) &&
-           !this.is(TokenType.END) &&
-           !this.is(TokenType.UNTIL) &&
-           !this.is(TokenType.ELSE) &&
-           !this.is(TokenType.CASE) &&
-           !this.is(TokenType.DEFAULT)) {
+      !this.is(TokenType.END) &&
+      !this.is(TokenType.UNTIL) &&
+      !this.is(TokenType.ELSE) &&
+      !this.is(TokenType.CASE) &&
+      !this.is(TokenType.DEFAULT)) {
       statements.push(this.parseStatement());
     }
 
@@ -374,7 +430,7 @@ export class Parser {
     // parseIf/parseFor/parseSwitch/etc. The compiler uses this to point
     // at *where* a compile-time error happened (duplicate name, BREAK
     // outside a loop, invalid assignment target, ...) instead of just
-    // *what* went wrong — previously none of those errors had any
+    // *what* went wrong - previously none of those errors had any
     // location at all, only parse-time syntax errors did.
     const startToken = this.current();
     const stmt = this.parseStatementInner();
@@ -396,9 +452,21 @@ export class Parser {
       return this.parseSwitch();
     }
 
-    // For
+    // For. Two spellings share the keyword: DIV's counted loop
+    // ("FOR i = 0 TO 9") and the C-style form tutor6 uses
+    // ("FOR (i=0; i<10; i++)"), told apart by the parenthesis.
     if (this.match(TokenType.FOR)) {
-      return this.parseFor();
+      if (this.is(TokenType.LPAREN)) {
+        return this.parseCFor();
+      }
+      return this.parseFor(false);
+    }
+
+    // From (classic-DIV spelling of the same loop - e.g.
+    // "FROM graph=5 TO 10; FRAME; END" - requires a ; right after the
+    // TO/STEP range, before the body, unlike FOR)
+    if (this.match(TokenType.FROM)) {
+      return this.parseFor(true);
     }
 
     // While
@@ -457,6 +525,22 @@ export class Parser {
 
     // Expression/Assignment
     const expr = this.parseExpression();
+
+    // Postfix ++/-- as a statement ("apples++;"), desugared to
+    // "apples = apples + 1". Only valid in statement position - DIV
+    // never uses the value of an increment as part of a larger
+    // expression, unlike a plain assignment (compileExpression's
+    // 'assign' case supports that, for extended conditions like
+    // "IF (apple_id = collision(TYPE apple))").
+    if (this.is(TokenType.INCREMENT) || this.is(TokenType.DECREMENT)) {
+      const isIncrement = this.is(TokenType.INCREMENT);
+      this.pos++;
+      this.expect(TokenType.SEMICOLON, 'Expected ; after ++/--');
+      const one = new ast.Number(1);
+      const assign = new ast.Assign(expr, new ast.Binary(expr, isIncrement ? '+' : '-', one));
+      return new ast.ExpressionStatement(assign);
+    }
+
     this.expect(TokenType.SEMICOLON, 'Expected ; after expression');
     return new ast.ExpressionStatement(expr);
   }
@@ -493,7 +577,7 @@ export class Parser {
   // run and control goes straight to END, so BREAK is never required to
   // separate cases. A CASE can list several comma-separated values
   // sharing one body (matches if the subject equals *any* of them). At
-  // least one CASE is required; DEFAULT is optional and — if present —
+  // least one CASE is required; DEFAULT is optional and - if present -
   // must be the last arm.
   parseSwitch() {
     this.expect(TokenType.LPAREN, 'Expected ( after SWITCH');
@@ -524,8 +608,40 @@ export class Parser {
     return new ast.Switch(subject, cases, defaultBody);
   }
 
-  // Parse for
-  parseFor() {
+  // FOR (init; condition; step) body END - desugared into the same shape
+  // a WHILE would produce, with the step run at the end of each pass.
+  parseCFor() {
+    this.expect(TokenType.LPAREN, 'Expected ( after FOR');
+
+    const init = this.is(TokenType.SEMICOLON) ? null : this.parseForClause();
+    this.expect(TokenType.SEMICOLON, 'Expected ; after FOR initialiser');
+
+    const condition = this.is(TokenType.SEMICOLON) ? null : this.parseExpression();
+    this.expect(TokenType.SEMICOLON, 'Expected ; after FOR condition');
+
+    const step = this.is(TokenType.RPAREN) ? null : this.parseForClause();
+    this.expect(TokenType.RPAREN, 'Expected ) after FOR step');
+
+    const body = this.parseBlock();
+    return new ast.CFor(init, condition, step, body);
+  }
+
+  // One clause of a C-style FOR: an assignment or a bare ++/-- on a
+  // variable. Shares the ++/-- desugaring used in statement position.
+  parseForClause() {
+    const expr = this.parseExpression();
+    if (this.is(TokenType.INCREMENT) || this.is(TokenType.DECREMENT)) {
+      const isIncrement = this.is(TokenType.INCREMENT);
+      this.pos++;
+      return new ast.Assign(expr, new ast.Binary(expr, isIncrement ? '+' : '-', new ast.Number(1)));
+    }
+    return expr;
+  }
+
+  // Parse for/from - same loop, two DIV-family spellings. FROM
+  // (requireSemicolonBeforeBody) additionally expects a ; right after the
+  // TO/STEP range and before the body, e.g. "FROM x=1 TO 8; asteroid(); END".
+  parseFor(requireSemicolonBeforeBody) {
     const varName = this.readIdentifierLike('Expected FOR variable name');
 
     this.expect(TokenType.EQUALS, 'Expected = after FOR var');
@@ -539,6 +655,10 @@ export class Parser {
     let step = new ast.Number(1);
     if (this.match(TokenType.STEP)) {
       step = this.parseExpression();
+    }
+
+    if (requireSemicolonBeforeBody) {
+      this.expect(TokenType.SEMICOLON, 'Expected ; after FROM range');
     }
 
     const body = this.parseBlock();
@@ -566,7 +686,7 @@ export class Parser {
     this.expect(TokenType.UNTIL, 'Expected UNTIL after REPEAT body');
 
     const condition = this.parseExpression();
-    this.expect(TokenType.SEMICOLON, 'Expected ; after UNTIL condition');
+    this.match(TokenType.SEMICOLON); // optional ; for DIV/Fenix compatibility
 
     return new ast.Repeat(body, condition);
   }
@@ -610,7 +730,25 @@ export class Parser {
       return assign;
     }
 
+    // Compound assignment (+=, -=, *=, /=) desugars to `left = left OP right`.
+    const compoundOp = this.matchCompoundAssign();
+    if (compoundOp) {
+      const right = this.parseAssignment();
+      const assign = new ast.Assign(left, new ast.Binary(left, compoundOp, right));
+      assign.line = startToken.line;
+      assign.col = startToken.col;
+      return assign;
+    }
+
     return left;
+  }
+
+  matchCompoundAssign() {
+    if (this.match(TokenType.PLUS_ASSIGN)) return '+';
+    if (this.match(TokenType.MINUS_ASSIGN)) return '-';
+    if (this.match(TokenType.STAR_ASSIGN)) return '*';
+    if (this.match(TokenType.SLASH_ASSIGN)) return '/';
+    return null;
   }
 
   // Parse or
@@ -657,7 +795,7 @@ export class Parser {
     let left = this.parseTerm();
 
     while (this.match(TokenType.LT) || this.match(TokenType.LTE) ||
-           this.match(TokenType.GT) || this.match(TokenType.GTE)) {
+      this.match(TokenType.GT) || this.match(TokenType.GTE)) {
       const operator = this.previous().value;
       const right = this.parseTerm();
       left = new ast.Binary(left, operator, right);
@@ -702,6 +840,16 @@ export class Parser {
       }
       this.pos++;
       return new ast.TypeOperator(token.value);
+    }
+
+    if (this.match(TokenType.OFFSET)) {
+      const token = this.current();
+      if (!this.isIdentifierLike(token)) {
+        this.expect(TokenType.IDENTIFIER, 'Expected variable name after OFFSET');
+        return new ast.OffsetOperator(this.previous().value);
+      }
+      this.pos++;
+      return new ast.OffsetOperator(token.value);
     }
 
     if (this.match(TokenType.MINUS) || this.match(TokenType.NOT)) {

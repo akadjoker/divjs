@@ -133,7 +133,7 @@ END
 
 PROCESS solid(px, py, pw, ph, r, g, b);
 BEGIN
-  x = px; y = py; width = pw; height = ph; priority = -100;
+  x = px; y = py; width = pw; height = ph; z = 100;
   graph = new_graphic(pw, ph);
   gfx_rect(graph, 0, 0, pw, ph, r, g, b);
   gfx_rect(graph, 0, 0, pw, 5, r + 40, g + 40, b + 30);

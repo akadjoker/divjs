@@ -1,10 +1,10 @@
 import { OpCodes } from './bytecode.js';
 import { hashCode } from '../utils/hash.js';
 
-// Returns the numeric value of `expr` if it's a compile-time constant —
+// Returns the numeric value of `expr` if it's a compile-time constant -
 // a bare number literal ("STEP 2") or a unary minus directly wrapping one
 // ("STEP -2", which the parser produces as Unary('-', Number(2)) since
-// the lexer itself never reads a leading sign into a NUMBER token) — or
+// the lexer itself never reads a leading sign into a NUMBER token) - or
 // null otherwise. Used by compileFor to decide whether a FOR loop's exit
 // test can collapse to a single LTE/GTE instead of the general
 // runtime-checked form that's needed when the step is a genuine
@@ -37,7 +37,7 @@ export class Compiler {
 
   // Every compile-time error below is keyed off an AST node (a statement
   // or an expression). The parser now stamps every statement and every
-  // expression node with .line/.col — this just formats it consistently
+  // expression node with .line/.col - this just formats it consistently
   // with how the parser's own syntax errors already read ("... at L:C"),
   // and degrades gracefully to no suffix for the handful of
   // compiler-synthesized nodes (e.g. the hidden FOR-step/SWITCH-subject
@@ -64,9 +64,12 @@ export class Compiler {
     this.nextLocalSlot = 0;
     this.nextGlobalSlot = 0;
     this.structMap = new Map();
+    // LOCAL section - read by resetCanonicalLocals so every process, and
+    // MAIN, lays these out at the same slots.
+    this.localDecls = program.locals || [];
 
-    // Pre-register every function and process name — with a placeholder
-    // address, patched once its body is actually compiled below — before
+    // Pre-register every function and process name - with a placeholder
+    // address, patched once its body is actually compiled below - before
     // compiling any bodies. Without this, compileCall() below decides
     // CALL vs SPAWN_PROCESS vs CALL_NATIVE by checking whether the callee
     // is *already* in functionTable/processTable at the moment that call
@@ -74,7 +77,7 @@ export class Compiler {
     // in a single top-to-bottom pass, a call to one declared later in the
     // same list (or a call to a process from an earlier function) would
     // find nothing registered yet and silently fall through to
-    // CALL_NATIVE instead of CALL/SPAWN_PROCESS — breaking mutual
+    // CALL_NATIVE instead of CALL/SPAWN_PROCESS - breaking mutual
     // recursion between two functions outright (there is no declaration
     // order that resolves both directions) and any forward reference
     // within the same category. A prior pass over globals/main already
@@ -83,7 +86,7 @@ export class Compiler {
     //
     // This same pre-pass is also the natural place to reject duplicate
     // names: without it, "PROCESS p" declared twice (or a PROCESS and a
-    // FUNCTION sharing a name — compileCall() checks processTable before
+    // FUNCTION sharing a name - compileCall() checks processTable before
     // functionTable, so the process would silently win) just let the
     // later Map.set() overwrite the earlier one, with no error and no
     // indication which body actually runs. A copy-pasted process with an
@@ -141,12 +144,20 @@ export class Compiler {
     // silently shadows a same-named GLOBAL for the rest of main:
     // compileIdentifier() checks localMap before globalMap, finds the
     // stale entry, and emits LOAD_LOCAL/STORE_LOCAL against an index in
-    // *main's own* locals array that main never wrote to — reading back
+    // *main's own* locals array that main never wrote to - reading back
     // 0 (or corrupting whatever unrelated value main had stored there)
     // instead of the actual global. This isn't a rare-name edge case:
     // "x", "y", "id", "speed" are exactly the names likely to be both a
     // GLOBAL and a process param in a real program.
-    this.localMap = new Map();
+    this.resetCanonicalLocals();
+    this.declarePrivates(program.mainPrivates);
+    for (const priv of program.mainPrivates || []) {
+      if (priv.size !== undefined) continue; // arrays start zeroed
+      if (priv.value) {
+        this.compileExpression(priv.value);
+        this.emit(OpCodes.STORE_LOCAL, this.localMap.get(priv.name));
+      }
+    }
     this.compileBlock({ statements: program.mainBlock });
     const mainLocals = Object.fromEntries(this.localMap);
 
@@ -163,7 +174,7 @@ export class Compiler {
         [...this.globalMap.entries()].filter(([, v]) => typeof v === 'number')
       ),
       mainAddr,
-      // Same idea as functionTable/processTable entries' .locals — VAR
+      // Same idea as functionTable/processTable entries' .locals - VAR
       // declarations made directly in the top-level BEGIN/END block, not
       // inside any PROCESS or FUNCTION, previously had no name-to-slot
       // metadata published anywhere, so disasm.js's MAIN section always
@@ -181,16 +192,28 @@ export class Compiler {
 
     if (stmt.size !== undefined) {
       // Array: evaluate size at compile time (must be a constant number)
-      const sizeVal = getConstantNumericValue(stmt.size);
-      if (sizeVal === null || sizeVal <= 0 || !Number.isInteger(sizeVal)) {
-        throw new Error(`GLOBAL array size must be a positive integer literal${this.locSuffix(stmt)}`);
+      const declared = getConstantNumericValue(stmt.size);
+      if (declared === null || declared < 0 || !Number.isInteger(declared)) {
+        throw new Error(`GLOBAL array size must be a non-negative integer literal${this.locSuffix(stmt)}`);
       }
+      // DIV declares arrays by their LAST INDEX, not their length, so
+      // "board[99]" holds 100 elements indexed 0..99 - which is why
+      // tutor6 initialises it with "100 dup (1)" and iterates 0 TO 99.
+      const sizeVal = declared + 1;
       const base = this.nextGlobalSlot;
       this.nextGlobalSlot += sizeVal;
       this.globalMap.set(stmt.name, { isArray: true, base, size: sizeVal });
-      // Zero-initialize all slots at startup
+      // Initialize every slot at startup: from the declaration's
+      // initializer list where one was given, zero elsewhere. A list
+      // shorter than the array leaves the remainder zeroed, and DUP has
+      // already been expanded by the parser.
+      const init = stmt.initializers || [];
       for (let i = 0; i < sizeVal; i++) {
-        this.emit(OpCodes.LOAD_CONST, this.addConstant(0));
+        if (i < init.length) {
+          this.compileExpression(init[i]);
+        } else {
+          this.emit(OpCodes.LOAD_CONST, this.addConstant(0));
+        }
         this.emit(OpCodes.STORE_GLOBAL, base + i);
       }
       return;
@@ -239,10 +262,13 @@ export class Compiler {
   buildStructDef(stmt) {
     const fields = new Map();
     let instanceSize = 0;
-    const count = stmt.count ? getConstantNumericValue(stmt.count) : 1;
-    if (stmt.count && (count === null || count <= 0 || !Number.isInteger(count))) {
-      throw new Error(`STRUCT count must be a positive integer literal${this.locSuffix(stmt)}`);
+    // Like GLOBAL/PRIVATE arrays, DIV's "STRUCT name[n]" gives the last
+    // valid index, so it holds n+1 instances.
+    const declaredCount = stmt.count ? getConstantNumericValue(stmt.count) : 0;
+    if (stmt.count && (declaredCount === null || declaredCount < 0 || !Number.isInteger(declaredCount))) {
+      throw new Error(`STRUCT count must be a non-negative integer literal${this.locSuffix(stmt)}`);
     }
+    const count = declaredCount + 1;
     for (const f of stmt.fields) {
       if (f.nested) {
         const nestedDef = this.buildStructDef(f.nested);
@@ -250,9 +276,11 @@ export class Compiler {
         fields.set(f.name, { offset: instanceSize, size: totalSize, isNested: true, nestedDef });
         instanceSize += totalSize;
       } else {
-        const fsize = f.size ? getConstantNumericValue(f.size) : 1;
-        if (f.size && (fsize === null || fsize <= 0 || !Number.isInteger(fsize))) {
-          throw new Error(`Struct field array size must be a positive integer literal${this.locSuffix(stmt)}`);
+        // Array fields follow the same last-index rule.
+        const declaredFieldSize = f.size ? getConstantNumericValue(f.size) : null;
+        const fsize = declaredFieldSize === null ? 1 : declaredFieldSize + 1;
+        if (f.size && (declaredFieldSize === null || declaredFieldSize < 0 || !Number.isInteger(declaredFieldSize))) {
+          throw new Error(`Struct field array size must be a non-negative integer literal${this.locSuffix(stmt)}`);
         }
         fields.set(f.name, { offset: instanceSize, size: fsize ?? 1, isNested: false, defaultValue: f.defaultValue });
         instanceSize += fsize ?? 1;
@@ -304,7 +332,7 @@ export class Compiler {
     this.localMap = savedLocals;
 
     // Publish the function's local-name -> slot mapping, mirroring what
-    // compileProcess already does for processTable entries — lets
+    // compileProcess already does for processTable entries - lets
     // tooling (compiler/disasm.js) resolve LOAD_LOCAL/STORE_LOCAL inside
     // a FUNCTION body to a variable name instead of a bare slot number.
     // Captured after compiling the body (not just the initial params)
@@ -319,21 +347,12 @@ export class Compiler {
     return startAddr;
   }
 
-  // Compile process
-  compileProcess(stmt) {
-    const startAddr = this.instructions.length;
-
-    // Store process in table (locals map is finalized at the end).
-    this.processTable.set(stmt.name, {
-      addr: startAddr,
-      params: stmt.params,
-      privates: stmt.privates,
-      locals: {}
-    });
-
-    // Reset locals for this process
-    // Slots fixos: 0=x, 1=y, 2=width, 3=height, 4=ctype, 5=id, 6=region,
-    // 7=angle, 8=red, 9=green, 10=blue, 11=alpha, 12=tag, 13=priority
+  // The fixed process fields DIV gives every process, at the slots the VM
+  // and runtime agree on (see VM.CANONICAL_SLOT_FIELDS and Process.sync).
+  // MAIN gets these too: in DIV the main script *is* a process (id_start,
+  // painted by the same loop as any other), so tutor5 can legitimately do
+  // "graph=1; resolution=100; x=mouse.x*100;" straight from MAIN.
+  resetCanonicalLocals() {
     this.localMap = new Map();
     this.localMap.set('x', 0);
     this.localMap.set('y', 1);
@@ -350,9 +369,69 @@ export class Compiler {
     this.localMap.set('alpha', 11);
     this.localMap.set('tag', 12);
     this.localMap.set('priority', 13);
+    // RESOLUTION divides x/y when drawing, so a script can work in
+    // sub-pixel units (resolution=100 -> two decimals).
+    this.localMap.set('resolution', 14);
+    // Z is draw depth, kept apart from PRIORITY: DIV picks what to run by
+    // highest _Priority (i.c:903) and what to paint by highest _Z
+    // (i.c:1441), higher Z painted first and therefore further back.
+    this.localMap.set('z', 15);
+    // GRAPH/FILE/SIZE/FLAGS are canonical process fields in DIV too - the
+    // tutorials rely on it, e.g. "PROCESS boardbox(x,y,graph,file,number)"
+    // expects those parameters to land directly on the process's own
+    // fields. SIZE defaults to 100 (full scale); the rest to 0.
+    this.localMap.set('graph', 16);
+    this.localMap.set('file', 17);
+    this.localMap.set('size', 18);
+    this.localMap.set('flags', 19);
+    this.nextLocalSlot = 20;
 
-    // Add params as locals (start at slot 14)
-    this.nextLocalSlot = 14;
+    // LOCAL declarations sit at fixed slots too, so every process - and
+    // MAIN - agrees on where they live and they can be read off another
+    // process by name.
+    for (const decl of this.localDecls || []) {
+      if (this.localMap.has(decl.name)) continue;
+      this.localMap.set(decl.name, this.nextLocalSlot++);
+    }
+  }
+
+  // Allocates slots for a PRIVATE section. Shared by PROCESS bodies and
+  // by MAIN, which in DIV is a process and may declare privates too.
+  declarePrivates(privates) {
+    for (const priv of privates || []) {
+      if (this.localMap.has(priv.name)) continue;
+      if (priv.size !== undefined) {
+        const declared = getConstantNumericValue(priv.size);
+        if (declared === null || declared < 0 || !Number.isInteger(declared)) {
+          throw new Error(`PRIVATE array size must be a non-negative integer literal${this.locSuffix(priv)}`);
+        }
+        // Last index, not length - same as GLOBAL above.
+        const sizeVal = declared + 1;
+        this.localMap.set(priv.name, { isArray: true, base: this.nextLocalSlot, size: sizeVal });
+        this.nextLocalSlot += sizeVal;
+      } else {
+        this.localMap.set(priv.name, this.nextLocalSlot++);
+      }
+    }
+  }
+
+  // Compile process
+  compileProcess(stmt) {
+    const startAddr = this.instructions.length;
+
+    // Store process in table (locals map is finalized at the end).
+    this.processTable.set(stmt.name, {
+      addr: startAddr,
+      params: stmt.params,
+      privates: stmt.privates,
+      locals: {}
+    });
+
+    // Reset locals for this process
+    this.resetCanonicalLocals();
+
+    // Add params as locals (after the canonical block)
+    
     for (const param of stmt.params) {
       // Keep canonical process fields in fixed slots.
       if (!this.localMap.has(param)) {
@@ -361,19 +440,7 @@ export class Compiler {
     }
 
     // Add privates as locals
-    for (const priv of stmt.privates) {
-      if (this.localMap.has(priv.name)) continue;
-      if (priv.size !== undefined) {
-        const sizeVal = getConstantNumericValue(priv.size);
-        if (sizeVal === null || sizeVal <= 0 || !Number.isInteger(sizeVal)) {
-          throw new Error(`PRIVATE array size must be a positive integer literal${this.locSuffix(priv)}`);
-        }
-        this.localMap.set(priv.name, { isArray: true, base: this.nextLocalSlot, size: sizeVal });
-        this.nextLocalSlot += sizeVal;
-      } else {
-        this.localMap.set(priv.name, this.nextLocalSlot++);
-      }
-    }
+    this.declarePrivates(stmt.privates);
 
     // Initialize private locals once when process starts.
     for (const priv of stmt.privates) {
@@ -433,6 +500,10 @@ export class Compiler {
 
       case 'while':
         this.compileWhile(stmt);
+        break;
+
+      case 'cfor':
+        this.compileCFor(stmt);
         break;
 
       case 'repeat':
@@ -569,11 +640,11 @@ export class Compiler {
 
   // Compile switch. Unlike C, there's no fallthrough: each case is really
   // just a chain of "if subject == value" tests, and a case that matches
-  // jumps straight past every remaining case (and DEFAULT) to the end —
+  // jumps straight past every remaining case (and DEFAULT) to the end -
   // BREAK is never needed to keep cases from running into each other.
   // The subject is evaluated once into a hidden local (matching the
   // pattern used for FOR's step in compileFor) so a subject expression
-  // with side effects — a function call, say — doesn't re-run once per
+  // with side effects - a function call, say - doesn't re-run once per
   // case comparison.
   compileSwitch(stmt) {
     this.switchDepth = (this.switchDepth || 0) + 1;
@@ -594,8 +665,8 @@ export class Compiler {
 
       // A CASE with several comma-separated values ("CASE 1, 2, 3") runs
       // its body if the subject matches *any* of them. Test every value
-      // but the last with JUMP_IF_TRUE straight into the body — no need
-      // to check the rest once one has already matched — and use the
+      // but the last with JUMP_IF_TRUE straight into the body - no need
+      // to check the rest once one has already matched - and use the
       // existing single-value JUMP_IF_FALSE-to-next-case test for the
       // last one, so a CASE with exactly one value (the common case)
       // compiles to exactly what it always did: the loop below simply
@@ -642,18 +713,37 @@ export class Compiler {
 
   // Compile for
   compileFor(stmt) {
-    const varIdx = this.nextLocalSlot++;
-    this.localMap.set(stmt.varName, varIdx);
+    // Reuse the existing slot when the loop variable is a name that's
+    // already declared in this scope - a canonical process field, a
+    // param/private, or an implicitly-created local - instead of always
+    // allocating a fresh one. Classic DIV animation loops drive a
+    // canonical field directly ("FROM graph=5 TO 10; FRAME; END" cycling
+    // through explosion frames), and blindly rebinding the name to a new
+    // slot here silently split it in two: earlier writes (`graph=4;`)
+    // had their old slot number already baked into emitted bytecode,
+    // while every later *read* - including the renderer's own
+    // getProcessLocalSlot('graph') lookup, which consults this map -
+    // resolved to the new slot. The process then drew with graph=0 (the
+    // fallback placeholder) no matter what either slot held.
+    let varIdx = this.localMap.get(stmt.varName);
+    if (varIdx === undefined) {
+      varIdx = this.nextLocalSlot++;
+      this.localMap.set(stmt.varName, varIdx);
+    } else if (typeof varIdx === 'object' && varIdx.isArray) {
+      throw new Error(
+        `Array "${stmt.varName}" cannot be used as a FOR loop variable${this.locSuffix(stmt)}`
+      );
+    }
 
-    // When the step is a literal number — "STEP 2", "STEP -1", or the
-    // implicit default of 1 when STEP is omitted entirely — its sign is
+    // When the step is a literal number - "STEP 2", "STEP -1", or the
+    // implicit default of 1 when STEP is omitted entirely - its sign is
     // already known at compile time, covering the overwhelming majority
     // of real FOR loops. In that case skip straight to the one
     // comparison that direction actually needs (LTE for ascending, GTE
     // for descending) instead of the general run-time-checked form
     // below, which the disassembler (compiler/disasm.js) showed compiles
     // "(step >= 0 AND i <= end) OR (step < 0 AND i >= end)" into roughly
-    // 30 instructions re-executed on *every* iteration — deadweight for
+    // 30 instructions re-executed on *every* iteration - deadweight for
     // a loop whose direction was never actually in question. The general
     // form is kept, unchanged, for the genuinely dynamic case (STEP some
     // variable or expression), where the direction really can't be
@@ -698,7 +788,7 @@ export class Compiler {
       this.emit(OpCodes.JUMP_IF_FALSE, 0); // Placeholder
     } else {
       // The step can be a runtime expression, so the direction can't be
-      // decided at compile time — continue while:
+      // decided at compile time - continue while:
       //   (step >= 0 AND i <= end) OR (step < 0 AND i >= end)
       const iRef = { type: 'identifier', name: stmt.varName };
       const stepRef = { type: 'identifier', name: stepVarName };
@@ -762,6 +852,50 @@ export class Compiler {
     this.instructions[jumpToEnd].operands[0] = loopEnd;
     this.patchLoopJumps(loopCtx, loopStart, loopEnd);
     this.endLoopContext();
+  }
+
+  // C-style FOR: init once, then test / body / step each pass. CONTINUE
+  // has to land on the step rather than the condition, otherwise it would
+  // skip the increment and spin forever.
+  compileCFor(stmt) {
+    if (stmt.init) {
+      this.compileStatementValue(stmt.init);
+    }
+
+    const loopStart = this.instructions.length;
+    let jumpToEnd = -1;
+    if (stmt.condition) {
+      this.compileExpression(stmt.condition);
+      this.emit(OpCodes.JUMP_IF_FALSE, 0); // Placeholder
+      jumpToEnd = this.instructions.length - 1;
+    }
+
+    const loopCtx = this.beginLoopContext();
+    this.compileBlock(stmt.body);
+
+    const continueTarget = this.instructions.length;
+    if (stmt.step) {
+      this.compileStatementValue(stmt.step);
+    }
+    this.emit(OpCodes.LOOP, loopStart);
+
+    const loopEnd = this.instructions.length;
+    if (jumpToEnd >= 0) {
+      this.instructions[jumpToEnd].operands[0] = loopEnd;
+    }
+    this.patchLoopJumps(loopCtx, continueTarget, loopEnd);
+    this.endLoopContext();
+  }
+
+  // Compiles an expression used for effect, discarding any value it
+  // leaves behind (an assignment leaves none; a bare call leaves one).
+  compileStatementValue(expr) {
+    if (expr.type === 'assign') {
+      this.compileAssignment(expr);
+      return;
+    }
+    this.compileExpression(expr);
+    this.emit(OpCodes.POP);
   }
 
   // Compile repeat
@@ -842,11 +976,37 @@ export class Compiler {
     }
 
     if (stmt.target.type === 'member_access' || stmt.target.type === 'index_access') {
+      if (this.tryCompileMouseAssign(stmt.target, stmt.value)) {
+        return;
+      }
       this.compilePathSet(stmt.target, stmt.value);
       return;
     }
 
     throw new Error(`Invalid assignment target: ${stmt.target.type}${this.locSuffix(stmt)}`);
+  }
+
+  // Assignment in expression position: perform the store, then leave the
+  // assigned value on the stack for the enclosing expression to consume.
+  // Done by re-reading the target after storing rather than DUP-ing the
+  // value beforehand, so path targets (which route through
+  // compilePathSet's own multi-argument native call) work identically to
+  // plain locals/globals without duplicating that logic here.
+  compileAssignmentAsExpression(expr) {
+    this.compileAssignment(expr);
+
+    if (expr.target.type === 'identifier') {
+      this.compileIdentifier(expr.target);
+      return;
+    }
+    if (expr.target.type === 'member_access' || expr.target.type === 'index_access') {
+      if (!this.tryCompileMouseAccess(expr.target)) {
+        this.compilePathGet(expr.target);
+      }
+      return;
+    }
+
+    throw new Error(`Invalid assignment target: ${expr.target.type}${this.locSuffix(expr)}`);
   }
 
   // Compile expression
@@ -880,24 +1040,28 @@ export class Compiler {
         this.emit(OpCodes.LOAD_CONST, this.addConstant(hashCode(expr.processName)));
         break;
 
+      case 'offset_operator':
+        this.compileOffsetOperator(expr);
+        break;
+
       case 'member_access':
       case 'index_access':
-        this.compilePathGet(expr);
+        if (!this.tryCompileMouseAccess(expr)) {
+          this.compilePathGet(expr);
+        }
         break;
 
       case 'assign':
-        // compileAssignment() stores directly (STORE_LOCAL / STORE_GLOBAL /
-        // path-set) and intentionally leaves nothing on the stack — correct
-        // for assignment used as a statement, but this branch only fires
-        // when 'assign' shows up as a sub-expression instead, e.g.
-        // "a = b = c" or "IF (a = f()) ...". There the missing push would
-        // silently pop whatever the enclosing expression left on the stack
-        // (or the pop() underflow default), corrupting state without any
-        // error. Reject it at compile time instead.
-        throw new Error(
-          `Assignment cannot be used as a sub-expression (found "${expr.target?.name || '?'} = ..." nested inside another expression). ` +
-          `Write it as its own statement instead, e.g. "${expr.target?.name || 'x'} = value;" on its own line.${this.locSuffix(expr)}`
-        );
+        // Assignment used as a sub-expression, e.g. DIV's
+        // "IF (apple_id = collision(TYPE apple))" - assign, then test the
+        // assigned value (classic-DIV "extended conditions"). This must
+        // leave exactly one value on the stack, unlike the statement form
+        // in compileAssignment() which deliberately leaves none: getting
+        // that wrong silently pops whatever the enclosing expression had
+        // pushed (or the pop() underflow default) and corrupts state with
+        // no error, which is why this used to be rejected outright.
+        this.compileAssignmentAsExpression(expr);
+        break;
 
       default:
         throw new Error(`Unknown expression type: ${expr.type}${this.locSuffix(expr)}`);
@@ -914,7 +1078,7 @@ export class Compiler {
       _left: 'ArrowLeft', _right: 'ArrowRight',
       _up: 'ArrowUp',     _down: 'ArrowDown',
       _space: ' ', _enter: 'Enter', _esc: 'Escape', _backspace: 'Backspace',
-      _tab: 'Tab', _shift: 'Shift', _ctrl: 'Control', _alt: 'Alt',
+      _tab: 'Tab', _shift: 'Shift', _ctrl: 'Control', _control: 'Control', _alt: 'Alt',
       _fire: 'z',
       _a: 'a', _b: 'b', _c: 'c', _d: 'd', _e: 'e', _f: 'f',
       _g: 'g', _h: 'h', _i: 'i', _j: 'j', _k: 'k', _l: 'l',
@@ -923,9 +1087,16 @@ export class Compiler {
       _y: 'y', _z: 'z',
       _0: '0', _1: '1', _2: '2', _3: '3', _4: '4',
       _5: '5', _6: '6', _7: '7', _8: '8', _9: '9',
+      true: 1, false: 0,
       c_screen: 0, c_scroll: 1, c_m7: 2,
       s_kill: 0, s_wakeup: 1, s_sleep: 2, s_freeze: 3,
-      s_kill_tree: 100, s_wakeup_tree: 101, s_sleep_tree: 102, s_freeze_tree: 103
+      s_kill_tree: 100, s_wakeup_tree: 101, s_sleep_tree: 102, s_freeze_tree: 103,
+      // Classic DIV single-argument SET_MODE resolution constants - see
+      // VIDEO_MODE_TABLE in runtime.js's setModeNative for the decode.
+      // Negative so they can never collide with a legitimate width value
+      // passed to the (width, height) two-argument form this engine's own
+      // demos already use.
+      m320x200: -1, m640x480: -2
     };
 
     // Check if local
@@ -948,9 +1119,50 @@ export class Compiler {
     else if (Object.prototype.hasOwnProperty.call(builtinConstants, nameLower)) {
       this.emit(OpCodes.LOAD_CONST, this.addConstant(builtinConstants[nameLower]));
     }
+    // Real DIV exposes FPS as a bare read-only global (current frame
+    // rate), not a function call - rewritten into the get_fps native the
+    // runtime already provides, same trick as mouse.x/mouse.left in
+    // tryCompileMouseAccess. Only fires when nothing declared "fps" as a
+    // real local/global, so a script using it for its own variable still
+    // works normally.
+    else if (nameLower === 'fps') {
+      this.emit(OpCodes.CALL_NATIVE, 'get_fps', 0);
+    }
+    // Bare FATHER/SON - DIV's relative-process references used as plain
+    // values, e.g. "signal(son, s_kill_tree)". The "father.x" member form
+    // already works through __get_path's relative-root handling; this is
+    // the same idea without a field, yielding just the process id.
+    else if (nameLower === 'father' || nameLower === 'son') {
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(nameLower));
+      this.emit(OpCodes.CALL_NATIVE, '__get_path', 1);
+    }
     else {
       throw new Error(`Unknown variable: ${name}${this.locSuffix(expr)}`);
     }
+  }
+
+  // OFFSET <global> - pushes a live-reference descriptor (not the current
+  // value) for the runtime's write/write_int to detect and re-resolve
+  // fresh on every frame it's drawn, rather than baking in a snapshot
+  // taken at the point OFFSET is evaluated. See runtime.js's
+  // writeNative/writeIntNative for the consuming half. Only GLOBALs are
+  // supported - that's the only scope a value can meaningfully outlive
+  // and keep changing across the single WRITE call site that named it
+  // once (a local belongs to one specific process's lifetime, which real
+  // DIV's OFFSET was never used for).
+  compileOffsetOperator(expr) {
+    const name = expr.name;
+    if (!this.globalMap.has(name)) {
+      throw new Error(
+        `OFFSET "${name}" - no such GLOBAL${this.locSuffix(expr)}. ` +
+        `OFFSET only works on a GLOBAL (real DIV usage: WRITE/WRITE_INT auto-refreshing as it changes).`
+      );
+    }
+    const entry = this.globalMap.get(name);
+    if (typeof entry === 'object' && entry.isArray) {
+      throw new Error(`OFFSET "${name}" - arrays aren't supported, index it first: OFFSET ${name}[i] isn't valid either${this.locSuffix(expr)}`);
+    }
+    this.emit(OpCodes.LOAD_CONST, this.addConstant({ __divOffsetGlobal: true, slot: entry }));
   }
 
   // Compile binary
@@ -1059,22 +1271,53 @@ export class Compiler {
 
   // Compile call
   compileCall(expr) {
+    // A callee that isn't a plain name (e.g. some future computed-call
+    // expression) has no dispatch rule below that would ever match it -
+    // reject it now, before compiling any args, instead of silently
+    // falling through: previously this compiled every argument expression
+    // (pushing them onto the stack) and then emitted no call instruction
+    // at all, leaving orphaned values on the stack with no error.
+    if (expr.callee.type !== 'identifier') {
+      throw new Error(`Cannot call a non-identifier expression${this.locSuffix(expr)}`);
+    }
+
+    const name = expr.callee.name;
+    const argc = expr.args.length;
+
+    // Process/function arity is known at compile time (unlike natives,
+    // which register themselves on the VM at runtime, after compilation
+    // has already finished - there's no static arity table for those to
+    // check against here). Neither supports default/optional params, so
+    // any mismatch here is unambiguously wrong, not just unusual.
+    const processInfo = this.processTable.get(name);
+    if (processInfo && argc !== processInfo.params.length) {
+      throw new Error(
+        `PROCESS "${name}" expects ${processInfo.params.length} argument(s), got ${argc}${this.locSuffix(expr)}`
+      );
+    }
+    const functionInfo = !processInfo ? this.functionTable.get(name) : undefined;
+    if (functionInfo && argc !== functionInfo.params.length) {
+      throw new Error(
+        `FUNCTION "${name}" expects ${functionInfo.params.length} argument(s), got ${argc}${this.locSuffix(expr)}`
+      );
+    }
+
     // Compile args
     for (const arg of expr.args) {
       this.compileExpression(arg);
     }
 
     // Check if process call
-    if (expr.callee.type === 'identifier' && this.processTable.has(expr.callee.name)) {
-      this.emit(OpCodes.SPAWN_PROCESS, expr.callee.name, expr.args.length);
+    if (processInfo) {
+      this.emit(OpCodes.SPAWN_PROCESS, name, argc);
     }
     // Check if function call
-    else if (expr.callee.type === 'identifier' && this.functionTable.has(expr.callee.name)) {
-      this.emit(OpCodes.CALL, expr.callee.name, expr.args.length);
+    else if (functionInfo) {
+      this.emit(OpCodes.CALL, name, argc);
     }
-    // Check if native
-    else if (expr.callee.type === 'identifier') {
-      this.emit(OpCodes.CALL_NATIVE, expr.callee.name, expr.args.length);
+    // Native - arity isn't known at compile time, see above.
+    else {
+      this.emit(OpCodes.CALL_NATIVE, name, argc);
     }
   }
 
@@ -1124,7 +1367,7 @@ export class Compiler {
       if (seg.kind === 'index') {
         terms.push({ kind: 'dyn', expr: seg.value, mult: currentInstanceSize });
         i++;
-        // After array index, context (currentFields/instanceSize) is unchanged —
+        // After array index, context (currentFields/instanceSize) is unchanged -
         // the next segment selects a field within one instance.
       } else { // 'prop'
         const f = currentFields.get(seg.value);
@@ -1145,7 +1388,7 @@ export class Compiler {
             throw new Error(`Array field "${seg.value}" requires index [j]`);
           }
         } else {
-          i++; // scalar — terminal
+          i++; // scalar - terminal
         }
       }
     }
@@ -1182,30 +1425,92 @@ export class Compiler {
   }
 
   // If `indexExpr` is a compile-time constant (a bare number literal or a
-  // unary-minus-wrapped one — see getConstantNumericValue), reject it
+  // unary-minus-wrapped one - see getConstantNumericValue), reject it
   // immediately as a compile error when it falls outside [0, size). This
-  // catches the single most common mistake — an off-by-one literal index,
-  // or writing size instead of size-1 as a loop bound — at compile time
+  // catches the single most common mistake - an off-by-one literal index,
+  // or writing size instead of size-1 as a loop bound - at compile time
   // instead of letting it through to become a runtime bounds violation
   // (see the STORE_LOCAL_IDX/STORE_GLOBAL_IDX bounds check in vm.js for
   // the runtime half of this: a *variable* index out of range, which
   // can't be caught here since its value isn't known until the VM runs).
   // Without either check, LOAD/STORE_*_IDX computed `base + index`
-  // directly with no validation at all — an out-of-bounds index silently
+  // directly with no validation at all - an out-of-bounds index silently
   // read or wrote whatever unrelated global/local happened to sit at
   // that computed offset (confirmed: "GLOBAL a[3], b[3]; a[3] = 999;"
   // silently corrupted b[0], since arrays are allocated in consecutive
-  // slots — and a negative index corrupts backwards past the array's
+  // slots - and a negative index corrupts backwards past the array's
   // own start the same way).
   checkConstantArrayIndex(arrayName, indexExpr, size) {
     const constIndex = getConstantNumericValue(indexExpr);
     if (constIndex !== null && (constIndex < 0 || constIndex >= size || !Number.isInteger(constIndex))) {
       throw new Error(
-        `Array index out of bounds: "${arrayName}[${constIndex}]" — ` +
+        `Array index out of bounds: "${arrayName}[${constIndex}]" - ` +
         `"${arrayName}" was declared with size ${size}, valid indices are 0..${size - 1}.` +
         `${this.locSuffix(indexExpr)}`
       );
     }
+  }
+
+  // DIV syntax exposes the mouse as a pseudo-struct: mouse.x, mouse.y,
+  // mouse.left/right/middle. There's no real "mouse" local/global/struct -
+  // this rewrites those member accesses into the mouse_x/mouse_y/mouse_button
+  // native calls the runtime already provides. Returns false (and leaves the
+  // expression untouched) if `mouse` was shadowed by a real declared
+  // variable, so a genuine struct named "mouse" still works normally.
+  tryCompileMouseAccess(expr) {
+    if (expr.type !== 'member_access') {
+      return false;
+    }
+    const obj = expr.object;
+    if (!obj || obj.type !== 'identifier' || obj.name.toLowerCase() !== 'mouse') {
+      return false;
+    }
+    if (this.localMap.has(obj.name) || this.globalMap.has(obj.name)) {
+      return false;
+    }
+
+    const mouseFields = {
+      x: { native: 'mouse_x', args: [] },
+      y: { native: 'mouse_y', args: [] },
+      left: { native: 'mouse_button', args: [0] },
+      right: { native: 'mouse_button', args: [1] },
+      middle: { native: 'mouse_button', args: [2] },
+      button: { native: 'mouse_button', args: [0] }
+    };
+    const field = mouseFields[String(expr.property).toLowerCase()];
+    if (field) {
+      for (const value of field.args) {
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(value));
+      }
+      this.emit(OpCodes.CALL_NATIVE, field.native, field.args.length);
+      return true;
+    }
+
+    // Any other field - GRAPH, FILE, SIZE, ANGLE, ... - reads off the
+    // mouse Process the runtime maintains (see registerNatives), since
+    // DIV's mouse is a process like any other.
+    this.emit(OpCodes.LOAD_CONST, this.addConstant(String(expr.property)));
+    this.emit(OpCodes.CALL_NATIVE, '__get_mouse_field', 1);
+    return true;
+  }
+
+  // Write half: "mouse.graph = 999".
+  tryCompileMouseAssign(targetExpr, valueExpr) {
+    if (targetExpr.type !== 'member_access') {
+      return false;
+    }
+    const obj = targetExpr.object;
+    if (!obj || obj.type !== 'identifier' || obj.name.toLowerCase() !== 'mouse') {
+      return false;
+    }
+    if (this.localMap.has(obj.name) || this.globalMap.has(obj.name)) {
+      return false;
+    }
+
+    this.emit(OpCodes.LOAD_CONST, this.addConstant(String(targetExpr.property)));
+    this.compileExpression(valueExpr);
+    this.emit(OpCodes.CALL_NATIVE, '__set_mouse_field', 2);
+    return true;
   }
 
   compilePathGet(expr) {
@@ -1235,22 +1540,35 @@ export class Compiler {
       if (sr.isStatic) {
         this.emit(OpCodes.LOAD_GLOBAL, sr.slot);
       } else {
-        // Bounds-checks the combined offset (every dynamic index term —
+        // Bounds-checks the combined offset (every dynamic index term -
         // the struct array index itself, plus any array-field index
-        // like anim[0].frames[j] — summed and multiplied together) against
+        // like anim[0].frames[j] - summed and multiplied together) against
         // the struct's total reserved footprint (count * instanceSize).
         // Without this, "enemyA[2].x" on a declared-2-instance struct
         // array computed an offset that silently landed inside whatever
-        // was allocated right after enemyA — confirmed: it read/wrote a
+        // was allocated right after enemyA - confirmed: it read/wrote a
         // second, unrelated STRUCT declared immediately after it. This
         // catches "the combined index runs past the end of this struct's
-        // own block" — the practical case that actually occurs from a
-        // single wrong index — though a pathological combination of a
+        // own block" - the practical case that actually occurs from a
+        // single wrong index - though a pathological combination of a
         // negative index on one term offsetting a too-large index on
         // another could in principle still land in-range; the same
         // caveat already applies to the simpler flat-array bounds check.
         this.emit(OpCodes.LOAD_GLOBAL_IDX, sr.base, sr.totalSize);
       }
+      return;
+    }
+
+    // "someVar.field" where someVar is a declared scalar holding a
+    // process id - DIV's cross-process field read ("raquet1.y", with
+    // raquet1 = raquet(...) storing the spawned id). The generic
+    // __get_path below can't express this: it passes the root as a
+    // *name* string, but here the root's runtime *value* identifies the
+    // process. Resolve it through a dedicated native instead.
+    if (this.isProcessRefRoot(path)) {
+      this.compileIdentifier({ type: 'identifier', name: path.root });
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(path.segments[0].value));
+      this.emit(OpCodes.CALL_NATIVE, '__get_process_field', 2);
       return;
     }
 
@@ -1265,6 +1583,29 @@ export class Compiler {
     }
 
     this.emit(OpCodes.CALL_NATIVE, '__get_path', 1 + path.segments.length);
+  }
+
+  // True for "<declared scalar>.<field>" - a single property segment off
+  // a plain local/global (not an array, not a struct, not one of the
+  // runtime's own special roots like scroll/region/father/son, all of
+  // which are handled earlier or by __get_path). That shape is DIV's
+  // cross-process field access, where the variable holds a process id.
+  isProcessRefRoot(path) {
+    if (path.segments.length !== 1 || path.segments[0].kind !== 'prop') {
+      return false;
+    }
+    const reserved = new Set(['scroll', 'region', 'father', 'son', 'mouse']);
+    if (reserved.has(String(path.root).toLowerCase())) {
+      return false;
+    }
+    const entry = this.localMap.has(path.root)
+      ? this.localMap.get(path.root)
+      : (this.globalMap.has(path.root) ? this.globalMap.get(path.root) : undefined);
+    if (entry === undefined) {
+      return false;
+    }
+    // Arrays/structs are objects here; only plain scalar slots qualify.
+    return typeof entry !== 'object';
   }
 
   compilePathSet(targetExpr, valueExpr) {
@@ -1290,7 +1631,7 @@ export class Compiler {
       }
     }
 
-    // Struct access — index computation emitted first, then value
+    // Struct access - index computation emitted first, then value
     const sr = this.compileStructIndex(path);
     if (sr.handled) {
       if (sr.isStatic) {
@@ -1300,6 +1641,16 @@ export class Compiler {
         this.compileExpression(valueExpr);
         this.emit(OpCodes.STORE_GLOBAL_IDX, sr.base, sr.totalSize);
       }
+      return;
+    }
+
+    // Write half of the cross-process field access described in
+    // compilePathGet ("raquet1.y = 100").
+    if (this.isProcessRefRoot(path)) {
+      this.compileIdentifier({ type: 'identifier', name: path.root });
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(path.segments[0].value));
+      this.compileExpression(valueExpr);
+      this.emit(OpCodes.CALL_NATIVE, '__set_process_field', 3);
       return;
     }
 
@@ -1320,18 +1671,18 @@ export class Compiler {
   // Add constant
   // Deduplicate constants: every literal used more than once in the
   // source (0, common colors like '#fff', repeated numeric thresholds)
-  // used to get its own fresh slot in the pool — addConstant() just
+  // used to get its own fresh slot in the pool - addConstant() just
   // pushed unconditionally and never checked for an existing match, even
   // though the exact caching this method needed was already sitting
   // unused in compiler/bytecode.js's dead Bytecode class. Measured 38%
   // waste on the repo's own shipped demo and up to 79% on a small
-  // synthetic program with a handful of repeated 0/color literals — this
+  // synthetic program with a handful of repeated 0/color literals - this
   // is pure bytecode bloat with zero behavior change once fixed. Keyed
   // by `${typeof value}:${JSON.stringify(value)}` rather than just
   // JSON.stringify(value) alone so that values which stringify to the
   // same JSON text but aren't the grammar's own literal type can never
   // collide (e.g. JSON.stringify(NaN) === JSON.stringify(null) === 'null'
-  // — not reachable from valid source today since NUMBER/STRING tokens
+  // - not reachable from valid source today since NUMBER/STRING tokens
   // can't produce either, but free to guard against regardless).
   addConstant(value) {
     if (!this.constantIndex) {

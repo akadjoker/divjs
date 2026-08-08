@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DivJS - Collision Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 820px;
+      line-height: 1.4;
+    }
+    #log {
+      width: 860px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 52px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="860" height="520"></canvas>
+  <p>
+    Setas move o jogador (a caixa verde). Cada alvo testa um tipo diferente de colisão -
+    fica vermelho quando o jogador o atinge. A caixa cinzenta em baixo é sólida
+    (place_meeting): o jogador não consegue entrar nela.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM collision_demo;
+
+GLOBAL g_wall_type = 0;
+GLOBAL g_box_type = 0;
+GLOBAL g_circle_type = 0;
+GLOBAL g_radius_type = 0;
+GLOBAL g_obb_type = 0;
+GLOBAL g_cbox_type = 0;
+GLOBAL g_hit_box = 0;
+GLOBAL g_hit_circle = 0;
+GLOBAL g_hit_radius = 0;
+GLOBAL g_hit_obb = 0;
+GLOBAL g_hit_cbox = 0;
+GLOBAL g_blocked = 0;
+
+// Solid obstacle - only used with place_meeting, never with collision().
+PROCESS wall(px, py, w, h);
+BEGIN
+  width = w;
+  height = h;
+  x = px + w / 2;
+  y = py + h / 2;
+  // Real DIV's collision()/place_meeting() test is defined as "the
+  // graphics of both processes are partially superposed" (DIV manual,
+  // collision()) - a process with no GRAPH has no graphic to superpose
+  // at all, so it's never collidable. This process only draws itself
+  // with draw_rect (no sprite), so it needs a placeholder GRAPH id to
+  // participate in collision the same way it would need a real one in
+  // DIV.
+  graph = 1;
+
+  LOOP
+    set_color('#3a4a5c');
+    draw_rect(x - width / 2, y - height / 2, width, height);
+    FRAME;
+  END
+END
+
+// Plain box target - default shape, no cboxes, no rotation. Exercises
+// collision()'s fast axis-aligned path.
+PROCESS target_box(px, py);
+BEGIN
+  x = px;
+  y = py;
+  width = 40;
+  height = 40;
+  graph = 1; // placeholder - see the note on the wall process above
+
+  LOOP
+    IF (g_hit_box)
+      set_color('#ff5a5a');
+    ELSE
+      set_color('#4a9eff');
+    END
+    draw_rect(x - width / 2, y - height / 2, width, height);
+    write(0, x - 30, y - height / 2 - 16, 0, 'box');
+    FRAME;
+  END
+END
+
+// Circle target via set_collision_shape - radius falls back to
+// min(width,height)/2.
+PROCESS target_circle(px, py);
+BEGIN
+  x = px;
+  y = py;
+  width = 44;
+  height = 44;
+  graph = 1;
+  set_collision_shape('circle');
+
+  LOOP
+    IF (g_hit_circle)
+      set_color('#ff5a5a');
+    ELSE
+      set_color('#5affa0');
+    END
+    circle(x, y, width / 2);
+    write(0, x - 40, y - width / 2 - 16, 0, 'circle (auto radius)');
+    FRAME;
+  END
+END
+
+// Circle target with an explicit radius, independent of width/height.
+PROCESS target_radius(px, py);
+BEGIN
+  x = px;
+  y = py;
+  width = 10;
+  height = 10;
+  graph = 1;
+  set_collision_shape('circle');
+  set_collision_radius(38);
+
+  LOOP
+    IF (g_hit_radius)
+      set_color('#ff5a5a');
+    ELSE
+      set_color('#ffd35a');
+    END
+    circle(x, y, get_collision_radius());
+    write(0, x - 50, y - 38 - 16, 0, 'circle (set_collision_radius)');
+    FRAME;
+  END
+END
+
+// Rotated box - exercises collision_obb's SAT path (angle != 0 falls
+// out of the axis-aligned fast path).
+PROCESS target_obb(px, py);
+PRIVATE spin = 0; tipx = 0; tipy = 0;
+BEGIN
+  x = px;
+  y = py;
+  width = 60;
+  height = 24;
+  graph = 1;
+
+  LOOP
+    spin = spin + 600;
+    angle = spin;
+    IF (g_hit_obb)
+      set_color('#ff5a5a');
+    ELSE
+      set_color('#c58aff');
+    END
+    // draw_rect always draws axis-aligned - it can't itself show the
+    // process rotating the way a real sprite would (drawGraphSprite
+    // respects angle, draw_rect doesn't). The box collision_obb() tests
+    // against genuinely rotates internally; this dot orbiting the box
+    // at the same angle is here so the rotation is visible too.
+    draw_rect(x - width / 2, y - height / 2, width, height);
+    tipx = x + cos(angle) * (width / 2 + 10);
+    tipy = y + sin(angle) * (width / 2 + 10);
+    circle(tipx, tipy, 3);
+    write(0, x - 34, y - 50, 0, 'obb (rotating hitbox)');
+    FRAME;
+  END
+END
+
+// Compound shape: a small box plus an offset circle, via
+// add_collision_box/add_collision_circle. The default box (width/height)
+// is ignored once explicit cboxes are set. Both natives take x,y
+// relative to the process's own top-left corner (matching real DIV's
+// cpoints - always graphic-local pixels from the top-left, not the
+// pivot/center) - not the center, so on a 50x50 process the top-left is
+// 25px up-left of x,y itself.
+PROCESS target_cbox(px, py);
+BEGIN
+  x = px;
+  y = py;
+  width = 50;
+  height = 50;
+  graph = 1;
+  clear_collision_boxes();
+  add_collision_box(0, 0, 24, 24, 1);   // world: upper-left quadrant, matches the draw_rect below
+  add_collision_circle(25, 25, 16, 2);  // world: dead center, matches the circle below
+
+  LOOP
+    IF (g_hit_cbox)
+      set_color('#ff5a5a');
+    ELSE
+      set_color('#ff9e5a');
+    END
+    draw_rect(x - 25, y - 25, 24, 24);
+    circle(x, y, 16);
+    write(0, x - 40, y - 45, 0, 'cbox (box + circle)');
+    FRAME;
+  END
+END
+
+PROCESS player();
+PRIVATE speed = 160;
+BEGIN
+  x = 90;
+  y = 260;
+  width = 20;
+  height = 20;
+
+  LOOP
+    IF (key(_left))  IF (place_free(x - speed * get_delta(), y, g_wall_type)) x = x - speed * get_delta(); END END
+    IF (key(_right)) IF (place_free(x + speed * get_delta(), y, g_wall_type)) x = x + speed * get_delta(); END END
+    IF (key(_up))    IF (place_free(x, y - speed * get_delta(), g_wall_type)) y = y - speed * get_delta(); END END
+    IF (key(_down))  IF (place_free(x, y + speed * get_delta(), g_wall_type)) y = y + speed * get_delta(); END END
+
+    g_hit_box = collision(g_box_type);
+    g_hit_circle = collision_circle(g_circle_type);
+    g_hit_radius = collision_circle(g_radius_type);
+    g_hit_obb = collision_obb(g_obb_type);
+    g_hit_cbox = collision(g_cbox_type);
+    g_blocked = 1 - place_free(x, y, g_wall_type);
+
+    set_color('#6bff99');
+    draw_rect(x - width / 2, y - height / 2, width, height);
+
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(860, 520);
+  screen_color('#0e1a29');
+
+  g_wall_type = TYPE wall;
+  g_box_type = TYPE target_box;
+  g_circle_type = TYPE target_circle;
+  g_radius_type = TYPE target_radius;
+  g_obb_type = TYPE target_obb;
+  g_cbox_type = TYPE target_cbox;
+
+  wall(340, 440, 180, 40);
+
+  target_box(220, 120);
+  target_circle(420, 120);
+  target_radius(620, 120);
+  target_obb(220, 320);
+  target_cbox(620, 320);
+
+  player();
+
+  LOOP
+    write(0, 16, 14, 0, 'COLLISION DEMO (setas para mover)');
+    write(0, 16, 34, 0, 'box:');    write_int(0, 90, 34, 0, g_hit_box);
+    write(0, 160, 34, 0, 'circle:'); write_int(0, 250, 34, 0, g_hit_circle);
+    write(0, 320, 34, 0, 'radius:'); write_int(0, 410, 34, 0, g_hit_radius);
+    write(0, 480, 34, 0, 'obb:');    write_int(0, 550, 34, 0, g_hit_obb);
+    write(0, 620, 34, 0, 'cbox:');   write_int(0, 690, 34, 0, g_hit_cbox);
+    write(0, 760, 34, 0, 'wall:');   write_int(0, 820, 34, 0, g_blocked);
+    FRAME;
+  END
+END`;
+
+    const canvas = document.getElementById('c');
+    const log = document.getElementById('log');
+
+    function logLine(line) {
+      log.textContent = String(line);
+    }
+
+    try {
+      runDivDemo({
+        canvas,
+        source: SOURCE,
+        clearColor: '#0e1a29',
+        onLog: (line) => { logLine(line); },
+        onError: (err) => {
+          logLine('error: ' + (err?.message || String(err)));
+          console.error(err);
+        }
+      });
+      logLine('running: collision + collision_circle + collision_obb + cboxes + place_meeting/free');
+    } catch (err) {
+      logLine('error: ' + (err?.message || String(err)));
+      console.error(err);
+    }
+  </script>
+</body>
+</html>

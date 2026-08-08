@@ -50,11 +50,11 @@ begin
 
   loop
     if (key(_left))
-      x = x - speed * get_delta();
+      x = x - speed ;
     end
 
     if (key(_right))
-      x = x + speed * get_delta();
+      x = x + speed ;
     end
 
     vy = vy + gravity * get_delta();

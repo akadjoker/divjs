@@ -3,9 +3,13 @@
  * Native functions para a VM
  */
 
+import { VM } from './vm.js';
 import { Graphics } from '../graph/graphics.js';
 import { parseBennuBdfFont } from './bennu_bdf.js';
 import { loadDivFpgFromUrl, loadDivFntFromUrl, loadDivMapFromUrl } from './div_formats.js';
+import { getProcessShapes, setPivotResolver } from './process.js';
+import { font6x8Pixel, FONT_6X8_WIDTH, FONT_6X8_HEIGHT } from './font_6x8.js';
+import { MinHeap } from './min_heap.js';
 
 export const CType = {
   C_SCREEN: 0,
@@ -39,6 +43,20 @@ class Graph {
   }
 }
 
+// Apply control points parsed from a MAP/FPG file onto a runtime Graph.
+// DIV convention: cpoint 0 is the rotation/scale pivot; an "undefined"
+// cpoint (stored as -1,-1 in the file) leaves the graph's default point.
+function applyCpointsToGraph(graph, cpoints) {
+  if (!graph || !cpoints || !cpoints.length) {
+    return;
+  }
+  cpoints.forEach((cp, index) => {
+    if (cp && !cp.undefined) {
+      graph.setPoint(index, cp.x, cp.y);
+    }
+  });
+}
+
 // Engine runtime adapter for browser canvas hosts.
 export class CanvasEngineRuntime {
   constructor(options) {
@@ -48,10 +66,25 @@ export class CanvasEngineRuntime {
     this.height = options.height || this.ctx.canvas.height;
     this.clearColor = options.clearColor || '#0b1117';
     this.logFn = options.logFn || ((line) => console.log(line));
+    this.backgroundGraph = null; // set via put_screen(); stretched to fill the screen behind all processes
+    // In-flight load_fpg/load_fnt/load_map promises. A process can be
+    // spawned (and reference a graphic) before that graphic's fetch()
+    // has resolved - e.g. tutor0b.html's MAIN has a 30% chance of
+    // spawning an "enemy" on every tick starting from tick 1, well
+    // before load_fpg's network request can possibly finish. Every
+    // frame re-resolves the graphic fresh (see getGraphAsset), so this
+    // isn't a permanent failure, but it visibly flashes the fallback
+    // placeholder on every fresh load. See divjs.js's loop(), which
+    // awaits this list before rendering a tick that added to it.
+    this.pendingLoads = [];
+    // Bumped by set_point() so the per-process pivot memo in
+    // getProcessPivot() invalidates without tracking individual graphs.
+    this.pointsVersion = 0;
+    this.nextTextId = 1; // ids handed out by write/write_int, for delete_text
 
     this.keys = {};
     this.drawCommands = [];
-    this.currentColor = '#2dd4bf';
+    this.currentColor = '#ffffff'; // DIV draws text white by default
     this.cameraX = 0;
     this.cameraY = 0;
     this.totalTime = 0;
@@ -65,6 +98,7 @@ export class CanvasEngineRuntime {
     this.fpsValue = 0;
     this.fpsAccumTime = 0;
     this.fpsAccumFrames = 0;
+    this.targetFps = 0; // 0 = uncapped, set via set_fps()
     this.state = {
       scroll: [],
       region: {},
@@ -74,7 +108,11 @@ export class CanvasEngineRuntime {
     this.bitmapFonts = new Map();
     this.nextBitmapFontId = 1;
     this.graphLibraries = new Map();
-    this.nextGraphLibraryId = 1;
+    // Library ids start at 0, matching real DIV: the first FPG loaded
+    // (even without capturing its return value) becomes file 0, which
+    // is exactly how the original tutor*.prg scripts assume put_screen(0, N)
+    // and bare `graph=N;` (file left at its 0 default) resolve.
+    this.nextGraphLibraryId = 0;
     this.paths = new Map();
     this.nextPathId = 1;
     this.pathFollowers = new Map();
@@ -93,12 +131,12 @@ export class CanvasEngineRuntime {
     const m = this._mouse;
     const toCanvas = (e) => {
       const r = canvas.getBoundingClientRect();
-      m.x = Math.round((e.clientX - r.left) * (canvas.width  / r.width));
-      m.y = Math.round((e.clientY - r.top)  * (canvas.height / r.height));
+      m.x = Math.round((e.clientX - r.left) * (canvas.width / r.width));
+      m.y = Math.round((e.clientY - r.top) * (canvas.height / r.height));
     };
-    canvas.addEventListener('mousemove',  e => { toCanvas(e); });
-    canvas.addEventListener('mousedown',  e => { toCanvas(e); m.buttons[e.button] = true; });
-    canvas.addEventListener('mouseup',    e => { toCanvas(e); m.buttons[e.button] = false; });
+    canvas.addEventListener('mousemove', e => { toCanvas(e); });
+    canvas.addEventListener('mousedown', e => { toCanvas(e); m.buttons[e.button] = true; });
+    canvas.addEventListener('mouseup', e => { toCanvas(e); m.buttons[e.button] = false; });
     canvas.addEventListener('mouseleave', e => { m.buttons = [false, false, false]; });
   }
 
@@ -146,7 +184,56 @@ export class CanvasEngineRuntime {
     }
   }
 
+  // Mirrors the real cursor onto the mouse Process (see registerNatives).
+  updateMouseProcess() {
+    const p = this.mouseProcess;
+    if (!p) {
+      return;
+    }
+    p.x = this._mouse.x;
+    p.y = this._mouse.y;
+    p.locals[0] = p.x;
+    p.locals[1] = p.y;
+
+    // A cursor collides through its hotspot, not through the whole
+    // graphic. tutor6's cursor is 32x32 on a 40x40 grid, so a full-size
+    // box overlaps two or four board squares at once - every one of them
+    // fires change_boardbox() in the same frame and an even number of
+    // toggles undoes itself, which is exactly the "smiles appear then go
+    // back" behaviour. The hotspot is control point 0, and cboxToShape
+    // maps a cbox at the pivot's own local coordinates back onto the
+    // process position exactly.
+    const pivot = this.getProcessPivot(p) || { x: 0, y: 0 };
+    p.cboxes = [{
+      shape: 'circle',
+      code: 0,
+      x: Number(pivot.x) || 0,
+      y: Number(pivot.y) || 0,
+      radius: 1
+    }];
+  }
+
+  // Reads/writes of `mouse.<field>` that aren't x/y/buttons land here.
+  getMouseFieldNative(fieldName) {
+    if (!this.mouseProcess) {
+      return 0;
+    }
+    return this.getProcessFieldValue(this.mouseProcess, fieldName);
+  }
+
+  setMouseFieldNative(fieldName, value) {
+    if (!this.mouseProcess) {
+      return 0;
+    }
+    // graph/file/size/flags are canonical slots now, so the normal path
+    // writes the slot and syncs the property. Writing the property alone
+    // (as this used to) left locals[16] at 0, and the next sync() wiped
+    // the cursor graphic straight back out.
+    return this.setProcessFieldValue(this.mouseProcess, fieldName, value);
+  }
+
   beginFrame(dt) {
+    this.updateMouseProcess();
     this.vm.dt = dt;
     this.totalTime += dt;
     this.fpsAccumTime += dt;
@@ -161,7 +248,13 @@ export class CanvasEngineRuntime {
     // Advance fade each frame
     const f = this._fade;
     if (f.active) {
-      const step = f.speed / 100;
+      // DIV fades the palette DAC over the range 0..64, advancing by
+      // `dacout_speed` units once per frame (f.c's fade/fade_on/fade_off,
+      // stepped in i.c:1596). Dividing by 64 reproduces that timing, so
+      // the default speed of 8 completes a fade in 8 frames. Dividing by
+      // 100 - as this used to - made every fade 12x slower than DIV,
+      // which at tutor4's set_fps(12) left the screen black for ~8s.
+      const step = f.speed / 64;
       if (f.alpha < f.target) {
         f.alpha = Math.min(f.target, f.alpha + step);
       } else if (f.alpha > f.target) {
@@ -185,6 +278,66 @@ export class CanvasEngineRuntime {
       ? mem.jsHeapSizeLimit / (1024 * 1024)
       : 0;
     return `RAM: ${usedMb.toFixed(1)}MB / ${limitMb.toFixed(0)}MB`;
+  }
+
+  // Colour key for drawProcessDebugOverlay, drawn as a small legend when
+  // the shape overlay is on so the markers aren't guesswork.
+  static DEBUG_LEGEND = [
+    ['#ff2d95', 'collision shape'],
+    ['#ffffff', 'COLLIDING now'],
+    ['#ffe600', 'pivot (point 0)'],
+    ['#00ff6a', 'control points'],
+    ['#00ffff', 'width/height box']
+  ];
+
+  drawDebugLegend() {
+    if (!this.debugDrawProcessBounds) {
+      return;
+    }
+
+    const entries = CanvasEngineRuntime.DEBUG_LEGEND;
+    // Same reasoning as the markers in drawProcessDebugOverlay: a fixed
+    // 10px legend covers a quarter of a 320x200 DIV screen.
+    const s = Math.max(0.5, Math.min(1, this.width / 800));
+    const fontPx = Math.max(5, Math.round(10 * s));
+    const lineHeight = Math.round(12 * s);
+    const pad = Math.round(6 * s);
+    const swatch = Math.round(8 * s);
+
+    this.ctx.save();
+    this.ctx.font = `${fontPx}px JetBrains Mono, Consolas, monospace`;
+    this.ctx.textBaseline = 'top';
+
+    const textWidth = Math.max(...entries.map(([, label]) => this.ctx.measureText(label).width));
+    const boxW = pad * 2 + swatch + 5 + textWidth;
+    const boxH = pad * 2 + entries.length * lineHeight;
+    const boxX = 4;
+    const boxY = this.height - boxH - 4;
+
+    this.ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    this.ctx.fillRect(boxX, boxY, boxW, boxH);
+
+    entries.forEach(([color, label], i) => {
+      const y = boxY + pad + i * lineHeight;
+      this.ctx.fillStyle = color;
+      this.ctx.fillRect(boxX + pad, y + 1, swatch, swatch);
+      this.ctx.fillStyle = '#fff';
+      this.ctx.fillText(label, boxX + pad + swatch + 5, y);
+    });
+
+    this.ctx.restore();
+  }
+
+  // Toggle the collision-shape/pivot overlay at runtime. Exposed to
+  // scripts as set_debug() and wired to a key in divjs.js, so it can be
+  // flipped on without editing the page that hosts the demo.
+  setDebugNative(enabled) {
+    if (enabled === undefined) {
+      this.debugDrawProcessBounds = !this.debugDrawProcessBounds;
+    } else {
+      this.debugDrawProcessBounds = !!(Number(enabled) || 0);
+    }
+    return this.debugDrawProcessBounds ? 1 : 0;
   }
 
   drawDebugStats() {
@@ -245,7 +398,14 @@ export class CanvasEngineRuntime {
 
     for (const candidate of candidates) {
       for (const pressedKey of Object.keys(this.keys)) {
-        if (pressedKey === 'Meta' || pressedKey === 'Control' || pressedKey === 'Alt' || pressedKey === 'Shift') {
+        // Modifiers are skipped so they can't satisfy a lookup for some
+        // *other* key - but not when the script asked for the modifier
+        // itself ("IF (key(_control))", which real DIV scripts use to
+        // fire; see tutor1b). Previously this skipped unconditionally,
+        // making key(_control)/_shift/_alt permanently false.
+        const isModifier = pressedKey === 'Meta' || pressedKey === 'Control' ||
+          pressedKey === 'Alt' || pressedKey === 'Shift';
+        if (isModifier && pressedKey.toLowerCase() !== candidate) {
           continue;
         }
         if (pressedKey.toLowerCase() === candidate && this.keys[pressedKey]) {
@@ -274,7 +434,24 @@ export class CanvasEngineRuntime {
     return 0;
   }
 
+  // Classic DIV calls SET_MODE with a single resolution constant
+  // (SET_MODE(M640X480)); this engine's own demos call it with explicit
+  // (width, height) instead. Support both: when called with one argument
+  // that matches a known mode constant (see the negative m320x200/
+  // m640x480 entries in compiler.js's builtinConstants), decode it here;
+  // otherwise fall back to the plain two-argument form.
+  static VIDEO_MODE_TABLE = {
+    '-1': [320, 200],
+    '-2': [640, 480]
+  };
+
   setModeNative(width, height) {
+    if (height === undefined) {
+      const mode = CanvasEngineRuntime.VIDEO_MODE_TABLE[Number(width)];
+      if (mode) {
+        [width, height] = mode;
+      }
+    }
     const w = Number(width) || this.width;
     const h = Number(height) || this.height;
     this.width = w;
@@ -289,8 +466,156 @@ export class CanvasEngineRuntime {
     return 0;
   }
 
-  setFpsNative() {
+  // DIV's GET_PIXEL(x, y) - reads a pixel straight off the rendered
+  // screen, which scripts use for collision against painted scenery
+  // (tutor4's worm dies on "get_pixel(x,y)!=0", i.e. anything that isn't
+  // the black background). Returns 0 for a fully-black/transparent
+  // pixel, non-zero otherwise, approximating DIV's palette-index test
+  // closely enough for that "is something there?" idiom.
+  // The scenery buffer GET_PIXEL reads, mirroring DIV's `copia2`. DIV
+  // keeps the background in its own buffer (exported as "background" in
+  // i.c); PUT_SCREEN clears and draws into it, and every frame the
+  // visible page is refreshed from it (memcpy(copia, copia2, ...)) before
+  // process sprites are blitted on top. So GET_PIXEL sees scenery only -
+  // never the sprites. Reading the composited canvas instead, as this
+  // used to, made tutor4's worm die on its own trail: the head tests the
+  // square ahead, and that square still held the previous frame's
+  // rendering of the worm.
+  // Builds (or returns the cached) buffer even with no PUT_SCREEN
+  // background set - real DIV's copia2 exists from startup and xput/put
+  // draw straight into it (see xputNative), independent of whether a
+  // background graphic was ever assigned.
+  ensureSceneryBuffer() {
+    const bg = this.backgroundGraph;
+    let graphic = null;
+    if (bg) {
+      graphic = this.getGraphAsset(bg.fileId, bg.graphId);
+      if (!graphic || !graphic.image || graphic.loaded === false) {
+        return null; // not decoded yet - rebuilt on a later call
+      }
+    }
+
+    const key = bg
+      ? `${bg.fileId}:${bg.graphId}:${this.width}x${this.height}`
+      : `none:${this.width}x${this.height}`;
+    if (this._sceneryKey === key && this._sceneryCtx) {
+      return this._sceneryCtx;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = this.width;
+    canvas.height = this.height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (bg) {
+      this.blitBackground(ctx, graphic, bg.fileId, bg.graphId);
+    }
+
+    this._sceneryKey = key;
+    this._sceneryCtx = ctx;
+    return ctx;
+  }
+
+  getPixelNative(x, y) {
+    const px = Math.round(Number(x) || 0);
+    const py = Math.round(Number(y) || 0);
+    if (px < 0 || py < 0 || px >= this.width || py >= this.height) {
+      return 0;
+    }
+
+    const ctx = this.ensureSceneryBuffer();
+    if (!ctx) {
+      return 0; // no PUT_SCREEN yet: DIV's copia2 starts zeroed
+    }
+
+    try {
+      const data = ctx.getImageData(px, py, 1, 1).data;
+      // Fully transparent is palette index 0 in an 8bpp DIV graphic (see
+      // decodePixelsToImageData), which is what scripts test for with
+      // "get_pixel(x,y) != 0".
+      if (data[3] === 0) {
+        return 0;
+      }
+      return (data[0] << 16) | (data[1] << 8) | data[2];
+    } catch (error) {
+      // getImageData throws on a tainted canvas (cross-origin image).
+      return 0;
+    }
+  }
+
+  // Sets (or clears, when graphId <= 0) a graphic as a static full-screen
+  // background, stretched to fill the screen behind every process - same
+  // as DIV's put_screen(file, graph).
+  // PUT_SCREEN draws the graphic 1:1, anchored at its pivot - DIV does
+  // `put_sprite(file,graf,xg,yg,0,100,...)` into the background buffer
+  // (f.c:1751), where xg,yg is control point 0 and size 100 means no
+  // scaling. Stretching it to fill the screen, as this used to, only
+  // looked right when the background happened to match the screen size;
+  // anything else was silently rescaled instead of leaving the
+  // uncovered area black the way DIV does.
+  blitBackground(ctx, graphic, fileId, graphId) {
+    const graph = this.ensureGraph(fileId, graphId);
+    const pivot = graph.getPoint(0) || { x: 0, y: 0 };
+    const dx = Math.round(this.width * 0.5 - (Number(pivot.x) || 0));
+    const dy = Math.round(this.height * 0.5 - (Number(pivot.y) || 0));
+
+    if (graphic.sx !== undefined) {
+      ctx.drawImage(graphic.image, graphic.sx, graphic.sy, graphic.sw, graphic.sh, dx, dy, graphic.sw, graphic.sh);
+    } else {
+      ctx.drawImage(graphic.image, dx, dy);
+    }
+  }
+
+  putScreenNative(fileId, graphId) {
+    // Drop any cached scenery buffer - ensureSceneryBuffer rebuilds it
+    // from whatever background is set now (DIV's put_screen likewise
+    // clears copia2 before drawing into it).
+    this._sceneryKey = null;
+    this._sceneryCtx = null;
+
+    const gid = Number(graphId) || 0;
+    if (gid <= 0) {
+      this.backgroundGraph = null;
+      return 0;
+    }
+    this.backgroundGraph = { fileId: Number(fileId) || 0, graphId: gid };
     return 0;
+  }
+
+  drawBackgroundGraph() {
+    if (!this.backgroundGraph) {
+      return;
+    }
+    const { fileId, graphId } = this.backgroundGraph;
+    const graphic = this.getGraphAsset(fileId, graphId);
+    if (!graphic || !graphic.image || graphic.loaded === false) {
+      return;
+    }
+    this.blitBackground(this.ctx, graphic, fileId, graphId);
+  }
+
+  setFpsNative(fps) {
+    const value = Number(fps) || 0;
+    this.targetFps = value > 0 ? value : 0;
+    return 0;
+  }
+
+  // Real DIV exposes FPS as a bare read-only global (see the `fps`
+  // identifier special-case in compiler.js); get_process_count has no
+  // direct DIV equivalent but covers the other half of a typical
+  // hand-written stats process ("FPS: 60 | procs: 12").
+  getFpsNative() {
+    return Math.round(this.fpsValue) || 0;
+  }
+
+  getProcessCountNative(activeOnly) {
+    // The mouse is an engine-owned process with no script body - real
+    // DIV's mouse is a separate struct, never counted among processes -
+    // so it must not inflate get_process_count()'s result.
+    const all = (this.vm?.processManager?.getAll?.() || []).filter((p) => !p.isMouse);
+    if (!activeOnly) {
+      return all.length;
+    }
+    return all.filter((p) => p.active && !p.suspended && !p.dead).length;
   }
 
   toRadiansFromDivAngle(angle) {
@@ -548,7 +873,7 @@ export class CanvasEngineRuntime {
     }
 
     // O compiler publica todos os slots (fixos, params, privates e locals
-    // implícitos) em processTable.locals para cada processo compilado — ver
+    // implícitos) em processTable.locals para cada processo compilado - ver
     // compileProcess() em compiler/compiler.js. Não há caminho de código em
     // que um processo válido chegue aqui sem essa entrada, por isso não
     // existe fallback: uma tabela em falta ou incompleta é um bug do
@@ -599,8 +924,8 @@ export class CanvasEngineRuntime {
   }
 
   xadvanceNative(distance, angle) {
-    // Previously tried to auto-detect argument order — xadvance(distance,
-    // angle) vs xadvance(angle, distance) — by guessing that whichever
+    // Previously tried to auto-detect argument order - xadvance(distance,
+    // angle) vs xadvance(angle, distance) - by guessing that whichever
     // argument has magnitude > 180000 "must be" the distance, since a
     // DIV angle "shouldn't" exceed 180000 (180.000°). That assumption is
     // wrong: toRadiansFromDivAngle() never wraps or clamps its input, and
@@ -608,21 +933,21 @@ export class CanvasEngineRuntime {
     // + 3000;", unbounded, cycling naturally through trig's own
     // periodicity) confirms angles routinely span the full 0-360000
     // convention, not just 0-180000. Any legitimate angle between 180001
-    // and 360000 (180°-360° — the entire back half of a full turn) would
+    // and 360000 (180°-360° - the entire back half of a full turn) would
     // silently get misclassified as "must be the distance", producing a
     // wildly wrong movement in both magnitude and direction. There's no
     // magnitude threshold that can fix this: on-screen distances
     // routinely reach into the hundreds or low thousands (screen width/
     // height, a scrolled level's extent), which overlaps the legitimate
     // angle range too broadly for guessing to ever be reliable. Fixed
-    // argument order — matching advanceNative(distance, angle) exactly —
+    // argument order - matching advanceNative(distance, angle) exactly -
     // instead of guessing.
     return this.moveCurrentProcess(distance, angle);
   }
 
   xputNative() {
     const [fileId, graphId, x, y, angle, size, flags, region] = arguments;
-    this.ensureGraph(fileId, graphId);
+    const graph = this.ensureGraph(fileId, graphId);
     this.drawCommands.push({
       type: 'xput',
       fileId: Number(fileId) || 0,
@@ -636,22 +961,51 @@ export class CanvasEngineRuntime {
       color: this.currentColor,
       ctype: this.getCurrentCType()
     });
+
+    // Real DIV's xput (f.c's _xput) draws straight into copia2, the same
+    // persistent buffer put_screen fills - so scenery placed with xput
+    // must stay visible to get_pixel() from here on, not vanish after
+    // this frame's drawCommands render like every other draw call does.
+    // (Doesn't honor the `region` clip for this persistent copy - xput's
+    // region argument is a rare case and clipping only the transient
+    // per-frame draw is enough for that.)
+    const sceneryCtx = this.ensureSceneryBuffer();
+    if (sceneryCtx) {
+      const prevCtx = this.ctx;
+      this.ctx = sceneryCtx;
+      this.drawGraphSprite(
+        Number(fileId) || 0,
+        Number(graphId) || 0,
+        Number(x) || 0,
+        Number(y) || 0,
+        Number(angle) || 0,
+        Number(size) || 100,
+        Number(size) || 100,
+        Number(flags) || 0,
+        graph.width,
+        graph.height
+      );
+      this.ctx = prevCtx;
+    }
+
     return 1;
   }
 
   setPointNative(fileId, graphId, pointIndex, x, y) {
     const graph = this.ensureGraph(fileId, graphId);
     graph.setPoint(pointIndex, x, y);
+    this.pointsVersion++; // invalidate cached pivots (getProcessPivot)
     return 1;
   }
 
+  // Real DIV: GET_POINT(file, graph, point, axis) returns a scalar
+  // (axis 0 = x, 1 = y), not a {x,y} object - a script calling get_point()
+  // directly (rather than through the get_point_x/_y convenience natives
+  // below) needs a number it can actually do arithmetic with.
   getPointNative(fileId, graphId, pointIndex, axis) {
     const graph = this.ensureGraph(fileId, graphId);
     const point = graph.getPoint(pointIndex);
-    return {
-      x: point.x,
-      y: point.y
-    };
+    return Number(axis) === 1 ? point.y : point.x;
   }
 
   isMirrorX(flags) {
@@ -664,14 +1018,21 @@ export class CanvasEngineRuntime {
     return f === 2 || f === 3 || f === 6 || f === 7;
   }
 
-  computeRealPoint(fileId, graphId, pointIndex, x, y, angle, size, flags) {
+  computeRealPoint(fileId, graphId, pointIndex, x, y, angle, size, flags, scaleXPct, scaleYPct) {
     const graph = this.ensureGraph(fileId, graphId);
     const pivot = graph.getPoint(0);
     const point = graph.getPoint(pointIndex);
 
-    const scale = (Number(size) || 100) / 100;
-    let dx = (point.x - pivot.x) * scale;
-    let dy = (point.y - pivot.y) * scale;
+    // Match drawProcessAt/drawGraphSprite: `size` scales both axes
+    // uniformly, scale_x/scale_y stretch each axis independently on top
+    // of it. scaleXPct/scaleYPct default to `size` itself so callers that
+    // don't pass them (or a process that never touches scale_x/scale_y)
+    // still get the plain uniform-size behavior.
+    const sizePct = Number(size) || 100;
+    const scaleX = (scaleXPct !== undefined ? Number(scaleXPct) || 0 : sizePct) / 100;
+    const scaleY = (scaleYPct !== undefined ? Number(scaleYPct) || 0 : sizePct) / 100;
+    let dx = (point.x - pivot.x) * scaleX;
+    let dy = (point.y - pivot.y) * scaleY;
 
     if (this.isMirrorX(flags)) {
       dx = -dx;
@@ -745,8 +1106,12 @@ export class CanvasEngineRuntime {
     const angle = this.getCurrentProcessAngle();
     const size = this.getCurrentProcessLocalValue('size', 100);
     const flags = this.getCurrentProcessLocalValue('flags', 0);
+    const scaleX = process ? this.getProcessLocalNumberAliased(process, ['scale_x', 'scalex'], 100) : 100;
+    const scaleY = process ? this.getProcessLocalNumberAliased(process, ['scale_y', 'scaley'], 100) : 100;
+    const scaleXPct = size * (scaleX / 100);
+    const scaleYPct = size * (scaleY / 100);
 
-    return this.computeRealPoint(fileId, graphId, pointIndex, x, y, angle, size, flags);
+    return this.computeRealPoint(fileId, graphId, pointIndex, x, y, angle, size, flags, scaleXPct, scaleYPct);
   }
 
   getRealPointXNative(...args) {
@@ -796,12 +1161,18 @@ export class CanvasEngineRuntime {
       return null;
     }
 
-    const x = Number(process.locals?.[0] ?? process.x ?? 0) || 0;
-    const y = Number(process.locals?.[1] ?? process.y ?? 0) || 0;
+    // Read through RESOLUTION (slot 14) so these are screen coordinates.
+    const resRaw = Number(process.locals?.[14] ?? process.resolution ?? 0) || 0;
+    const res = resRaw > 0 ? resRaw : 1;
+    const cx = (Number(process.locals?.[0] ?? process.x ?? 0) || 0) / res;
+    const cy = (Number(process.locals?.[1] ?? process.y ?? 0) || 0) / res;
     const width = Number(process.locals?.[2] ?? process.width ?? 0) || 0;
     const height = Number(process.locals?.[3] ?? process.height ?? 0) || 0;
 
-    return { x, y, width, height };
+    // process x/y is the center (see getCenter in process.js) - return the
+    // derived top-left rect, which is what callers here (out_of_region/
+    // out_of_screen) actually compare against.
+    return { x: cx - width * 0.5, y: cy - height * 0.5, width, height };
   }
 
   outOfRegionNative(regionId = 0) {
@@ -829,21 +1200,100 @@ export class CanvasEngineRuntime {
     return this.outOfRegionNative(0);
   }
 
+  // DIV's OUT_REGION(processId, regionId) - differs from out_of_region
+  // above in two ways: it names the process explicitly (rather than
+  // always using the current one), and it's true only once the graphic
+  // is *completely* outside the region, not merely touching the edge.
+  // tutor1b relies on both: "WHILE (NOT out_region(id,0))" keeps a shot
+  // alive until it has fully left the screen.
+  outRegionNative(processId, regionId = 0) {
+    const process = this.vm?.processManager?.get(Number(processId) || 0)
+      || this.vm?.currentProcess;
+    if (!process) {
+      return 0;
+    }
+
+    const width = Number(process.width) || 0;
+    const height = Number(process.height) || 0;
+    // process.x/y is the center (see getCenter in process.js), in the
+    // process's own RESOLUTION units.
+    const res = typeof process.getResolution === 'function' ? process.getResolution() : 1;
+    const left = (Number(process.x) || 0) / res - width * 0.5;
+    const top = (Number(process.y) || 0) / res - height * 0.5;
+    const right = left + width;
+    const bottom = top + height;
+
+    const region = this.getRegionRect(regionId);
+    const isFullyOutside =
+      right < region.x ||
+      bottom < region.y ||
+      left > region.x + region.width ||
+      top > region.y + region.height;
+
+    return isFullyOutside ? 1 : 0;
+  }
+
+  // An OFFSET <global> argument compiles to a live-reference descriptor
+  // (see compileOffsetOperator) instead of a snapshotted value - resolve
+  // it against the VM's current globals every time the text is drawn, so
+  // "WRITE_INT(..., OFFSET score)" keeps showing the up-to-date score
+  // without the script redrawing it. Anything else passes straight
+  // through as an ordinary value.
+  isOffsetRef(value) {
+    return !!value && typeof value === 'object' && value.__divOffsetGlobal === true;
+  }
+
+  resolveOffsetRef(value) {
+    if (!this.isOffsetRef(value)) {
+      return value;
+    }
+    const raw = this.vm?.globals?.get(value.slot);
+    return raw === undefined ? 0 : raw;
+  }
+
   writeNative(font, x, y, align, text) {
+    const isOffset = this.isOffsetRef(text);
+    const id = this.nextTextId++;
     this.drawCommands.push({
       type: 'text',
+      id,
+      // Every WRITE text persists until DELETE_TEXT removes it - that is
+      // what DIV does (f.c's write/delete_text), not just the
+      // OFFSET-backed ones. Marking only OFFSET texts persistent meant a
+      // plain write() drawn once from MAIN showed for a single frame and
+      // then vanished, e.g. tutor5's "Use mouse to move snake."
+      persistent: true,
       x: Number(x),
       y: Number(y),
-      text: String(text),
+      // Keep the descriptor itself when it's an OFFSET, so the draw pass
+      // re-resolves it; plain values are stringified once here as before.
+      text: isOffset ? text : String(text),
       color: this.currentColor,
       ctype: this.getCurrentCType(),
       fontId: Number(font) || 0,
       align: Number(align) || 0
     });
+    return id;
+  }
+
+  // DIV's DELETE_TEXT(id) - removes a text created by WRITE/WRITE_INT.
+  // id 0 clears all of them, matching DIV's "delete_text(0)" idiom.
+  deleteTextNative(textId) {
+    const id = Number(textId) || 0;
+    this.drawCommands = this.drawCommands.filter((cmd) => {
+      if (cmd.type !== 'text') {
+        return true;
+      }
+      return id !== 0 && cmd.id !== id;
+    });
     return 0;
   }
 
   writeIntNative(font, x, y, align, value) {
+    if (this.isOffsetRef(value)) {
+      // Defer to draw time, but remember it should render as an integer.
+      return this.writeNative(font, x, y, align, { ...value, asInt: true });
+    }
     return this.writeNative(font, x, y, align, Math.floor(Number(value) || 0));
   }
 
@@ -911,7 +1361,51 @@ export class CanvasEngineRuntime {
 
   collisionNative(typeCode) {
     if (!this.vm?.currentProcess) return 0;
-    return this.vm.processManager.collision(this.vm.currentProcess, Number(typeCode));
+    const code = Number(typeCode);
+    if (this.mouseProcess && code === this.mouseProcess.type) {
+      return this.collideWithMouse(this.vm.currentProcess);
+    }
+    return this.vm.processManager.collision(this.vm.currentProcess, code);
+  }
+
+  // collision(TYPE mouse) is a special case in DIV, not an ordinary
+  // process-vs-process test (src/shared/run/c.c):
+  //
+  //   if (bloque==0) { // collision(type mouse)
+  //     if (mouse->x>=clipx0 && mouse->x<=clipx1 && ...)
+  //       if (*(buffer + ...)) return(id); else return(0);
+  //
+  // The cursor is a *point*, tested against the calling process's own
+  // pixel rectangle. That rectangle is inclusive of clipx1 = x0+width-1,
+  // so neighbouring sprites never share a pixel. Modelling it as two
+  // overlapping boxes made adjacent board squares both claim the pixel on
+  // their shared edge, so every click toggled twice and undid itself.
+  collideWithMouse(process) {
+    const graph = this.getProcessGraphInfo(process);
+    if (graph.graphId <= 0) {
+      return 0; // no graphic, nothing to hit
+    }
+
+    const res = typeof process.getResolution === 'function' ? process.getResolution() : 1;
+    const pivot = this.getProcessPivot(process) || { x: 0, y: 0 };
+    const left = process.x / res - (Number(pivot.x) || 0);
+    const top = process.y / res - (Number(pivot.y) || 0);
+    // Use the graphic's own size, not process.width/height: those only
+    // get adjusted the first time the process is drawn
+    // (syncProcessSizeToGraph), so a process tested before its first
+    // render would be measured with the constructor's 32x32 default.
+    const runtimeGraph = this.ensureGraph(graph.fileId, graph.graphId);
+    const width = Number(runtimeGraph?.width) || Number(process.width) || 0;
+    const height = Number(runtimeGraph?.height) || Number(process.height) || 0;
+
+    const mx = this._mouse.x;
+    const my = this._mouse.y;
+    // Half-open on the far edge: pixel `left+width` belongs to the next
+    // sprite, matching DIV's inclusive [x0, x0+width-1].
+    if (mx < left || mx >= left + width || my < top || my >= top + height) {
+      return 0;
+    }
+    return this.mouseProcess ? this.mouseProcess.id : 0;
   }
 
   collisionCircleNative(typeCode) {
@@ -1054,6 +1548,11 @@ export class CanvasEngineRuntime {
     return this.vm.processManager.letMeAlone(this.vm.currentProcess);
   }
 
+  // Scroll/region roots are arrays, so a numeric segment indexes them.
+  // DIV also lets a script drop the index entirely - "scroll.x0" means
+  // scroll[0].x0, which is how tutor5 drives the first scroll - so a
+  // non-numeric segment on one of those arrays implies index 0 and is
+  // re-applied to the entry it selects.
   normalizeSegment(container, segment) {
     if (Array.isArray(container)) {
       if (segment === 'front') return 0;
@@ -1064,6 +1563,12 @@ export class CanvasEngineRuntime {
       }
     }
     return segment;
+  }
+
+  // True when `segment` names a field rather than an index, i.e. the
+  // implicit-index case described above.
+  isImplicitScrollField(container, segment) {
+    return Array.isArray(container) && !Number.isInteger(Number(segment));
   }
 
   resolveRelativeProcessRoot(rootName) {
@@ -1093,25 +1598,8 @@ export class CanvasEngineRuntime {
     const key = String(fieldName || '');
     const lower = key.toLowerCase();
 
-    const canonicalSlots = {
-      x: 0,
-      y: 1,
-      width: 2,
-      height: 3,
-      ctype: 4,
-      id: 5,
-      region: 6,
-      angle: 7,
-      red: 8,
-      green: 9,
-      blue: 10,
-      alpha: 11,
-      tag: 12,
-      priority: 13
-    };
-
-    if (Object.prototype.hasOwnProperty.call(canonicalSlots, lower)) {
-      const slot = canonicalSlots[lower];
+    if (Object.prototype.hasOwnProperty.call(VM.CANONICAL_SLOT_INDICES, lower)) {
+      const slot = VM.CANONICAL_SLOT_INDICES[lower];
       const value = Number(process.locals?.[slot]);
       if (Number.isFinite(value)) {
         return value;
@@ -1142,26 +1630,22 @@ export class CanvasEngineRuntime {
     const key = String(fieldName || '');
     const lower = key.toLowerCase();
 
-    const canonicalSlots = {
-      x: 0,
-      y: 1,
-      width: 2,
-      height: 3,
-      ctype: 4,
-      id: 5,
-      region: 6,
-      angle: 7,
-      red: 8,
-      green: 9,
-      blue: 10,
-      alpha: 11,
-      tag: 12,
-      priority: 13
-    };
-
-    if (Object.prototype.hasOwnProperty.call(canonicalSlots, lower)) {
-      const slot = canonicalSlots[lower];
+    if (Object.prototype.hasOwnProperty.call(VM.CANONICAL_SLOT_INDICES, lower)) {
+      const slot = VM.CANONICAL_SLOT_INDICES[lower];
       process.locals[slot] = value;
+      // Mirror STORE_LOCAL's dirty-flag notification (vm.js) - without
+      // this, writes that go through this path (e.g. "son.priority = ...",
+      // "child.z = ..." via __set_process_field/__set_path rather than a
+      // plain STORE_LOCAL) silently fail to affect the scheduler's run
+      // order or the cached Z-sorted draw list.
+      const processManager = this.vm?.processManager;
+      if (processManager) {
+        if (slot === 15) {
+          processManager.markPriorityDirty();
+        } else if (slot === 13 && value) {
+          processManager.notePriorityUse();
+        }
+      }
       process.sync();
       return value;
     }
@@ -1179,6 +1663,29 @@ export class CanvasEngineRuntime {
     return value;
   }
 
+  // DIV cross-process field access: "raquet1.y" where raquet1 holds a
+  // process id returned by a spawn. Emitted by compilePathGet/PathSet
+  // when the root is a declared scalar (see isProcessRefRoot) - the
+  // generic __get_path/__set_path can't cover it because they key off
+  // the root's *name*, while here the root's runtime *value* names the
+  // process. A dead/unknown id reads as 0 and ignores writes, matching
+  // how the rest of the runtime treats missing processes.
+  getProcessFieldNative(processId, fieldName) {
+    const process = this.vm?.processManager?.get(Number(processId) || 0);
+    if (!process) {
+      return 0;
+    }
+    return this.getProcessFieldValue(process, fieldName);
+  }
+
+  setProcessFieldNative(processId, fieldName, value) {
+    const process = this.vm?.processManager?.get(Number(processId) || 0);
+    if (!process) {
+      return 0;
+    }
+    return this.setProcessFieldValue(process, fieldName, value);
+  }
+
   ensureScrollEntry(index) {
     if (!this.state.scroll[index]) {
       this.state.scroll[index] = {
@@ -1186,7 +1693,18 @@ export class CanvasEngineRuntime {
         alpha: 100,
         active: 0,
         region: 0,
-        flags: 0
+        flags: 0,
+        // DIV's scroll variables: x0/y0 is the foreground plane's
+        // position, x1/y1 the background plane's. A script may drive them
+        // directly (tutor5) or let a camera process drive x0/y0 and have
+        // x1/y1 derived from `ratio` (fenix g_scroll.c: gr_scroll_draw).
+        x0: 0,
+        y0: 0,
+        x1: 0,
+        y1: 0,
+        ratio: 0,
+        speed: 0,
+        z: 512
       };
     }
     return this.state.scroll[index];
@@ -1221,6 +1739,10 @@ export class CanvasEngineRuntime {
     }
 
     for (const rawSegment of segments) {
+      // "scroll.x0" with no index: select entry 0 and read the field off it.
+      if (String(rootName) === 'scroll' && this.isImplicitScrollField(current, rawSegment)) {
+        current = this.ensureScrollEntry(0);
+      }
       const segment = this.normalizeSegment(current, rawSegment);
       if (Array.isArray(current) && Number.isInteger(segment)) {
         if (String(rootName) === 'scroll') {
@@ -1274,6 +1796,11 @@ export class CanvasEngineRuntime {
     }
 
     let current = this.state[rootName];
+    // "scroll.x0 = n" with no index targets entry 0 - same shorthand the
+    // read path handles (see getPathNative).
+    if (rootName === 'scroll' && this.isImplicitScrollField(current, segments[0])) {
+      current = this.ensureScrollEntry(0);
+    }
     for (let i = 0; i < segments.length - 1; i++) {
       const segment = this.normalizeSegment(current, segments[i]);
       if (Array.isArray(current) && Number.isInteger(segment)) {
@@ -1316,9 +1843,15 @@ export class CanvasEngineRuntime {
 
   _nodeBlocked(gx, gy, cellSize, obstacleTypeCode) {
     if (!obstacleTypeCode) return false;
-    const cx = gx * cellSize + Math.floor(cellSize * 0.5);
-    const cy = gy * cellSize + Math.floor(cellSize * 0.5);
-    const hit = this.vm?.processManager?.collisionPoint(cx, cy, obstacleTypeCode) || 0;
+    // Whole-cell rectangle, not just its center point - a single-point
+    // sample let the path clip a wall's corner or squeeze through a gap
+    // that's actually solid whenever the pathfinding grid's cell size
+    // doesn't line up exactly with the wall's own size/position.
+    const minX = gx * cellSize;
+    const minY = gy * cellSize;
+    const hit = this.vm?.processManager?.rectOverlapsType(
+      minX, minX + cellSize, minY, minY + cellSize, obstacleTypeCode
+    ) || 0;
     return hit > 0;
   }
 
@@ -1379,34 +1912,40 @@ export class CanvasEngineRuntime {
 
     const neighbors = allowDiag
       ? [
-          [1, 0, 10], [-1, 0, 10], [0, 1, 10], [0, -1, 10],
-          [1, 1, 14], [1, -1, 14], [-1, 1, 14], [-1, -1, 14]
-        ]
+        [1, 0, 10], [-1, 0, 10], [0, 1, 10], [0, -1, 10],
+        [1, 1, 14], [1, -1, 14], [-1, 1, 14], [-1, -1, 14]
+      ]
       : [
-          [1, 0, 10], [-1, 0, 10], [0, 1, 10], [0, -1, 10]
-        ];
+        [1, 0, 10], [-1, 0, 10], [0, 1, 10], [0, -1, 10]
+      ];
 
     const heuristic = allowDiag
       ? this._octileDistance.bind(this)
       : this._manhattanDistance.bind(this);
 
-    const open = [{ key: startKey, x: sx, y: sy, g: 0, f: heuristic(sx, sy, ex, ey) }];
-    const openMap = new Map([[startKey, open[0]]]);
+    // Binary min-heap keyed on f-score, instead of a plain array scanned
+    // linearly for its minimum every pop (O(m) per pop, O(m^2) overall
+    // for a search that visits m nodes - the default maxNodes of 4096
+    // could mean tens of millions of comparisons for one path_find()
+    // call). No decrease-key: when a shorter path to an already-queued
+    // node is found below, a fresh heap entry is pushed for it rather
+    // than updating the old one in place: the stale entry is simply
+    // skipped when it's eventually popped (staleness detected via
+    // gScore, since its g no longer matches the best known cost for that
+    // key - the closed-set check alone isn't enough once entries for the
+    // same key can now coexist in the heap).
+    const open = new MinHeap();
+    open.push({ key: startKey, x: sx, y: sy, g: 0, priority: heuristic(sx, sy, ex, ey) });
     const closed = new Set();
     const cameFrom = new Map();
     const gScore = new Map([[startKey, 0]]);
 
     let visited = 0;
 
-    while (open.length > 0 && visited < maxVisited) {
-      let bestIndex = 0;
-      for (let i = 1; i < open.length; i++) {
-        if (open[i].f < open[bestIndex].f) bestIndex = i;
-      }
-
-      const current = open.splice(bestIndex, 1)[0];
-      openMap.delete(current.key);
+    while (open.size > 0 && visited < maxVisited) {
+      const current = open.pop();
       if (closed.has(current.key)) continue;
+      if (current.g > gScore.get(current.key)) continue; // stale entry, superseded below
       closed.add(current.key);
       visited += 1;
 
@@ -1439,16 +1978,7 @@ export class CanvasEngineRuntime {
         cameFrom.set(nKey, current.key);
         gScore.set(nKey, tentativeG);
         const f = tentativeG + heuristic(nx, ny, ex, ey);
-
-        const existing = openMap.get(nKey);
-        if (existing) {
-          existing.g = tentativeG;
-          existing.f = f;
-        } else {
-          const node = { key: nKey, x: nx, y: ny, g: tentativeG, f };
-          open.push(node);
-          openMap.set(nKey, node);
-        }
+        open.push({ key: nKey, x: nx, y: ny, g: tentativeG, priority: f });
       }
     }
 
@@ -1545,8 +2075,9 @@ export class CanvasEngineRuntime {
 
     while (remaining > 0 && state.index < path.length) {
       const target = path[state.index];
-      const cx = (Number(process.x) || 0) + (Number(process.width) || 0) * 0.5;
-      const cy = (Number(process.y) || 0) + (Number(process.height) || 0) * 0.5;
+      // process.x/y is already the center (see getCenter in process.js).
+      const cx = Number(process.x) || 0;
+      const cy = Number(process.y) || 0;
       const dx = (Number(target.x) || 0) - cx;
       const dy = (Number(target.y) || 0) - cy;
       const dist = Math.hypot(dx, dy);
@@ -1622,14 +2153,16 @@ export class CanvasEngineRuntime {
     const graphId = Graphics.create(1, 1);
     const url = String(src);
 
-    loadDivMapFromUrl(url)
+    const promise = loadDivMapFromUrl(url)
       .then((map) => {
         Graphics.setCanvas(graphId, map.canvas);
-        this.ensureGraph(0, graphId, map.width, map.height);
+        const graph = this.ensureGraph(0, graphId, map.width, map.height);
+        applyCpointsToGraph(graph, map.cpoints);
       })
       .catch((error) => {
         this.logFn(`[warn] load_map failed (${url}): ${error?.message || String(error)}`);
       });
+    this.pendingLoads.push(promise);
 
     return graphId;
   }
@@ -1643,12 +2176,17 @@ export class CanvasEngineRuntime {
     const entry = this.graphLibraries.get(libraryId);
     const url = String(src);
 
-    loadDivFpgFromUrl(url)
+    const promise = loadDivFpgFromUrl(url)
       .then((fpg) => {
+        const count = fpg.maps.length;
+        this.logFn(`[fpg] loaded ${url}: ${count} graph${count === 1 ? '' : 's'}`);
         for (const map of fpg.maps) {
+          const code = Number(map.code) || 0;
+          this.logFn(`  [fpg] graph ${code}: ${map.width}x${map.height}`);
           const assetId = Graphics.addCanvas(map.canvas);
-          entry.graphs.set(Number(map.code) || 0, assetId);
-          this.ensureGraph(libraryId, map.code, map.width, map.height);
+          entry.graphs.set(code, assetId);
+          const graph = this.ensureGraph(libraryId, code, map.width, map.height);
+          applyCpointsToGraph(graph, map.cpoints);
         }
         entry.loaded = true;
       })
@@ -1656,6 +2194,7 @@ export class CanvasEngineRuntime {
         entry.error = error?.message || String(error);
         this.logFn(`[warn] load_fpg failed (${url}): ${entry.error}`);
       });
+    this.pendingLoads.push(promise);
 
     return libraryId;
   }
@@ -1669,7 +2208,7 @@ export class CanvasEngineRuntime {
     const entry = this.bitmapFonts.get(id);
     const url = String(src);
 
-    loadDivFntFromUrl(url)
+    const promise = loadDivFntFromUrl(url)
       .then((fnt) => {
         entry.font = {
           kind: 'div_fnt',
@@ -1683,6 +2222,7 @@ export class CanvasEngineRuntime {
         entry.error = error?.message || String(error);
         this.logFn(`[warn] load_fnt failed (${url}): ${entry.error}`);
       });
+    this.pendingLoads.push(promise);
 
     return id;
   }
@@ -1724,7 +2264,7 @@ export class CanvasEngineRuntime {
     const entry = this.bitmapFonts.get(id);
     const url = String(src);
 
-    fetch(url)
+    const promise = fetch(url)
       .then((response) => {
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
@@ -1739,8 +2279,71 @@ export class CanvasEngineRuntime {
         entry.error = error?.message || String(error);
         this.logFn(`[warn] load_bdf_font failed (${url}): ${entry.error}`);
       });
+    this.pendingLoads.push(promise);
 
     return id;
+  }
+
+  // ── DIV's built-in system font (its FONT 0) ────────────────────────
+  //
+  // The real 6x8 table from the original runtime, so WRITE output is
+  // pixel-identical to DIV. Glyphs are built into a tinted atlas once per
+  // colour: drawing them as hard pixels matters because a 320x200 canvas
+  // is usually scaled up, and anything antialiased turns to mush.
+  systemFontAtlas(color) {
+    if (!this._systemFontAtlases) {
+      this._systemFontAtlases = new Map();
+    }
+    const key = String(color || '#ffffff');
+    const cached = this._systemFontAtlases.get(key);
+    if (cached) {
+      return cached;
+    }
+
+    const w = FONT_6X8_WIDTH;
+    const h = FONT_6X8_HEIGHT;
+    const canvas = document.createElement('canvas');
+    canvas.width = w * 256;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = key;
+    for (let code = 0; code < 256; code++) {
+      const ox = code * w;
+      for (let row = 0; row < h; row++) {
+        for (let col = 0; col < w; col++) {
+          if (font6x8Pixel(code, col, row)) {
+            ctx.fillRect(ox + col, row, 1, 1);
+          }
+        }
+      }
+    }
+
+    this._systemFontAtlases.set(key, canvas);
+    return canvas;
+  }
+
+  // Align follows renderDivFontText: 1/4 centre, 2 right-align.
+  drawSystemText(x, y, align, text, color) {
+    const w = FONT_6X8_WIDTH;
+    const h = FONT_6X8_HEIGHT;
+    const atlas = this.systemFontAtlas(color);
+    const str = String(text);
+
+    let penX = Math.round(Number(x) || 0);
+    const penY = Math.round(Number(y) || 0);
+    const width = str.length * w;
+    if (align === 1 || align === 4) {
+      penX -= Math.round(width * 0.5);
+    } else if (align === 2) {
+      penX -= width;
+    }
+
+    for (let i = 0; i < str.length; i++) {
+      const code = str.charCodeAt(i) & 0xFF;
+      this.ctx.drawImage(atlas, code * w, 0, w, h, penX, penY, w, h);
+      penX += w;
+    }
+    return str.length;
   }
 
   drawBitmapText(fontId, x, y, align, text) {
@@ -1810,6 +2413,31 @@ export class CanvasEngineRuntime {
   }
 
   registerNatives() {
+    // Let ProcessManager.isCollidable() resolve a process's current GRAPH
+    // (a dynamically-allocated local slot only this side can look up), so
+    // a process with no graphic isn't hittable - see the comment on
+    // isCollidable in process.js.
+    if (this.vm?.processManager) {
+      this.vm.processManager.graphIdOf = (process) => this.getProcessGraphRef(process).graphId;
+
+      // DIV exposes the mouse as a process: it has GRAPH/FILE/SIZE/... and
+      // takes part in collisions, which is how tutor6 detects the cursor
+      // over a board square with "collision(TYPE mouse)". Backing it with
+      // a real Process makes the renderer and the collision code treat it
+      // like any other, for free. It has no compiled body, so it is never
+      // scheduled - updateMouseProcess() moves it each frame instead.
+      this.mouseProcess = this.vm.processManager.create('mouse', {});
+      this.mouseProcess.isMouse = true;
+      this.mouseProcess.hasCompletedFrame = true;
+      this.mouseProcess.graph = 0;
+      this.mouseProcess.file = 0;
+    }
+
+    // Let collision use the same anchor the renderer does: control point
+    // 0 of the process's current graphic (the geometric center unless the
+    // FPG says otherwise). See getCenter in process.js.
+    setPivotResolver((process) => this.getProcessPivot(process));
+
     this.vm.registerNative('key_down', this.keyDownNative.bind(this));
     this.vm.registerNative('key_pressed', this.keyPressedNative.bind(this));
     this.vm.registerNative('key', this.keyNative.bind(this));
@@ -1818,7 +2446,26 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('set_title', this.setTitleNative.bind(this));
     this.vm.registerNative('set_mode', this.setModeNative.bind(this));
     this.vm.registerNative('screen_color', this.screenColorNative.bind(this));
+    this.vm.registerNative('put_screen', this.putScreenNative.bind(this));
+    this.vm.registerNative('get_pixel', this.getPixelNative.bind(this));
+    this.vm.registerNative('set_debug', this.setDebugNative.bind(this));
+    this.vm.registerNative('__get_mouse_field', this.getMouseFieldNative.bind(this));
+    this.vm.registerNative('__set_mouse_field', this.setMouseFieldNative.bind(this));
+    // DIV's EXIT(message, code) ends the program. There is no process to
+    // return to in a browser, so log the message and halt the VM.
+    this.vm.registerNative('exit', (message, code) => {
+      if (message !== undefined && message !== null && String(message).length > 0) {
+        this.logFn(`[exit] ${String(message)}`);
+      }
+      if (this.vm) {
+        this.vm.halted = true;
+        this.vm.mainFinished = true;
+      }
+      return Number(code) || 0;
+    });
     this.vm.registerNative('set_fps', this.setFpsNative.bind(this));
+    this.vm.registerNative('get_fps', this.getFpsNative.bind(this));
+    this.vm.registerNative('get_process_count', this.getProcessCountNative.bind(this));
     this.vm.registerNative('abs', this.absNative.bind(this));
     this.vm.registerNative('sin', this.sinNative.bind(this));
     this.vm.registerNative('cos', this.cosNative.bind(this));
@@ -1833,6 +2480,9 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('floor', this.floorNative.bind(this));
     this.vm.registerNative('ceil', this.ceilNative.bind(this));
     this.vm.registerNative('round', this.roundNative.bind(this));
+    // Truncation toward zero, matching a cast to DIV's 32-bit int - handy
+    // for making a fractional intermediate behave like DIV arithmetic.
+    this.vm.registerNative('int', (value) => Math.trunc(Number(value) || 0));
     this.vm.registerNative('ping_pong', this.pingPongNative.bind(this));
     this.vm.registerNative('wrap', this.wrapNative.bind(this));
     this.vm.registerNative('lerp_angle', this.lerpAngleNative.bind(this));
@@ -1858,8 +2508,8 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('xput', this.xputNative.bind(this));
     this.vm.registerNative('set_point', this.setPointNative.bind(this));
     this.vm.registerNative('get_point', this.getPointNative.bind(this));
-    this.vm.registerNative('get_point_x', (fileId, graphId, pointIndex) => this.getPointNative(fileId, graphId, pointIndex).x);
-    this.vm.registerNative('get_point_y', (fileId, graphId, pointIndex) => this.getPointNative(fileId, graphId, pointIndex).y);
+    this.vm.registerNative('get_point_x', (fileId, graphId, pointIndex) => this.getPointNative(fileId, graphId, pointIndex, 0));
+    this.vm.registerNative('get_point_y', (fileId, graphId, pointIndex) => this.getPointNative(fileId, graphId, pointIndex, 1));
     this.vm.registerNative('get_real_point', this.getRealPointNative.bind(this));
     this.vm.registerNative('get_real_point_x', this.getRealPointXNative.bind(this));
     this.vm.registerNative('get_real_point_y', this.getRealPointYNative.bind(this));
@@ -1868,10 +2518,12 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('stop_scroll', this.stopScrollNative.bind(this));
     this.vm.registerNative('out_of_region', this.outOfRegionNative.bind(this));
     this.vm.registerNative('exit_region', this.outOfRegionNative.bind(this));
+    this.vm.registerNative('out_region', this.outRegionNative.bind(this));
     this.vm.registerNative('out_of_screen', this.outOfScreenNative.bind(this));
     this.vm.registerNative('exit_screen', this.outOfScreenNative.bind(this));
     this.vm.registerNative('write', this.writeNative.bind(this));
     this.vm.registerNative('write_int', this.writeIntNative.bind(this));
+    this.vm.registerNative('delete_text', this.deleteTextNative.bind(this));
     this.vm.registerNative('set_color', this.setColorNative.bind(this));
     this.vm.registerNative('set_colro', this.setColorNative.bind(this));
     this.vm.registerNative('clear', this.clearNative.bind(this));
@@ -1910,6 +2562,8 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('load_bdf_font_text', this.loadBdfFontTextNative.bind(this));
     this.vm.registerNative('__get_path', this.getPathNative.bind(this));
     this.vm.registerNative('__set_path', this.setPathNative.bind(this));
+    this.vm.registerNative('__get_process_field', this.getProcessFieldNative.bind(this));
+    this.vm.registerNative('__set_process_field', this.setProcessFieldNative.bind(this));
     this.vm.registerNative('path_find', this.pathFindNative.bind(this));
     this.vm.registerNative('path_length', this.pathLengthNative.bind(this));
     this.vm.registerNative('path_get_x', this.pathGetXNative.bind(this));
@@ -1919,23 +2573,34 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('path_step', this.pathStepNative.bind(this));
     this.vm.registerNative('path_stop', this.pathStopNative.bind(this));
     this.vm.registerNative('path_index', this.pathIndexNative.bind(this));
-    this.vm.registerNative('fade_off', (speed = 1) => { this._fadeStart(0, 0, 0, speed ?? 1, 1); return 0; });
-    this.vm.registerNative('fade_on',  (speed = 1) => { this._fadeStart(0, 0, 0, speed ?? 1, 0); return 0; });
-    this.vm.registerNative('fade',     (r, g, b, speed, target) => { this._fadeStart(r ?? 0, g ?? 0, b ?? 0, speed ?? 1, target ?? 1); return 0; });
+    // DIV's default fade speed is 8 (f.c's fade_on/fade_off).
+    this.vm.registerNative('fade_off', (speed) => { this._fadeStart(0, 0, 0, Number(speed) || 8, 1); return 0; });
+    this.vm.registerNative('fade_on', (speed) => { this._fadeStart(0, 0, 0, Number(speed) || 8, 0); return 0; });
+    // FADE(r,g,b,speed): r/g/b are 0-100 intensity percentages, where 100
+    // is the normal palette and 0 is black - DIV computes
+    // dacout = 64 - r*64/100, i.e. the darkening is the inverse of the
+    // requested intensity. Our overlay is a single alpha, so the three
+    // channels are averaged.
+    this.vm.registerNative('fade', (r, g, b, speed) => {
+      const avg = ((Number(r) || 0) + (Number(g) || 0) + (Number(b) || 0)) / 3;
+      const intensity = Math.max(0, Math.min(100, avg));
+      this._fadeStart(0, 0, 0, Number(speed) || 8, 1 - intensity / 100);
+      return 0;
+    });
     this.vm.registerNative('is_fading', () => this._fade.active ? 1 : 0);
-    this.vm.registerNative('new_graphic',        this.newGraphicNative.bind(this));
-    this.vm.registerNative('gfx_fill',           this.gfxFillNative.bind(this));
-    this.vm.registerNative('gfx_fill_rgba',      this.gfxFillRGBANative.bind(this));
-    this.vm.registerNative('gfx_pixel',          this.gfxPixelNative.bind(this));
-    this.vm.registerNative('gfx_line',           this.gfxLineNative.bind(this));
-    this.vm.registerNative('gfx_rect',           this.gfxRectNative.bind(this));
-    this.vm.registerNative('gfx_rect_outline',   this.gfxRectOutlineNative.bind(this));
-    this.vm.registerNative('gfx_circle',         this.gfxCircleNative.bind(this));
+    this.vm.registerNative('new_graphic', this.newGraphicNative.bind(this));
+    this.vm.registerNative('gfx_fill', this.gfxFillNative.bind(this));
+    this.vm.registerNative('gfx_fill_rgba', this.gfxFillRGBANative.bind(this));
+    this.vm.registerNative('gfx_pixel', this.gfxPixelNative.bind(this));
+    this.vm.registerNative('gfx_line', this.gfxLineNative.bind(this));
+    this.vm.registerNative('gfx_rect', this.gfxRectNative.bind(this));
+    this.vm.registerNative('gfx_rect_outline', this.gfxRectOutlineNative.bind(this));
+    this.vm.registerNative('gfx_circle', this.gfxCircleNative.bind(this));
     this.vm.registerNative('gfx_circle_outline', this.gfxCircleOutlineNative.bind(this));
-    this.vm.registerNative('gfx_text',           this.gfxTextNative.bind(this));
-    this.vm.registerNative('free_graphic',       (id) => { Graphics.remove(Number(id)); return 0; });
-    this.vm.registerNative('mouse_x',      () => this._mouse.x);
-    this.vm.registerNative('mouse_y',      () => this._mouse.y);
+    this.vm.registerNative('gfx_text', this.gfxTextNative.bind(this));
+    this.vm.registerNative('free_graphic', (id) => { Graphics.remove(Number(id)); return 0; });
+    this.vm.registerNative('mouse_x', () => this._mouse.x);
+    this.vm.registerNative('mouse_y', () => this._mouse.y);
     this.vm.registerNative('mouse_button', (b) => this._mouse.buttons[Number(b) || 0] ? 1 : 0);
   }
 
@@ -1945,8 +2610,10 @@ export class CanvasEngineRuntime {
     f.r = Math.max(0, Math.min(255, Math.round(r)));
     f.g = Math.max(0, Math.min(255, Math.round(g)));
     f.b = Math.max(0, Math.min(255, Math.round(b)));
-    f.speed = Math.max(0.1, Math.min(100, speed));
-    f.target = target ? 1 : 0;
+    f.speed = Math.max(0.1, Math.min(64, speed));
+    // Fractional targets so FADE(r,g,b,speed) can stop part-way, not just
+    // fully on/off.
+    f.target = Math.max(0, Math.min(1, Number(target) || 0));
     f.active = f.alpha !== f.target;
   }
 
@@ -1958,7 +2625,7 @@ export class CanvasEngineRuntime {
   }
 
   _cssRGB(r, g, b) { return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`; }
-  _cssRGBA(r, g, b, a) { return `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${Math.max(0,Math.min(1, a/100))})`; }
+  _cssRGBA(r, g, b, a) { return `rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${Math.max(0, Math.min(1, a / 100))})`; }
 
   newGraphicNative(w, h) { return Graphics.create(Number(w) || 1, Number(h) || 1); }
 
@@ -2036,18 +2703,107 @@ export class CanvasEngineRuntime {
     return { x: 0, y: 0, width: this.width, height: this.height };
   }
 
-  getScrollCamera(index) {
+  // Advances a scroll's own variables for this frame, mirroring
+  // gr_scroll_draw in fenix's g_scroll.c: a camera process pulls x0/y0
+  // toward centring itself in the region (limited by `speed`, 0 meaning
+  // "snap"), non-wrapping planes are clamped to the graphic, and x1/y1
+  // are derived from `ratio` when one is set. With no camera the script
+  // owns x0/y0 directly, which is how tutor5 scrolls.
+  updateScrollEntry(index) {
     const entry = this.ensureScrollEntry(index);
     const region = this.getRegionRect(entry.region);
     const camProcess = this.vm.processManager.get(Number(entry.camera) || 0);
-    if (!camProcess) {
-      return { x: 0, y: 0 };
+
+    if (camProcess) {
+      const res = typeof camProcess.getResolution === 'function' ? camProcess.getResolution() : 1;
+      const cx = (Number(camProcess.x) || 0) / res - region.width * 0.5;
+      const cy = (Number(camProcess.y) || 0) / res - region.height * 0.5;
+      const speed = Number(entry.speed) || Number.MAX_SAFE_INTEGER;
+
+      if (entry.x0 < cx) entry.x0 = Math.min(entry.x0 + speed, cx);
+      else if (entry.x0 > cx) entry.x0 = Math.max(entry.x0 - speed, cx);
+      if (entry.y0 < cy) entry.y0 = Math.min(entry.y0 + speed, cy);
+      else if (entry.y0 > cy) entry.y0 = Math.max(entry.y0 - speed, cy);
     }
 
-    return {
-      x: camProcess.x - region.width * 0.5,
-      y: camProcess.y - region.height * 0.5
-    };
+    // Flags 1/2 are the foreground plane's horizontal/vertical wrap bits;
+    // without them the plane is clamped so it never shows past its edge.
+    const flags = Number(entry.flags) || 0;
+    const graphic = this.getGraphAsset(entry.fileId, entry.graphId);
+    if (graphic && graphic.image) {
+      const gw = Number(graphic.sw) || graphic.image.width || 0;
+      const gh = Number(graphic.sh) || graphic.image.height || 0;
+      if (!(flags & 1) && gw > 0) {
+        entry.x0 = Math.max(0, Math.min(entry.x0, gw - region.width));
+      }
+      if (!(flags & 2) && gh > 0) {
+        entry.y0 = Math.max(0, Math.min(entry.y0, gh - region.height));
+      }
+    }
+
+    const ratio = Number(entry.ratio) || 0;
+    if (ratio) {
+      entry.x1 = entry.x0 * 100 / ratio;
+      entry.y1 = entry.y0 * 100 / ratio;
+    }
+
+    return entry;
+  }
+
+  getScrollCamera(index) {
+    const entry = this.ensureScrollEntry(index);
+    return { x: Number(entry.x0) || 0, y: Number(entry.y0) || 0 };
+  }
+
+  // Tiles one plane across the region, offset by (-ox,-oy). Wrapping is
+  // what makes a scroll endless; a plane whose wrap bit is off has
+  // already been clamped in updateScrollEntry, so tiling it is harmless.
+  drawScrollPlane(graphic, region, ox, oy) {
+    if (!graphic || !graphic.image || graphic.loaded === false) {
+      return;
+    }
+    const gw = Number(graphic.sw) || graphic.image.width || 0;
+    const gh = Number(graphic.sh) || graphic.image.height || 0;
+    if (gw <= 0 || gh <= 0) {
+      return;
+    }
+
+    // Start at the first tile edge at or before the region's origin.
+    let startX = -(((ox % gw) + gw) % gw);
+    let startY = -(((oy % gh) + gh) % gh);
+
+    for (let y = startY; y < region.height; y += gh) {
+      for (let x = startX; x < region.width; x += gw) {
+        const dx = region.x + x;
+        const dy = region.y + y;
+        if (graphic.sx !== undefined) {
+          this.ctx.drawImage(graphic.image, graphic.sx, graphic.sy, gw, gh, dx, dy, gw, gh);
+        } else {
+          this.ctx.drawImage(graphic.image, dx, dy);
+        }
+      }
+    }
+  }
+
+  // Draws every active scroll: background plane first (x1/y1), then the
+  // foreground (x0/y0), each clipped to the scroll's region.
+  drawScrolls() {
+    for (let index = 0; index < this.state.scroll.length; index++) {
+      const entry = this.state.scroll[index];
+      if (!entry || !entry.active) {
+        continue;
+      }
+
+      this.updateScrollEntry(index);
+      const region = this.getRegionRect(entry.region);
+      const back = this.getGraphAsset(entry.fileId, entry.backId);
+      const front = this.getGraphAsset(entry.fileId, entry.graphId);
+
+      this.withRegionClip(region, () => {
+        this.drawScrollPlane(back, region, Number(entry.x1) || 0, Number(entry.y1) || 0);
+        this.drawScrollPlane(front, region, Number(entry.x0) || 0, Number(entry.y0) || 0);
+      });
+    }
   }
 
   withRegionClip(region, drawFn) {
@@ -2070,32 +2826,89 @@ export class CanvasEngineRuntime {
     return fallbackValue;
   }
 
+  // Like getProcessLocalNumber, but tries each name in order and uses the
+  // first one the process actually declared a local for - lets a field
+  // have more than one accepted spelling (e.g. scale_x / scalex) without
+  // silently summing both if a script happens to touch both names.
+  getProcessLocalNumberAliased(process, names, fallbackValue = 0) {
+    for (const name of names) {
+      const slot = this.getProcessLocalSlot(process, name);
+      if (slot !== null && slot !== undefined) {
+        const value = Number(process.locals?.[slot]);
+        if (Number.isFinite(value)) {
+          return value;
+        }
+      }
+    }
+    return fallbackValue;
+  }
+
+  // Just the graphic identity, without the angle/size/flags/scale work
+  // getProcessGraphInfo does. The collision path needs only this, and it
+  // runs per candidate pair - the full version costs 9 slot lookups plus
+  // an object allocation, which is far too much for a hot loop.
+  getProcessGraphRef(process) {
+    const graphId = this.getProcessLocalNumber(process, 'graph', Number(process.graph ?? 0) || 0);
+    const fileId = this.getProcessLocalNumber(process, 'file', Number(process.file ?? 0) || 0);
+    return { fileId, graphId };
+  }
+
+  // Pivot (control point 0) for a process's current graphic, memoized on
+  // the process. A graphic's pivot only moves when set_point() edits it,
+  // so a global version counter is enough to invalidate every cache at
+  // once. Without this, every getCenter() in a collision loop re-resolved
+  // the graph and re-read the point.
+  getProcessPivot(process) {
+    const { fileId, graphId } = this.getProcessGraphRef(process);
+    if (graphId <= 0) {
+      return null;
+    }
+
+    const key = `${fileId}:${graphId}`;
+    if (process.__pivotKey === key && process.__pivotVersion === this.pointsVersion) {
+      return process.__pivot;
+    }
+
+    const pivot = this.ensureGraph(fileId, graphId).getPoint(0);
+    process.__pivotKey = key;
+    process.__pivotVersion = this.pointsVersion;
+    process.__pivot = pivot;
+    return pivot;
+  }
+
   getProcessGraphInfo(process) {
     const graphId = this.getProcessLocalNumber(process, 'graph', Number(process.graph ?? 0) || 0);
     const fileId = this.getProcessLocalNumber(process, 'file', Number(process.file ?? 0) || 0);
     const angle = this.getProcessLocalNumber(process, 'angle', Number(process.angle ?? 0) || 0);
     const size = this.getProcessLocalNumber(process, 'size', 100);
     const flags = this.getProcessLocalNumber(process, 'flags', Number(process.flags ?? 0) || 0);
-    return { fileId, graphId, angle, size, flags };
+    // scale_x/scale_y are independent per-axis multipliers on top of `size`
+    // (both default to 100 = no extra stretch), for non-uniform scaling.
+    // Accept both the underscored and bare spelling of each.
+    const scaleX = this.getProcessLocalNumberAliased(process, ['scale_x', 'scalex'], 100);
+    const scaleY = this.getProcessLocalNumberAliased(process, ['scale_y', 'scaley'], 100);
+    return { fileId, graphId, angle, size, flags, scaleX, scaleY };
   }
 
   getGraphAsset(fileId, graphId) {
     const fid = Number(fileId) || 0;
     const gid = Number(graphId) || 0;
 
-    if (fid > 0) {
-      const lib = this.graphLibraries.get(fid);
-      const mapped = lib?.graphs?.get(gid);
-      if (mapped) {
-        return Graphics.get(mapped) || null;
-      }
+    // Library ids start at 0 (see reserveGraphLibrary), so file 0 can be a
+    // real FPG library - try it first regardless of fid's value.
+    const lib = this.graphLibraries.get(fid);
+    const mapped = lib?.graphs?.get(gid);
+    if (mapped !== undefined) {
+      return Graphics.get(mapped) || null;
     }
 
-    // Fallback: graphId directly references a graphic id.
+    // Fallback: no library there (or no such code in it) - graphId
+    // references a raw graphic asset id directly, as returned by
+    // load_map/new_graphic/load_graphic (which have no library).
     return Graphics.get(gid) || null;
   }
 
-  drawGraphSprite(fileId, graphId, x, y, angle, size, flags, baseWidth, baseHeight) {
+  drawGraphSprite(fileId, graphId, x, y, angle, scaleXPct, scaleYPct, flags, baseWidth, baseHeight) {
     const graph = this.ensureGraph(fileId, graphId, baseWidth, baseHeight);
     const graphic = this.getGraphAsset(fileId, graphId);
     if (!graphic || !graphic.image || graphic.loaded === false) {
@@ -2110,9 +2923,12 @@ export class CanvasEngineRuntime {
 
     const graphW = Number(graph.width) || srcW;
     const graphH = Number(graph.height) || srcH;
-    const scale = (Number(size) || 100) / 100;
-    const drawW = Math.max(1, (Number(baseWidth) || graphW) * scale);
-    const drawH = Math.max(1, (Number(baseHeight) || graphH) * scale);
+    const sxp = Number(scaleXPct);
+    const syp = Number(scaleYPct);
+    const scaleX = (Number.isFinite(sxp) ? sxp : 100) / 100;
+    const scaleY = (Number.isFinite(syp) ? syp : 100) / 100;
+    const drawW = Math.max(1, (Number(baseWidth) || graphW) * scaleX);
+    const drawH = Math.max(1, (Number(baseHeight) || graphH) * scaleY);
     const pivot = graph.getPoint(0);
     const pivotX = (Number(pivot.x) || 0) * (drawW / graphW);
     const pivotY = (Number(pivot.y) || 0) * (drawH / graphH);
@@ -2142,11 +2958,14 @@ export class CanvasEngineRuntime {
     return true;
   }
 
-  drawGraphPlaceholder(px, py, angle, size, color) {
+  drawGraphPlaceholder(px, py, angle, scaleXPct, scaleYPct, color) {
     const radians = (Number(angle) / 1000) * (Math.PI / 180);
-    const scale = (Number(size) || 100) / 100;
-    const w = 18 * scale;
-    const h = 10 * scale;
+    const sx = Number(scaleXPct);
+    const sy = Number(scaleYPct ?? scaleXPct);
+    const scaleX = (Number.isFinite(sx) ? sx : 100) / 100;
+    const scaleY = (Number.isFinite(sy) ? sy : 100) / 100;
+    const w = 18 * scaleX;
+    const h = 10 * scaleY;
 
     this.ctx.save();
     this.ctx.fillStyle = color;
@@ -2162,58 +2981,206 @@ export class CanvasEngineRuntime {
     this.ctx.restore();
   }
 
+  // Real DIV auto-sizes a process to its assigned graphic's native
+  // dimensions the moment GRAPH/FILE is set; WIDTH/HEIGHT stay writable
+  // afterward and override it. We can't cheaply detect "the script wrote
+  // to width/height" directly, so we use the constructor's 32x32 generic
+  // placeholder as a one-shot sentinel: sync happens only while both are
+  // still exactly that untouched default, and locks out forever the
+  // instant either one changes (by this sync or by the script itself).
+  syncProcessSizeToGraph(process, graph) {
+    if (graph.graphId <= 0 || process.width !== 32 || process.height !== 32) {
+      return;
+    }
+    const runtimeGraph = this.ensureGraph(graph.fileId, graph.graphId);
+    if (!runtimeGraph || (runtimeGraph.width === 32 && runtimeGraph.height === 32)) {
+      return; // graphic not loaded yet (still the Graph class's own default)
+    }
+    process.width = runtimeGraph.width;
+    process.height = runtimeGraph.height;
+    const widthSlot = this.getProcessLocalSlot(process, 'width');
+    const heightSlot = this.getProcessLocalSlot(process, 'height');
+    if (widthSlot !== null && widthSlot !== undefined) process.locals[widthSlot] = process.width;
+    if (heightSlot !== null && heightSlot !== undefined) process.locals[heightSlot] = process.height;
+  }
+
   drawProcessAt(process, offsetX, offsetY) {
-    const px = process.x - offsetX;
-    const py = process.y - offsetY;
-    const centerX = px + process.width * 0.5;
-    const centerY = py + process.height * 0.5;
     const graph = this.getProcessGraphInfo(process);
+    this.syncProcessSizeToGraph(process, graph);
+
+    // process.x/y is the process's pivot/center in world space (real DIV
+    // convention - matches getCenter() in process.js), not a top-left
+    // corner. px/py below is only the derived top-left, kept for the
+    // debug-bounds rect draw further down.
+    // x/y are in the process's RESOLUTION units - divide before using
+    // them as screen coordinates (DIV's RESOLUTION field; see
+    // Process.getResolution). Unset/0 means 1, so nothing changes for
+    // processes that never touch it.
+    const res = typeof process.getResolution === 'function' ? process.getResolution() : 1;
+    const centerX = process.x / res - offsetX;
+    const centerY = process.y / res - offsetY;
+    // Top-left of the graphic as actually drawn: x/y locate control
+    // point 0, so step back by the pivot rather than by half the size
+    // (identical when the pivot is the default center). Used only for
+    // the debug bounds rect below, which otherwise sat half a sprite
+    // away from the sprite whenever the FPG moved the pivot.
+    const dbgPivot = graph.graphId > 0
+      ? this.ensureGraph(graph.fileId, graph.graphId).getPoint(0)
+      : null;
+    const px = centerX - (dbgPivot ? Number(dbgPivot.x) || 0 : process.width * 0.5);
+    const py = centerY - (dbgPivot ? Number(dbgPivot.y) || 0 : process.height * 0.5);
 
     const alpha = (process.alpha ?? 100) / 100;
-    if (alpha <= 0) return; // invisible — skip entirely
+    if (alpha <= 0) return; // invisible - skip entirely
 
-    const r = process.red   ?? 255;
+    const r = process.red ?? 255;
     const g = process.green ?? 255;
-    const b = process.blue  ?? 255;
+    const b = process.blue ?? 255;
     const hasTint = r !== 255 || g !== 255 || b !== 255;
 
     this.ctx.save();
     if (alpha < 1) this.ctx.globalAlpha = alpha;
 
+    // `size` scales both axes uniformly; scale_x/scale_y stretch each axis
+    // independently on top of it (both default to 100 = no extra stretch).
+    // SIZE 0 means "scaled to nothing", i.e. invisible - a real value, not
+    // an unset field, so it must not fall back to 100. getProcessGraphInfo
+    // already substitutes 100 when the field was never written, which is
+    // the only case a default belongs in. tutor5's tail tapers to size 0
+    // and kept a full-size tip while this used `|| 100`.
+    const sizePct = Number.isFinite(graph.size) ? graph.size : 100;
+    const scaleXPct = sizePct * ((graph.scaleX ?? 100) / 100);
+    const scaleYPct = sizePct * ((graph.scaleY ?? 100) / 100);
+
+    // GRAPH = 0 means "no graphic - draw nothing" in DIV, and scripts
+    // rely on that as a real visibility switch, not as an error: tutor4's
+    // worm_segment sets graph=0 for every segment past the current tail
+    // length precisely so those segments disappear. Drawing a
+    // placeholder here (as this used to) turned each of them into a
+    // large arrow covering the screen. The placeholder is still useful
+    // when debugging a process whose graphic genuinely failed to
+    // resolve, so keep it behind the debug flag rather than deleting it.
     if (graph.graphId > 0) {
       const drewSprite = this.drawGraphSprite(
         graph.fileId, graph.graphId,
         centerX, centerY,
-        graph.angle, graph.size, graph.flags,
+        graph.angle, scaleXPct, scaleYPct, graph.flags,
         process.width, process.height
       );
 
       if (drewSprite && hasTint) {
         this.ctx.globalCompositeOperation = 'multiply';
         this.ctx.fillStyle = `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
-        const hw = process.width * 0.5 * ((graph.size || 100) / 100);
-        const hh = process.height * 0.5 * ((graph.size || 100) / 100);
+        const hw = process.width * 0.5 * (scaleXPct / 100);
+        const hh = process.height * 0.5 * (scaleYPct / 100);
         this.ctx.fillRect(centerX - hw, centerY - hh, hw * 2, hh * 2);
         this.ctx.globalCompositeOperation = 'source-over';
       }
 
-      if (!drewSprite) {
-        this.drawGraphPlaceholder(centerX, centerY, graph.angle, graph.size, `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`);
+      if (!drewSprite && this.debugDrawProcessBounds) {
+        this.drawGraphPlaceholder(centerX, centerY, graph.angle, scaleXPct, scaleYPct, `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`);
       }
-    } else {
-      // No graphic assigned — draw a colored placeholder box so the process is always visible
-      this.drawGraphPlaceholder(centerX, centerY, graph.angle, graph.size, `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`);
     }
 
     this.ctx.restore();
 
-    if (this.debugDrawProcessBounds) {
+    // Only draw debug shapes for processes that can actually be hit.
+    // A process with GRAPH = 0 has no collision box (see isCollidable in
+    // process.js), and scripts create plenty of them: tutor4 keeps ~120
+    // spare worm segments parked at their default 0,0 until the tail
+    // grows into them. Drawing those piled the whole overlay into the
+    // top-left corner and made it look like every box sat at 0,0.
+    if (this.debugDrawProcessBounds && graph.graphId > 0) {
       this.ctx.save();
       this.ctx.strokeStyle = this.debugProcessBoundsColor;
       this.ctx.lineWidth = 1;
       this.ctx.strokeRect(px, py, process.width, process.height);
       this.ctx.restore();
+      this.drawProcessDebugOverlay(process, graph, centerX, centerY, offsetX, offsetY, scaleXPct, scaleYPct);
     }
+  }
+
+  // Debug-mode visualization: the collision shape(s) actually used by
+  // collision()/place_meeting/etc (not just the plain width/height box
+  // above - a process can have circle or custom cboxes instead), the
+  // graphic's pivot (control point 0 - where rotation/scale/position
+  // anchor, see g_blit.c's F_NCPOINTS check), and every other control
+  // point defined on the graphic.
+  drawProcessDebugOverlay(process, graph, centerX, centerY, offsetX, offsetY, scaleXPct, scaleYPct) {
+    this.ctx.save();
+
+    // Marker sizes are in screen pixels, but a DIV screen is typically
+    // 320x200 with 8x8 sprites - fixed pixel sizes that look fine on a
+    // 800x600 canvas swamp the sprite entirely at native resolution.
+    // Scale the markers to the screen so they stay readable at both.
+    const s = Math.max(0.35, Math.min(1, this.width / 800));
+    const lineW = s;
+    const pivotR = 1.6 * s;
+    const pointR = 1.2 * s;
+    const crossR = 3 * s;
+
+    // Collision shape(s), in the same world space as process.x/y (see
+    // getCenter() in process.js - process.x/y is already the center).
+    // The two processes that actually reported a collision this frame
+    // are drawn thicker and in white, so "what did I just hit?" is
+    // answerable by looking rather than by guessing.
+    const pm = this.vm?.processManager;
+    const isCulprit = pm && (pm.lastCollisionA === process.id || pm.lastCollisionB === process.id);
+    const shapes = getProcessShapes(process, process.x - offsetX, process.y - offsetY, false);
+    this.ctx.strokeStyle = isCulprit ? '#ffffff' : '#ff2d95';
+    this.ctx.lineWidth = isCulprit ? lineW * 2 : lineW;
+    for (const shape of shapes) {
+      this.ctx.beginPath();
+      if (shape.shape === 'circle') {
+        this.ctx.arc(shape.cx, shape.cy, shape.r, 0, Math.PI * 2);
+      } else {
+        const c = shape.corners;
+        this.ctx.moveTo(c[0].x, c[0].y);
+        for (let i = 1; i < c.length; i++) this.ctx.lineTo(c[i].x, c[i].y);
+        this.ctx.closePath();
+      }
+      this.ctx.stroke();
+    }
+
+    // Label the culprit with its process name/id, since the two shapes
+    // in a collision are usually on top of each other.
+    if (isCulprit) {
+      this.ctx.fillStyle = '#ffffff';
+      this.ctx.font = `${Math.max(4, Math.round(7 * s))}px JetBrains Mono, Consolas, monospace`;
+      this.ctx.textBaseline = 'bottom';
+      this.ctx.fillText(`${process.name}#${process.id}`, centerX + 4 * s, centerY - 4 * s);
+    }
+
+    // Control points, transformed into world space exactly like
+    // get_real_point does (angle/scale/mirror-aware).
+    if (graph.graphId > 0) {
+      const runtimeGraph = this.ensureGraph(graph.fileId, graph.graphId);
+      for (const [index, point] of runtimeGraph.points) {
+        const world = this.computeRealPoint(
+          graph.fileId, graph.graphId, index,
+          centerX, centerY, graph.angle, graph.size, graph.flags,
+          scaleXPct, scaleYPct
+        );
+        const isPivot = index === 0;
+        this.ctx.fillStyle = isPivot ? '#ffe600' : '#00ff6a';
+        this.ctx.beginPath();
+        this.ctx.arc(world.x, world.y, isPivot ? pivotR : pointR, 0, Math.PI * 2);
+        this.ctx.fill();
+        if (isPivot) {
+          // Cross through the pivot so it reads distinctly from plain points.
+          this.ctx.strokeStyle = '#ffe600';
+          this.ctx.lineWidth = lineW;
+          this.ctx.beginPath();
+          this.ctx.moveTo(world.x - crossR, world.y);
+          this.ctx.lineTo(world.x + crossR, world.y);
+          this.ctx.moveTo(world.x, world.y - crossR);
+          this.ctx.lineTo(world.x, world.y + crossR);
+          this.ctx.stroke();
+        }
+      }
+    }
+
+    this.ctx.restore();
   }
 
   drawProcessesFallback() {
@@ -2242,7 +3209,10 @@ export class CanvasEngineRuntime {
 
   drawCommandsToCanvas() {
     this.ctx.save();
-    this.ctx.font = '14px JetBrains Mono, Consolas, monospace';
+    // DIV's built-in font (font 0) is an 8x8 bitmap at every resolution,
+    // so a fixed 8px keeps WRITE output the same size as text baked into
+    // a 320x200 background. The old 14px overflowed those layouts.
+    this.ctx.font = '8px JetBrains Mono, Consolas, monospace';
     this.ctx.textBaseline = 'top';
 
     const drawXput = (cmd, px, py) => {
@@ -2254,13 +3224,14 @@ export class CanvasEngineRuntime {
         py,
         cmd.angle,
         cmd.size,
+        cmd.size,
         cmd.flags,
         graph.width,
         graph.height
       );
 
       if (!drewSprite) {
-        this.drawGraphPlaceholder(px, py, cmd.angle, cmd.size, cmd.color);
+        this.drawGraphPlaceholder(px, py, cmd.angle, cmd.size, cmd.size, cmd.color);
       }
     };
 
@@ -2282,11 +3253,19 @@ export class CanvasEngineRuntime {
         }
 
         if (cmd.type === 'text') {
+          // Re-resolve an OFFSET reference now, at draw time, so it shows
+          // the global's current value rather than the one it had when
+          // write/write_int was called.
+          let text = cmd.text;
+          if (this.isOffsetRef(text)) {
+            const value = this.resolveOffsetRef(text);
+            text = text.asInt ? String(Math.floor(Number(value) || 0)) : String(value);
+          }
           const drewBitmap = cmd.fontId > 0
-            ? this.drawBitmapText(cmd.fontId, pos.x, pos.y, cmd.align || 0, cmd.text)
+            ? this.drawBitmapText(cmd.fontId, pos.x, pos.y, cmd.align || 0, text)
             : false;
           if (!drewBitmap) {
-            this.ctx.fillText(cmd.text, pos.x, pos.y);
+            this.drawSystemText(pos.x, pos.y, cmd.align || 0, text, cmd.color);
           }
           return;
         }
@@ -2331,15 +3310,30 @@ export class CanvasEngineRuntime {
     }
 
     this.ctx.restore();
-    this.drawCommands.length = 0;
+    // Plain draw commands are per-frame (a script redraws them each
+    // tick). OFFSET-backed texts are the exception: real DIV's WRITE
+    // registers them once and they persist until DELETE_TEXT, which is
+    // exactly why a script can call WRITE_INT(..., OFFSET score) a
+    // single time in MAIN and have the score stay on screen - so keep
+    // those, and drop everything else.
+    this.drawCommands = this.drawCommands.filter((cmd) => cmd.persistent);
   }
 
   render() {
     this.ctx.fillStyle = this.clearColor;
     this.ctx.fillRect(0, 0, this.width, this.height);
+    this.drawBackgroundGraph();
+    this.drawScrolls();
     this.drawProcessesFallback();
     this.drawCommandsToCanvas();
     this.drawDebugStats();
+    this.drawDebugLegend();
+    // Reset after drawing so the highlight always reflects the collision
+    // reported during the tick that produced this frame, not an old one.
+    if (this.vm?.processManager) {
+      this.vm.processManager.lastCollisionA = 0;
+      this.vm.processManager.lastCollisionB = 0;
+    }
     // Fade overlay drawn last, on top of everything
     if (this._fade.alpha > 0) {
       const f = this._fade;

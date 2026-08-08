@@ -53,7 +53,10 @@ export function runDivDemo(options) {
   } = options || {};
 
   const canvasEl = resolveCanvas(canvas);
-  const screenCtx = canvasEl.getContext('2d');
+  // willReadFrequently: get_pixel() reads back single pixels, potentially
+  // every frame (DIV scripts use it for scenery collision), which the
+  // browser otherwise warns is slow against a GPU-backed canvas.
+  const screenCtx = canvasEl.getContext('2d', { willReadFrequently: true });
 
   if (width) {
     canvasEl.width = Number(width) || canvasEl.width;
@@ -64,7 +67,9 @@ export function runDivDemo(options) {
 
   const useVirtualScreen = Number.isFinite(Number(virtualWidth)) && Number.isFinite(Number(virtualHeight));
   const runtimeCanvas = useVirtualScreen ? document.createElement('canvas') : canvasEl;
-  const runtimeCtx = useVirtualScreen ? runtimeCanvas.getContext('2d') : screenCtx;
+  const runtimeCtx = useVirtualScreen
+    ? runtimeCanvas.getContext('2d', { willReadFrequently: true })
+    : screenCtx;
 
   if (useVirtualScreen) {
     runtimeCanvas.width = Math.max(1, Number(virtualWidth));
@@ -77,6 +82,7 @@ export function runDivDemo(options) {
   let running = false;
   let rafId = 0;
   let lastTs = 0;
+  let nextFrameTs = 0;
   let currentSource = String(source || '');
 
   const handleKeyDown = (event) => {
@@ -125,31 +131,83 @@ export function runDivDemo(options) {
       return;
     }
 
+    const targetFps = runtime.targetFps || 0;
+    if (targetFps > 0) {
+      const frameInterval = 1000 / targetFps;
+      if (nextFrameTs === 0) {
+        nextFrameTs = timestamp;
+      }
+      if (timestamp < nextFrameTs) {
+        rafId = requestAnimationFrame(loop);
+        return;
+      }
+      // Advance by fixed steps to avoid drift; resync if we fell far behind.
+      nextFrameTs += frameInterval;
+      if (timestamp - nextFrameTs > frameInterval) {
+        nextFrameTs = timestamp + frameInterval;
+      }
+    } else {
+      nextFrameTs = 0;
+    }
+
     const dt = lastTs === 0 ? (1 / 60) : (timestamp - lastTs) / 1000;
     lastTs = timestamp;
 
     runtime.beginFrame(dt);
 
+    const finishFrame = () => {
+      if (!running) {
+        return;
+      }
+      try {
+        runtime.render();
+
+        if (useVirtualScreen) {
+          screenCtx.fillStyle = clearColor;
+          screenCtx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+          screenCtx.drawImage(runtimeCanvas, 0, 0, canvasEl.width, canvasEl.height);
+        }
+
+        if (typeof onFrame === 'function') {
+          onFrame({ vm, runtime, dt });
+        }
+      } catch (err) {
+        running = false;
+        emitError(err);
+        return;
+      }
+      // exit() sets vm.halted to mean "stop the whole program" - render
+      // this final frame, then stop rescheduling the RAF loop instead of
+      // sitting idle-but-alive forever.
+      if (vm.halted) {
+        running = false;
+        return;
+      }
+      rafId = requestAnimationFrame(loop);
+    };
+
     try {
       vm.tick();
-      runtime.render();
-
-      if (useVirtualScreen) {
-        screenCtx.fillStyle = clearColor;
-        screenCtx.fillRect(0, 0, canvasEl.width, canvasEl.height);
-        screenCtx.drawImage(runtimeCanvas, 0, 0, canvasEl.width, canvasEl.height);
-      }
-
-      if (typeof onFrame === 'function') {
-        onFrame({ vm, runtime, dt });
-      }
     } catch (err) {
       running = false;
       emitError(err);
       return;
     }
 
-    rafId = requestAnimationFrame(loop);
+    // A process spawned this tick (by MAIN or by another process - see
+    // SPAWN_PROCESS's immediate-run in vm.js) can already reference a
+    // graphic/font whose load_fpg/load_fnt/load_map fetch() is still in
+    // flight. Rendering immediately would draw the fallback placeholder
+    // for it - hold this frame until anything that started loading this
+    // tick has settled (allSettled: a failed load already logs its own
+    // warning via onLog, it shouldn't block the frame forever).
+    if (runtime.pendingLoads && runtime.pendingLoads.length > 0) {
+      const pending = runtime.pendingLoads.splice(0, runtime.pendingLoads.length);
+      Promise.allSettled(pending).then(finishFrame);
+      return;
+    }
+
+    finishFrame();
   };
 
   const start = (nextSource) => {
@@ -190,6 +248,7 @@ export function runDivDemo(options) {
 
       running = true;
       lastTs = 0;
+      nextFrameTs = 0;
       rafId = requestAnimationFrame(loop);
     } catch (err) {
       emitError(err);

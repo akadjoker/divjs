@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS - Tutorial 5</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    .container {
+      text-align: center;
+    }
+
+    h1 {
+      color: #fff;
+      margin-bottom: 20px;
+      font-size: 2em;
+    }
+
+    canvas {
+      border: 4px solid #4a9eff;
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(74, 158, 255, 0.3);
+      /* Native DIV resolution is 320x200; scale up for a modern display
+         while keeping the script's coordinates 1:1 with the original. */
+      width: 960px;
+      height: 600px;
+      image-rendering: pixelated;
+    }
+
+    .info {
+      color: #aaa;
+      margin-top: 15px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>🎮 DivJS Tutorial 5</h1>
+    <canvas id="gameCanvas" width="320" height="200"></canvas>
+    <div id="log">booting...</div>
+  </div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const source = `
+PROGRAM Tutorial_5;
+
+GLOBAL
+    body_counter=0;  // Counts the number of bodies
+
+BEGIN
+    // Loads game's graphics file
+    load_fpg('../assets/div-support/tutor5.fpg');
+    // Prints an informative message and erases the screen
+    write(0,160,192,1,"Use mouse to move snake.");
+    fade_on();
+
+    // Puts coordinates resolution with two decimals
+    resolution=100;
+    // Selects head's graphic
+    graph=1;
+    // Initiates background screen
+    start_scroll(0,0,4,5,0,0);
+    // Creates initial body segment
+    segment();
+    LOOP
+        // Makes head follow mouse movement
+        x=mouse.x*100;
+        y=mouse.y*100;
+        // Moves both scroll
+        scroll.x0=scroll.x0+1; scroll.y0=scroll.y0+1;
+        scroll.x1=scroll.x1-1; scroll.y1=scroll.y1-1;
+        FRAME;  // Makes everything appear on screen
+    END
+END
+
+PROCESS segment()
+
+PRIVATE
+    x0,y0;  // Temporary coordinates for calculus stuff
+
+BEGIN
+    // Makes coordinates to use two decimals
+    resolution=100;
+    // Increments body segments counter
+    body_counter=body_counter+1;
+    // Sets depth depending on body's number
+    z=-body_counter;
+
+    // If it is the end of the tail, makes it smaller
+    IF (body_counter>156) size=256-body_counter; END
+
+    // Keeps on creating other body segments up to 256
+    IF (body_counter<256) segment(); END
+
+    // Selects the graphic, but with transparency
+    graph=2; flags=4;
+    LOOP
+          // Calculates coordinates by finding the middle
+          // between the current position and the position
+          // of the body that called him, which is the one that is ahead
+          x=x0; x0=father.x; x=(x+x0*3)/4; x0=x;
+          y=y0; y0=father.y; y=(y+y0*3)/4; y0=y;
+        FRAME; // Prints graphic on screen
+    END
+END
+
+`;
+
+    const canvas = document.getElementById('gameCanvas');
+    const log = document.getElementById('log');
+
+    let statusLine = '';
+    function logLine(line) {
+      console.log(line);
+      log.textContent = statusLine ? `${line}  ||  ${statusLine}` : line;
+    }
+
+    try {
+      runDivDemo({
+        canvas,
+        source: source,
+        clearColor: '#000',
+        // Set to true to draw collision shapes, pivots and control
+        // points over every process (with a colour legend bottom-left).
+        debugDrawProcessBounds: false,
+        onLog: (line) => { logLine(line); },
+        onFrame: ({ runtime }) => {
+          const fps = Math.round(runtime.fpsValue || 0);
+          const procs = runtime.vm?.processManager?.getAll?.() || [];
+          const active = procs.filter(p => p.active && !p.suspended && !p.dead);
+
+        },
+        onError: (err) => {
+          logLine('error: ' + (err?.message || String(err)));
+          console.error(err);
+        }
+      });
+    } catch (err) {
+      logLine('error: ' + (err?.message || String(err)));
+      console.error(err);
+    }
+  </script>
+</body>
+
+</html>

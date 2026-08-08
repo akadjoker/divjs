@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS -Tutorial 0</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    .container {
+      text-align: center;
+    }
+
+    h1 {
+      color: #fff;
+      margin-bottom: 20px;
+      font-size: 2em;
+    }
+
+    canvas {
+      border: 4px solid #4a9eff;
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(74, 158, 255, 0.3);
+    }
+
+    .info {
+      color: #aaa;
+      margin-top: 15px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>🎮 DivJS Tutorial 0</h1>
+    <canvas id="gameCanvas" width="320" height="240"></canvas>
+    <div id="log">booting...</div>
+  </div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const source = `
+    
+PROGRAM Tutorial_2;
+
+ 
+BEGIN
+    load_fpg('../assets/div-support/tutor2.fpg');
+    set_fps(24,0);
+    // Puts background screen
+    put_screen(0,41);
+    // Writes an explanable message
+    write(0,160,2,1,"Press space bar to create planets");
+    // Creates an endless loop, since no process has been created yet,
+    // and program will end if this loop didn't exist
+    LOOP
+        // Each time the space key is pressed, an earth type
+        // process is created
+        IF (key(_space)) earth(); END
+        FRAME;
+    END
+END
+
+//--------------------------------------------------------------------
+// Process earth
+// Handles earth's animations
+//--------------------------------------------------------------------
+
+PROCESS earth();
+
+PRIVATE
+    velocity_x;         // Horizontal coordinate increment
+    velocity_y;         // Vertical coordinate increment
+    initial_velocity_y; // Bounce length
+
+BEGIN
+    // Creates process on left middle side
+    x=0; y=1800;
+    resolution=10;  // Forces coordinates to use one decimal
+    // Initiates horizontal increment from 1 to 8 points
+    velocity_x=rand(10,80);
+    // Reinitiates initial bounce length from 8 to 25 points
+    initial_velocity_y=rand(-80,-250);
+    // Vertical increment equals bounce length
+    velocity_y=initial_velocity_y;
+    // Creates an endless loop
+    LOOP
+        // Creates a loop that goes over every single image
+        // that composes the animation, which ranges from code numbers 0 to 40
+        FROM graph=1 TO 40;
+            // Moves process horizontally
+            x=x+velocity_x;
+            // If either side of screen is reached
+            IF (x<0 OR x>3200)
+                // Changes increment sign, so does
+                // with movement direction
+                velocity_x=-velocity_x;
+            END
+            // Moves process vertically
+            y=y+velocity_y;
+            // If bounce height has reached it's limit
+            IF (-velocity_y<=initial_velocity_y)
+                // Reinitiates length to the initial one
+                velocity_y=-velocity_y;
+            ELSE
+                // Decreases increment on bounce length
+                velocity_y=velocity_y+20;
+            END
+            FRAME;  // Shows process on screen
+        END
+    END
+END
+
+
+
+
+
+
+`;
+
+    const canvas = document.getElementById('gameCanvas');
+    const log = document.getElementById('log');
+
+    let statusLine = '';
+    function logLine(line) {
+      console.log(line);
+      log.textContent = statusLine ? `${line}  ||  ${statusLine}` : line;
+    }
+
+    try {
+      runDivDemo({
+        canvas,
+        source: source,
+        clearColor: '#000',
+        onLog: (line) => { logLine(line); },
+        onFrame: ({ runtime }) => {
+          const fps = Math.round(runtime.fpsValue || 0);
+          const procs = runtime.vm?.processManager?.getAll?.() || [];
+          const active = procs.filter(p => p.active && !p.suspended && !p.dead);
+          
+        },
+        onError: (err) => {
+          logLine('error: ' + (err?.message || String(err)));
+          console.error(err);
+        }
+      });
+    } catch (err) {
+      logLine('error: ' + (err?.message || String(err)));
+      console.error(err);
+    }
+  </script>
+</body>
+
+</html>

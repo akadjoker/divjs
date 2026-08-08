@@ -2,7 +2,7 @@
 <html>
 <head>
   <title>DivJS - Quick Runner</title>
-  <link rel="stylesheet" href="./styles/demo-runner.css">
+  <link rel="stylesheet" href="../styles/demo-runner.css">
 </head>
 <body>
   <div class="stage">
@@ -12,7 +12,7 @@
   </div>
 
   <script type="module">
-    import { bootDivDemo } from './divjs.js';
+    import { bootDivDemo } from '../divjs.js';
 
     const loadingEl = document.getElementById('loading');
     const errorEl = document.getElementById('error');
@@ -71,7 +71,7 @@ end`;
           debugShowStats: true,
           preventDefaultKeys: true,
           preload: {
-            images: ['./assets/001.png', './assets/006.png'],
+            images: ['../assets/001.png', '../assets/006.png'],
             audio: []
           },
           loadingElement: loadingEl,

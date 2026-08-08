@@ -1,4 +1,4 @@
-# TODO.md — follow-up work
+# TODO.md - follow-up work
 
 Companion to `BUGS.md`. Roughly ordered by priority; "priority" here
 means impact-if-hit × how likely a real program is to hit it, not effort.
@@ -7,7 +7,7 @@ means impact-if-hit × how likely a real program is to hit it, not effort.
 
 ## High priority
 
-### ~~Fix MAIN's single-tick spawn budget being a silent, permanent kill switch~~ — DONE (a4bd61b)
+### ~~Fix MAIN's single-tick spawn budget being a silent, permanent kill switch~~ - DONE (a4bd61b)
 See `BUGS.md` #1. Fixed: a single budget exhaustion now resumes on the
 next tick instead of dying permanently; a genuine infinite loop still
 gets caught after 5 consecutive exhaustions with zero progress. Two
@@ -15,10 +15,10 @@ regression tests added.
 
 ### Decide what "how many processes can this realistically run" should be, and document it
 The bunnymark (`bench/bunnymark.mjs`) found scaling is roughly linear
-(healthy — no hidden quadratic blowup in the core scheduler) up to at
+(healthy - no hidden quadratic blowup in the core scheduler) up to at
 least 20,000 live processes, with the 60fps logic-only budget (16.67ms/
 tick) getting tight somewhere in the 15,000–20,000 range on the hardware
-this was run on — that number moved between runs (14.5ms to 29.6ms at
+this was run on - that number moved between runs (14.5ms to 29.6ms at
 20,000 processes across two separate invocations), so treat it as "same
 order of magnitude, not a precise cutoff." This doesn't include any
 rendering cost at all (the benchmark deliberately measures VM/scheduler
@@ -34,16 +34,16 @@ the loop too, on real hardware, with real sprites.
 ### Publish `.locals` for `FUNCTION` bodies and `MAIN`, matching what `PROCESS` already gets
 See `BUGS.md` #2. Small, mechanical, mirrors `compileProcess`'s existing
 pattern. Mainly benefits `compiler/disasm.js` output and any future
-debugger — variable names instead of bare slot numbers everywhere, not
+debugger - variable names instead of bare slot numbers everywhere, not
 just inside process bodies.
 
-### ~~`SWITCH` with multiple values per `CASE`~~ — DONE
+### ~~`SWITCH` with multiple values per `CASE`~~ - DONE
 See `BUGS.md` #4. `CASE 1, 2, 3` now works, with short-circuit evaluation
 verified. One regression test with four sub-cases (match at each list
 position, fall-through, short-circuit) added.
 
-### ~~Systematically test scroll/region/path natives and signal trees~~ — DONE
-See `BUGS.md` #7. 16/16 on scroll/region/path/signal-tree matrix tests —
+### ~~Systematically test scroll/region/path natives and signal trees~~ - DONE
+See `BUGS.md` #7. 16/16 on scroll/region/path/signal-tree matrix tests -
 no bugs found there. Found and fixed one real bug along the way,
 unrelated to what the matrix was targeting: `xadvance`'s argument-order
 auto-detection was structurally broken for angles above 180°.
@@ -58,7 +58,7 @@ touching `vm/process.js`'s `Process` constructor or `SPAWN_PROCESS` for
 some other reason anyway.
 
 ### Spatial partitioning for `collision(TYPE x)` if/when it's actually measured as a bottleneck
-See `BUGS.md` #5. Don't build this speculatively — benchmark
+See `BUGS.md` #5. Don't build this speculatively - benchmark
 collision-heavy scenarios first (the bunnymark here didn't exercise
 collision at all), and only reach for a grid/quadtree if the numbers
 actually show it's needed. Real architectural work, not a quick patch.
@@ -75,7 +75,7 @@ explicitly rather than discovered by reading source.
 
 ### Multi-variable declarations: `VAR x, y, z;` instead of one keyword per name
 `VAR`, `GLOBAL`, and `PRIVATE` all currently require a separate
-statement — and a repeated keyword — per variable:
+statement - and a repeated keyword - per variable:
 
 ```div
 VAR x = 0;
@@ -91,19 +91,19 @@ VAR x = 0, y = 0, z = 0;
 
 Confirmed in `parser/parser.js`: `parseVar()`, `parseGlobal()`, and
 `parsePrivate()` each read exactly one `readIdentifierLike()` name,
-optionally `= expr`, then unconditionally `expect(SEMICOLON)` — there's
+optionally `= expr`, then unconditionally `expect(SEMICOLON)` - there's
 no comma-handling at all in any of the three, so `VAR x, y;` is a syntax
 error today (`,` where `;` is expected).
 
 Fix shape: each of the three parse methods becomes a loop reading
 `name [= expr]` separated by `COMMA`, terminated by the existing
-`SEMICOLON` expectation — very close to the pattern `parseFunction()`/
+`SEMICOLON` expectation - very close to the pattern `parseFunction()`/
 `parseProcess()` already use for comma-separated parameter lists. The
 compiler side needs no change at all: `compileVar`/`compileGlobal`/
 `compilePrivate` already take one declaration at a time; the parser
 would just emit one `ast.Var`/`ast.Global`/`ast.Private` node per name
 in the list (so `VAR x, y = 5;` becomes two ordinary `Var` statements
-under the hood — `x` defaulting to `0` same as it does today, `y`
+under the hood - `x` defaulting to `0` same as it does today, `y`
 initialized to `5`), rather than needing a new multi-name AST shape.
 
 Worth deciding up front: does `VAR x, y = 5;` mean "both default to
@@ -111,10 +111,10 @@ Worth deciding up front: does `VAR x, y = 5;` mean "both default to
 to `5`"? The second reading (each name gets its own optional initializer,
 scanned left to right) is what most C-family languages with this syntax
 do, and matches what a DIV author coming from that background would
-expect — worth being explicit about it in whatever tests get written for
+expect - worth being explicit about it in whatever tests get written for
 this, since it's an easy thing to get subtly backwards.
 
-### ~~`GLOBAL` block form~~ — DONE
+### ~~`GLOBAL` block form~~ - DONE
 A bare `GLOBAL` keyword followed by several name declarations (with
 `;` still terminating each, unlike the whitespace-only version originally
 sketched below) now works:
@@ -126,7 +126,7 @@ GLOBAL
   high_score = 100;
 ```
 
-Turned out not to need "significant whitespace" at all — `;` already
+Turned out not to need "significant whitespace" at all - `;` already
 terminates every declaration in this language, so `parseGlobal()` just
 keeps reading `name [= expr];` declarations as long as the next token is
 identifier-like, stopping naturally at the next `PROCESS`/`FUNCTION`/
@@ -137,75 +137,61 @@ unaffected.
 
 **Found and fixed a real, pre-existing bug along the way, unrelated to
 this feature itself:** `compileGlobal()`'s no-explicit-value branch
-emitted `LOAD_CONST 0` with the literal number `0` as the operand — but
+emitted `LOAD_CONST 0` with the literal number `0` as the operand - but
 `LOAD_CONST`'s operand is a constant *pool index*, not a value; every
 other call site in the compiler correctly goes through
 `addConstant(value)` first. This one bypassed it, assuming index `0`
-would always hold the value `0` — never guaranteed, and actively wrong
+would always hold the value `0` - never guaranteed, and actively wrong
 once `addConstant()` started deduplicating (`99c8d13`): index `0` is
 whatever value happens to be the first one compiled anywhere in the
 *entire* program, not necessarily `0`. Confirmed this predates and is
-unrelated to today's `GLOBAL`-block work — reproduces with the original
+unrelated to today's `GLOBAL`-block work - reproduces with the original
 one-`GLOBAL`-per-line syntax too (`GLOBAL score; GLOBAL other = 100;`
 used to make `score` read back as `100` instead of `0`). Fixed with a
 one-line change (`addConstant(0)` instead of the bare literal `0`); the
 only other `LOAD_CONST` site in the whole compiler with this pattern.
 
-### Arrays and structs
-Confirmed: neither exists at all. `grep`ing `compiler/ast.js` and
-`compiler/compiler.js` for anything array- or struct-shaped turns up
-nothing — the only bracket-index syntax that exists (`scroll[0]`,
-`region[id]`) isn't a general array, it's `IndexAccess` routed through
-`__get_path`/`__set_path` into a fixed, special-cased `state` object
-(see the "Rendering / engine features" collider entry below for more on
-this path mechanism) — it works *only* for the handful of root names the
-runtime already knows about (`scroll`, `region`), not for a `VAR`/
-`GLOBAL` an author declares themselves. There's no way today to write
-`VAR enemies[10];` or loop over a collection of values without one
-`VAR`/`GLOBAL`/`PRIVATE` per slot.
+### ~~Arrays and structs~~ - DONE, this section was stale
+Both exist now (confirmed directly against `compiler/compiler.js` and
+`parser/parser.js`, not just against this file's own claims - this
+section previously said "neither exists at all," which a code review
+caught as flatly contradicted by the compiler):
 
-This is a substantial language feature, not a small parser tweak — worth
-scoping the two separately since they're different in kind:
+- **Arrays**: `GLOBAL foo[10];` and `PRIVATE foo[10];` (inside a
+  process) both work - fixed-size, compile-time-checked (an
+  out-of-bounds *literal* index, e.g. `foo[10]` on a size-10 array, is a
+  compile error via `checkConstantArrayIndex`; a variable index out of
+  range is checked at runtime instead, since its value isn't known until
+  the VM runs). Indexed access compiles to `LOAD_LOCAL_IDX`/
+  `STORE_LOCAL_IDX` (and the `_GLOBAL_` equivalents) with a
+  runtime-computed offset, not a fixed slot. `VAR foo[10];` is **not**
+  supported yet - only `GLOBAL`/`PRIVATE` accept the `[size]` form; a
+  plain `VAR` stays a single scalar slot.
+- **Structs**: `STRUCT name[count] field; field2; ... END` declares a
+  fixed-size global array of records (see `demos/breakout.html`'s
+  `STRUCT bricks[40] active; col; END`, accessed as `bricks[i].active`).
+  Supports nested structs, per-field default values, and an optional
+  trailing initializer list (`= val, val, N DUP(val), ...;`). This is a
+  top-level declaration shape, not a "type you instantiate with a
+  constructor call" - there's no `VAR p = point(1, 2);` syntax.
 
-- **Arrays** need: a new value type at the VM level (today every local/
-  global slot holds a single JS primitive — number, string, or the
-  implicit `0`; nothing holds a reference to a growable/indexable
-  collection), array-literal syntax in the parser, index-read and
-  index-write opcodes (or reuse `LOAD_LOCAL`/`STORE_LOCAL` with a
-  runtime-computed offset instead of a compile-time-fixed slot index,
-  which is a bigger change to how locals addressing works throughout the
-  compiler — today every `LOAD_LOCAL`/`STORE_LOCAL` operand is a literal
-  slot number baked in at compile time, never computed at runtime).
-- **Structs** (named field groups, e.g. `STRUCT point { x; y; }` then
-  `VAR p = point(1, 2); print(p.x);`) need a way to declare a shape (field
-  names + order), and — since `.` access already exists syntactically via
-  `MemberAccess` — could piggyback on the *general* cross-process-field
-  mechanism described below (once that exists) rather than needing an
-  entirely separate implementation: a struct instance and a "read another
-  process's fields by reference" mechanism are conceptually similar
-  problems (a handle plus named field lookup), so it may be worth
-  designing them together rather than as two unrelated features that
-  happen to reuse the same `.` syntax.
+Still open, if useful later: `VAR`-scoped (non-global, non-private)
+arrays, and dynamically-sized/growable arrays (today every array's size
+is a compile-time constant baked into the instance layout).
 
-Given the size of this, it's worth deciding early whether both are
-actually needed for this project's goals, or whether one (arrays are
-generally more load-bearing for real game logic — inventories, wave
-lists, tile data — than structs, which are more of a code-organization
-nicety) is enough to start with.
-
-### ~~Canonical `red`/`green`/`blue`/`alpha`/`tag` process fields~~ — DONE (`lang-features` branch)
+### ~~Canonical `red`/`green`/`blue`/`alpha`/`tag` process fields~~ - DONE (`lang-features` branch)
 Five new fixed slots (8-12), following the exact pattern already used
 for `ctype`/`region`/`angle`. Went with four separate numeric fields
 rather than one packed value (`red`/`green`/`blue` at 0-255, the
 conventional 8-bit RGB range; `alpha` at 0-100, matching the scale
-`scroll[i].alpha` already uses elsewhere in this runtime — kept
+`scroll[i].alpha` already uses elsewhere in this runtime - kept
 consistent rather than introducing a second, incompatible alpha
 convention). `red`/`green`/`blue` default to `255` (a process that never
 touches them is visually unaffected); `alpha` defaults to `100`
 (matching `scroll.alpha`'s own default); `tag` defaults to `0`.
 
 **Storage only**, as flagged as a separate decision below when this was
-scoped — nothing in the renderer applies these to a draw call
+scoped - nothing in the renderer applies these to a draw call
 automatically yet. A process's own `LOOP` body still calls `set_color()`
 itself, same as before these fields existed; whether/how the renderer
 should pick them up automatically during `drawProcessAt()` remains a
@@ -213,7 +199,7 @@ follow-up, not done here.
 
 Confirmed a process param sharing a canonical field's name (e.g.
 `PROCESS p(tag, x, y)`) shadows the fixed slot the same way a param
-named `id` already did before this — not a new special case, same
+named `id` already did before this - not a new special case, same
 existing behavior extended to five more names.
 
 ### Cross-process field access: `father.x`, `son.x`
@@ -221,17 +207,17 @@ Confirmed this doesn't work today, and confirmed exactly why. `.` access
 (`MemberAccess`) always compiles through `compilePathGet`/
 `compilePathSet` into `__get_path`/`__set_path`, which look up the root
 name in the runtime's `state` object (`this.state[String(rootName)]` in
-`vm/runtime.js`) — a fixed object used for `scroll`/`region` configuration,
+`vm/runtime.js`) - a fixed object used for `scroll`/`region` configuration,
 *not* a general process-reference mechanism. `father.x` would compile to
-`__get_path('father', 'x')`, which looks for `this.state.father` — always
+`__get_path('father', 'x')`, which looks for `this.state.father` - always
 `undefined`, since nothing ever puts a process there. This is a
 completely different problem from the scroll/region path system, even
 though it reuses the same `.` syntax at the parser level.
 
 What *already exists* and is worth building this on top of: every
 process already carries `parentId` (set from `this.currentProcess.id` at
-spawn time — `vm/vm.js`'s `SPAWN_PROCESS`), and `ProcessManager` already
-has `getChildrenOf(parentId)` (used today by the signal-tree machinery —
+spawn time - `vm/vm.js`'s `SPAWN_PROCESS`), and `ProcessManager` already
+has `getChildrenOf(parentId)` (used today by the signal-tree machinery -
 `S_KILL_TREE` and friends). So the *data* for "who's my parent" and "who
 are my children" is already there; what's missing is exposing it through
 `.` syntax as live field access rather than only through signals.
@@ -242,15 +228,15 @@ shape the whole feature:
 - **What does `father` even resolve to syntactically?** A literal
   keyword (`father`/`son` as new reserved words, matching classic DIV/
   Fenix convention) meaning "my own `parentId`, looked up right now,
-  every time it's referenced" — versus a general mechanism where *any*
+  every time it's referenced" - versus a general mechanism where *any*
   identifier holding a process id (returned from `spawn()`, found via
-  `collision()`, etc.) can be dereferenced with `.` — e.g.
+  `collision()`, etc.) can be dereferenced with `.` - e.g.
   `enemy_id.hp = enemy_id.hp - 10`. The second is strictly more general
   and probably subsumes the first (`father` could just be sugar for "the
   process at `parentId`"), but is a bigger compiler change: today
   `compileIdentifier` always resolves a name to a local/global *value*
   slot at compile time, never to "read this other process's locals at
-  runtime via an id computed by another expression" — that needs new
+  runtime via an id computed by another expression" - that needs new
   codegen, not just a new keyword.
 - **What can be accessed this way?** Just the 8 canonical fields (`x`/
   `y`/`width`/`height`/etc, plus whatever comes out of the
@@ -262,7 +248,7 @@ shape the whole feature:
   different process types can use the same local name for different
   purposes at different slot indices, so resolving `father.speed`
   correctly needs to know at compile time (or look up at runtime) which
-  process *type* `father` actually is, not just trust the name — a real
+  process *type* `father` actually is, not just trust the name - a real
   design problem, not a mechanical extension of the canonical-fields
   case.
 - **Read/write both, or read-only?** `son.hp = 50;` (a parent directly
@@ -270,7 +256,7 @@ shape the whole feature:
   hierarchies (a spawner process configuring what it just spawned) and
   should probably work symmetrically with reads, using the same
   `compilePathSet` pairing the existing `scroll[i].x = v` syntax already
-  has — no reason for this to be read-only if the scroll/region path
+  has - no reason for this to be read-only if the scroll/region path
   system it's modeled on isn't.
 
 ---
@@ -279,20 +265,20 @@ shape the whole feature:
 
 ### Process depth (z-order) for rendering, without a per-frame sort becoming the bottleneck
 There is currently **no depth/priority concept at all**: confirmed in
-`vm/runtime.js`'s `drawProcessesFallback()` — it iterates
+`vm/runtime.js`'s `drawProcessesFallback()` - it iterates
 `this.vm.processManager.getAll()` and draws in whatever order that
 returns processes, which is creation order (processes are appended to a
 plain array in `ProcessManager.create()` and never reordered). A process
 spawned later always draws on top of one spawned earlier, with no way
-for a DIV author to control it. Real games need this — a UI overlay
-process, a background layer, a "this enemy is behind that wall" case —
+for a DIV author to control it. Real games need this - a UI overlay
+process, a background layer, a "this enemy is behind that wall" case -
 and DIV/Fenix conventionally expose it as a per-process depth/priority
 value you can read and write like `x`/`y`.
 
 The concern about **not making this a sort bottleneck** is worth taking
 seriously given what the bunnymark found: scaling is roughly linear
 today, and a naive `processes.slice().sort((a, b) => a.depth - b.depth)`
-called fresh every single frame is `O(n log n)` — at the process counts
+called fresh every single frame is `O(n log n)` - at the process counts
 the bunnymark tested (tens of thousands), that's a real, avoidable cost
 added to *every* frame even when depths rarely change. Options, roughly
 best-to-worst for this:
@@ -306,7 +292,7 @@ best-to-worst for this:
   something's depth actually changes, plus `O(n)` to iterate the
   already-sorted list for drawing.
 - **Bucket by depth** if depth values are small-integer "layers" (a
-  common convention — background/game/UI, or a handful of named layers)
+  common convention - background/game/UI, or a handful of named layers)
   rather than a continuous value: an array-of-arrays indexed by layer,
   append on spawn, and draw layer 0's array, then layer 1's, etc. `O(1)`
   insertion, `O(n)` draw, no sort ever, at the cost of losing fine-
@@ -315,7 +301,7 @@ best-to-worst for this:
 - **Only re-sort when something actually changed**: keep a dirty flag,
   set it whenever a process's depth field is written (would need
   `STORE_LOCAL` to the depth slot to flag it, or a native setter instead
-  of direct field access — the fixed-slot writes are direct-to-array
+  of direct field access - the fixed-slot writes are direct-to-array
   today, so this needs either a native or a VM-level hook on that
   specific slot), full re-sort only on the frame after a change. Simpler
   than incremental reinsertion, worse worst-case (if depth changes every
@@ -324,7 +310,7 @@ best-to-worst for this:
 
 Implementation shape, whichever ordering strategy is picked: this is
 naturally a 9th canonical fixed slot, following the exact pattern already
-established for `ctype`/`region`/`angle` — add it to the fixed-slot table
+established for `ctype`/`region`/`angle` - add it to the fixed-slot table
 in `compiler/compiler.js`, `vm/vm.js`'s `SPAWN_PROCESS`, and
 `vm/process.js`'s `Process` constructor/`sync()`, then have
 `drawProcessesFallback()` consult it instead of raw creation order.
@@ -332,21 +318,21 @@ in `compiler/compiler.js`, `vm/vm.js`'s `SPAWN_PROCESS`, and
 ### Tilemap support
 Nothing today: `load_tile` loads a single tile graphic by id (one image,
 treated as one drawable unit, same machinery as `load_graphic`), not a
-grid of tiles referencing a shared tileset with per-cell indices — there's
+grid of tiles referencing a shared tileset with per-cell indices - there's
 no map-data structure, no "draw this grid of tile indices from this
 tileset" native, and no collision-against-the-map concept (`collision()`
 only ever checks process-vs-process by TYPE). A real tilemap feature
 needs: a map-data format (even just a 2D array of tile indices passed in
 somehow), a native that draws the visible portion of it each frame
 (ideally only the tiles inside the camera/viewport, not the whole map
-every frame — ties into the scroll/camera system that already exists),
+every frame - ties into the scroll/camera system that already exists),
 and probably a native or two for "what tile is at this world position"
 so a process can check tile-based collision (walking into a wall tile)
 without that being process-based `collision()`.
 
-### A real collider — shaped collision, not just AABB rectangles
+### A real collider - shaped collision, not just AABB rectangles
 `collidesWith()` (`vm/process.js`) is a plain axis-aligned bounding-box
-overlap test — confirmed while reviewing `collision()` earlier this
+overlap test - confirmed while reviewing `collision()` earlier this
 session. No circles, no polygons, no rotated rectangles (an `angle`
 field exists per-process but collision never consults it). Fine for a
 lot of games; not fine for anything wanting a circular hitbox (natural
@@ -356,18 +342,18 @@ Two real directions here, genuinely different in scope and worth
 deciding between deliberately rather than drifting into by accident:
 
 - **Build a real shaped-collider system in this codebase.** Define
-  shapes per process (circle with radius, polygon with a point list —
+  shapes per process (circle with radius, polygon with a point list -
   probably as additional canonical fields or a small shape-descriptor
   object attached to the process), implement the actual intersection
   tests (circle-circle is trivial; circle-polygon and polygon-polygon
-  need real geometry, SAT — separating axis theorem — being the standard
+  need real geometry, SAT - separating axis theorem - being the standard
   approach for convex polygons). This stays entirely within the existing
   architecture and dependency-free, but is real, nontrivial geometry code
   to write and get right, and doesn't give physics (restitution,
   friction, joints, gravity as a first-class concept beyond "add to y
-  each frame by hand") — just better collision *detection*, not
+  each frame by hand") - just better collision *detection*, not
   collision *response*.
-- **Integrate an existing 2D physics engine** — Box2D itself (via a WASM
+- **Integrate an existing 2D physics engine** - Box2D itself (via a WASM
   port) or **Planck.js** (a pure-JS/TypeScript port of Box2D, no WASM
   toolchain needed, easier to embed) as a native binding: DIV processes
   would own a physics body, natives would step the physics world once
@@ -375,7 +361,7 @@ deciding between deliberately rather than drifting into by accident:
   (mirroring how `sync()` already moves data between VM locals and the
   `Process` object), and expose things like `set_velocity`,
   `apply_force`, joints, and real collision *response* (things bounce,
-  push each other, stack) — not just detection. Substantially more
+  push each other, stack) - not just detection. Substantially more
   capability for substantially more integration work: a new dependency,
   a body-to-process lifecycle to manage (create the physics body on
   spawn, destroy it on kill/sweep), and a real design decision about how
@@ -387,7 +373,7 @@ deciding between deliberately rather than drifting into by accident:
   ethos much better than a WASM toolchain would), and physics stepping
   cost is a separate, measurable question from what the bunnymark
   measured (that was pure movement + bounce logic, no actual physics
-  simulation) — worth its own benchmark before committing to it at any
+  simulation) - worth its own benchmark before committing to it at any
   process count.
 
   Given the project's current scope (VM/compiler correctness, a
@@ -401,7 +387,7 @@ Surveyed the full native surface
 (`registerNative()` calls in `vm/runtime.js`) to ground this rather than
 guessing. Gaps, roughly in order of "how often a real 2D game needs it":
 
-- **No audio at all.** No `play_sound`, no music/fx natives, nothing —
+- **No audio at all.** No `play_sound`, no music/fx natives, nothing -
   confirmed absent from the native list. Any DIV-family game needs at
   minimum a "play this sound once" and "play/loop this music" pair.
 - **No sprite-sheet animation helper.** `load_graphic`/`load_tile` load
@@ -427,7 +413,7 @@ guessing. Gaps, roughly in order of "how often a real 2D game needs it":
   flags that generators/coroutines (if the transpiler-to-JS-generators
   approach from early in this project's exploration had been taken
   instead of the bytecode VM that was actually built) would have made
-  this *harder*, not easier — the bytecode VM's explicit
+  this *harder*, not easier - the bytecode VM's explicit
   `ip`/`stack`/`locals` per process is actually reasonably serializable
   as-is, which is a real point in its favor if this ever gets built.
 - **No tween/easing helpers beyond raw trig.** `sin`/`cos`/`pow` etc.
@@ -437,7 +423,7 @@ guessing. Gaps, roughly in order of "how often a real 2D game needs it":
 
 ### Consider building the renderer on an existing engine (PixiJS) instead of hand-rolled canvas 2D
 Worth a deliberate decision, not a default. `CanvasEngineRuntime`
-(`vm/runtime.js`) draws directly via the 2D canvas context today —
+(`vm/runtime.js`) draws directly via the 2D canvas context today -
 `fillRect`, `arc`, `drawImage`, one draw call per process per frame, no
 batching, no GPU acceleration beyond whatever the browser's own 2D
 canvas backend already does internally.
@@ -448,7 +434,7 @@ built-in support for exactly the kind of animation/particle/tween gaps
 listed above. Given the bunnymark explicitly did *not* measure render
 cost (it isolated VM/scheduler throughput on purpose), and canvas 2D
 `drawImage` cost per sprite is a completely different, separately-
-measurable question from what was benchmarked — if a real game needs
+measurable question from what was benchmarked - if a real game needs
 thousands of *visible, drawn* sprites (not just thousands of ticking
 processes with nothing on screen, which is what the bunnymark tested),
 render cost is very plausibly the actual bottleneck long before VM
@@ -457,11 +443,11 @@ higher than hand-rolled canvas 2D calls can.
 
 **Case against, or at least for waiting:** it's a new dependency and a
 full rewrite of the drawing half of `CanvasEngineRuntime` (the VM/
-compiler/process side is entirely unaffected — this is purely a renderer
+compiler/process side is entirely unaffected - this is purely a renderer
 swap, DIV programs wouldn't need to change at all, natives like
 `circle`/`draw_rect`/`xput` would just be reimplemented against Pixi's
 API underneath). Also: this hasn't actually been measured as a problem
-yet — the honest thing is to benchmark real render cost (a bunnymark
+yet - the honest thing is to benchmark real render cost (a bunnymark
 variant that actually draws each bunny via `CanvasEngineRuntime.render()`,
 sweeping process count, measuring `render()` time specifically the way
 `bench/bunnymark.mjs` already isolates `tick()` time) *before* deciding
@@ -473,19 +459,19 @@ this way, rather than assuming it and rewriting preemptively.
 ## Process notes (how this list was built, for whoever picks it up next)
 
 Everything in `BUGS.md` above the natives/signal-trees item (#7) was
-found through direct, deliberate investigation this session — either an
+found through direct, deliberate investigation this session - either an
 exhaustive test matrix (loops, expressions, forward references) or by
 building and running a real tool against the compiler (`disasm.mjs`
 surfaced the constant-pool and FOR-loop optimization opportunities;
-`bench/bunnymark.mjs` surfaced the MAIN spawn-budget bug). That pattern —
-build something real, run it, read what it actually says — found more
+`bench/bunnymark.mjs` surfaced the MAIN spawn-budget bug). That pattern -
+build something real, run it, read what it actually says - found more
 than guessing at what might be wrong ever did. Worth repeating for #7
 rather than trying to reason about scroll/region correctness from reading
 the code alone.
 
 The "Language ergonomics" and "Rendering / engine features" sections
 above are different in kind from everything before them: not bugs, not
-things confirmed broken by testing, but a feature/roadmap wishlist —
+things confirmed broken by testing, but a feature/roadmap wishlist -
 grounded in what the current grammar and native surface actually do (verified
 directly against the parser and runtime source, not guessed at) rather
 than invented from nothing, but genuinely open design questions rather

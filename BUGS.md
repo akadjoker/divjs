@@ -1,13 +1,13 @@
-# BUGS.md — known issues, not yet fixed
+# BUGS.md - known issues, not yet fixed
 
 Everything below was found while working through parser/compiler/VM
 correctness, expression semantics, and the bunnymark stress test. None of
-this is fixed yet — this file exists to track it for later, per request.
+this is fixed yet - this file exists to track it for later, per request.
 Ordered roughly by severity.
 
 ---
 
-## 1. ~~MAIN silently truncates and permanently dies on a large single-tick spawn loop~~ — FIXED in a4bd61b
+## 1. ~~MAIN silently truncates and permanently dies on a large single-tick spawn loop~~ - FIXED in a4bd61b
 
 **Severity: high.** Found while building `bench/bunnymark.mjs`. **Fixed.**
 
@@ -29,10 +29,10 @@ while (!this.frameYield && !this.mainFinished && !this.halted) {
 This exists as a safety net against a genuinely infinite loop that never
 hits `FRAME` (a real bug class, worth guarding against). But it doesn't
 distinguish "stuck forever" from "doing a lot of real work before its
-first `FRAME`" — and once it fires, **`mainFinished = true` is
+first `FRAME`" - and once it fires, **`mainFinished = true` is
 permanent**. `tick()` checks `if (!this.mainFinished) { this.runMain(); }`
 every frame, so once this fires, MAIN never runs again for the rest of
-the program's life — not just that tick.
+the program's life - not just that tick.
 
 ### Repro
 
@@ -50,17 +50,17 @@ BEGIN
 END
 ```
 
-Requesting 5,000 bunnies in one `FOR` loop — with this exact per-spawn
+Requesting 5,000 bunnies in one `FOR` loop - with this exact per-spawn
 instruction cost (a handful of arithmetic ops per argument plus the
 spawn call itself, roughly 30 instructions/iteration including the loop
-overhead) — silently produces **3,225 live processes**, not 5,000, and
+overhead) - silently produces **3,225 live processes**, not 5,000, and
 **every larger count tested (5,000 / 10,000 / 20,000 / 50,000) also
-produces exactly 3,225** — the loop always dies at the same iteration
+produces exactly 3,225** - the loop always dies at the same iteration
 count once the same fixed per-spawn instruction cost is involved. Confirmed via
 `vm.processManager.getAll().length` after the spawn tick; `console.error`
 prints `MAIN: no FRAME in loop` with zero other indication anything went
-wrong. The trailing `LOOP FRAME; END` in the example above — which is
-what would otherwise keep MAIN "alive" for later game-state logic —
+wrong. The trailing `LOOP FRAME; END` in the example above - which is
+what would otherwise keep MAIN "alive" for later game-state logic -
 never runs either.
 
 ### Why this matters for real programs
@@ -73,13 +73,13 @@ it, more/heavier ones lower it), which makes it hard to predict without
 hitting it. Nothing in the language or compiler warns that this ceiling
 exists.
 
-### Possible directions (not evaluated in depth — pick one for `TODO.md`)
+### Possible directions (not evaluated in depth - pick one for `TODO.md`)
 
 - Raise the budget substantially (trades off catching genuinely runaway
   loops later / less precisely).
 - Make the guard resumable instead of terminal: instead of
   `mainFinished = true`, save `ip` and resume MAIN's execution from where
-  it left off on the *next* tick, spending a fresh budget each time —
+  it left off on the *next* tick, spending a fresh budget each time -
   turns "one big spawn loop" into an implicit multi-tick batch
   automatically, without the author having to hand-write batching (which
   is the workaround `bench/bunnymark.mjs` uses today).
@@ -105,10 +105,10 @@ reason to change a working benchmark, but new code doesn't need it.
 
 ## 2. `functionTable` (and MAIN) don't publish a `.locals` map like `processTable` does
 
-**Severity: low — tooling/debuggability, not correctness.**
+**Severity: low - tooling/debuggability, not correctness.**
 
 `processTable` entries carry `{ addr, params, privates, locals }`, where
-`.locals` maps every local variable name to its slot index — used by
+`.locals` maps every local variable name to its slot index - used by
 `compiler/disasm.js` to show `LOAD_LOCAL 8 ; vy` instead of a bare `8`.
 `functionTable` entries only ever get `{ addr, params }`; MAIN has no
 table entry with local names at all. So `disasm.mjs`'s output shows bare
@@ -124,12 +124,12 @@ table entry the same shape.
 
 ## 3. `frame(n)` for `n > 100` is clamped to "run every tick," not a real speedup
 
-**Severity: low — documented limitation, not silently wrong.**
+**Severity: low - documented limitation, not silently wrong.**
 
 `frame(n)` throttling (added this session) correctly slows a process down
 for `n < 100` via a per-process credit accumulator. For `n > 100`
 ("run faster than every tick"), the credit is clamped to 100/tick because
-this scheduler calls each process at most once per external `tick()` —
+this scheduler calls each process at most once per external `tick()` -
 there's no way to represent "run twice in one tick" without executing a
 process's bytecode more than once per `vm.tick()` call, which nothing
 currently supports. `frame(200)` behaves identically to `frame(100)`. The
@@ -138,31 +138,31 @@ anywhere else.
 
 ---
 
-## 4. ~~`SWITCH`/`CASE` only supports one value per case~~ — FIXED in (this commit)
+## 4. ~~`SWITCH`/`CASE` only supports one value per case~~ - FIXED in (this commit)
 
-**Severity: low — feature gap, not a bug in what exists. Fixed.**
+**Severity: low - feature gap, not a bug in what exists. Fixed.**
 
-`CASE 1, 2, 3` (multiple values sharing one body) now works — matches
+`CASE 1, 2, 3` (multiple values sharing one body) now works - matches
 if the subject equals any of them, short-circuiting on the first match
 (later values in the same list are never evaluated once an earlier one
 hits, verified with a side-effecting `mark()` call). `parseSwitch()`
 parses comma-separated values into a `values` array per case;
 `compileSwitch()` compiles all but the last as `EQ` + `JUMP_IF_TRUE`
 straight into the body, and the last as the existing single-value
-`EQ` + `JUMP_IF_FALSE`-to-next-case — so a CASE with exactly one value
+`EQ` + `JUMP_IF_FALSE`-to-next-case - so a CASE with exactly one value
 (the common case) compiles to exactly what it always did.
 
 ---
 
 ## 5. `collision(TYPE x)` is O(k) over every live process of that type, no spatial partitioning
 
-**Severity: low at current scale — noted after the bunnymark, not measured directly.**
+**Severity: low at current scale - noted after the bunnymark, not measured directly.**
 
 `ProcessManager.collision()` does an O(1) lookup by type (a `Map<type,
 Set<id>>`), then an O(k) linear scan with an AABB test over every process
 of that specific type. Fine at hundreds of same-type processes; a
 game with thousands of enemies of the same type all checking collision
-against each other every frame would start feeling this — the bunnymark
+against each other every frame would start feeling this - the bunnymark
 above didn't exercise `collision()` at all (bunnies don't check collision
 against each other), so this is a reasoned prediction from reading the
 code, not a directly measured number. Would need a grid or quadtree to
@@ -172,14 +172,14 @@ fix properly; meaningful architectural work, not a quick patch.
 
 ## 6. `Process` recomputes `hashCode(name)` on every single spawn
 
-**Severity: negligible — noted for completeness, not worth chasing.**
+**Severity: negligible - noted for completeness, not worth chasing.**
 
 `Process`'s constructor computes `hashCode(name)` fresh every time a
 process is created, even though the compiler already computes the exact
 same hash once, at compile time, for every `TYPE x` operator reference.
 The two hashes have to stay consistent (they do, both delegate to the
 same `utils/hash.js`) but there's no reason the runtime one needs
-recomputing — it could be threaded through `SPAWN_PROCESS`'s params from
+recomputing - it could be threaded through `SPAWN_PROCESS`'s params from
 `processTable` instead. Spawning happens far less often than
 per-instruction VM dispatch, so the actual cost of this is minor; flagged
 only because it's a small, obviously-fixable redundancy if anyone's ever
@@ -187,7 +187,7 @@ touching this code for another reason anyway.
 
 ---
 
-## 7. ~~Native geometric functions and signal trees not exhaustively tested~~ — DONE, one real bug found and fixed
+## 7. ~~Native geometric functions and signal trees not exhaustively tested~~ - DONE, one real bug found and fixed
 
 **Severity: was unknown, now resolved.**
 
@@ -198,14 +198,14 @@ variants (`S_KILL_TREE`/`S_WAKEUP_TREE`/`S_SLEEP_TREE`/`S_FREEZE_TREE`),
 including 3-level process hierarchies (grandparent → parent → child) and
 TYPE-based tree signals affecting multiple independent trees at once.
 
-**Results: 16/16 on scroll/region/path/signal-tree tests — no bugs
+**Results: 16/16 on scroll/region/path/signal-tree tests - no bugs
 found there.** `let_me_alone`, `S_KILL` (non-tree, target only) vs.
 `S_KILL_TREE` (target + all descendants), sleep/wakeup trees, and
 type-based tree signals across multiple trees all behaved exactly as
 expected.
 
 **One real bug found and fixed in `xadvance`.** See the "Fix applied"
-note below — `xadvanceNative`'s argument-order auto-detection heuristic
+note below - `xadvanceNative`'s argument-order auto-detection heuristic
 was structurally wrong (not just miscalibrated), and any angle between
 180°-360° passed as the second argument would silently be misread as a
 distance, producing wildly wrong movement.
@@ -222,15 +222,15 @@ unboundedly frame after frame, confirming angles routinely span the
 full 0-360000 convention (a complete turn), not just half of it. Any
 angle between 180001-360000 passed as the second argument would be
 misclassified as "must be the distance", producing movement wrong in
-both magnitude and direction — e.g. `xadvance(10, 270000)` (10 units at
+both magnitude and direction - e.g. `xadvance(10, 270000)` (10 units at
 270°, straight up) used to move ~270000 units in nearly the wrong
 direction instead. There's no magnitude threshold that fixes this: on-
 screen distances routinely reach into the hundreds or low thousands too,
 overlapping the legitimate angle range too broadly for guessing to ever
 be reliable in general.
 
-Fixed to a plain, fixed `(distance, angle)` argument order — matching
-`advanceNative()` exactly — instead of guessing. The one existing test
+Fixed to a plain, fixed `(distance, angle)` argument order - matching
+`advanceNative()` exactly - instead of guessing. The one existing test
 (`testXAdvanceMovesByAngle`, calling `xadvance(10, 0)`) only exercised
 the ambiguous small-magnitude case and still passes unchanged. Added
 `testXAdvanceHandlesAnglesAboveHalfCircle`, calling `xadvance(10,
