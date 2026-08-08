@@ -511,8 +511,12 @@ async function testMathGeometryHelperPack() {
   const drInside = runtime.distanceRectNative(15, 15, 10, 10, 10, 10);
   assert(approx(drInside, 0), `distance_rect dentro esperado 0, obtido ${drInside}`);
 
+  // fget_angle is Y-up (math-standard), the opposite of screen-space
+  // Y-down - real DIV's f.c computes dy as y0-y1, not y1-y0 - so a point
+  // straight below the origin (screen Y increasing) is angle -90000
+  // (270000), not 90000.
   const fa = runtime.fgetAngleNative(0, 0, 0, 10);
-  assert(approx(fa, 90000), `fget_angle para cima esperado 90000, obtido ${fa}`);
+  assert(approx(fa, -90000), `fget_angle para baixo esperado -90000, obtido ${fa}`);
 
   const fd = runtime.fgetDistanceNative(0, 0, 6, 8);
   assert(approx(fd, 10), `fget_distance esperado 10, obtido ${fd}`);
@@ -520,10 +524,12 @@ async function testMathGeometryHelperPack() {
   const h = runtime.hermiteNative(0, 10, 0.5);
   assert(approx(h, 5), `hermite(0,10,0.5) esperado 5, obtido ${h}`);
 
-  const gx = runtime.getDistXNative(10, 0);
-  const gy = runtime.getDistYNative(10, 90000);
-  assert(approx(gx, 10), `get_distx(10,0) esperado 10, obtido ${gx}`);
-  assert(approx(gy, 10), `get_disty(10,90000) esperado 10, obtido ${gy}`);
+  // DIV signature is get_distx(angle, distance) - angle first. get_disty
+  // negates sin() to stay fget_angle's correct inverse (see above).
+  const gx = runtime.getDistXNative(0, 10);
+  const gy = runtime.getDistYNative(90000, 10);
+  assert(approx(gx, 10), `get_distx(0,10) esperado 10, obtido ${gx}`);
+  assert(approx(gy, -10), `get_disty(90000,10) esperado -10, obtido ${gy}`);
 
   const rad = runtime.toRadNative(180000);
   assert(approx(rad, Math.PI), `torad(180000) esperado PI, obtido ${rad}`);

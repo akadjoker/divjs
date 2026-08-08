@@ -4,9 +4,16 @@
  */
 
 export class GraphicsManager {
+  // FPG member codes are bounded to 0-999 by the parser (div_formats.js).
+  // Direct-registry ids (load_map/load_tile/load_graphic/new_graphic/FPG
+  // internal asset storage) start well above that range so a raw graphic
+  // id can never numerically collide with a real FPG code when both are
+  // looked up under file=0 (getGraphAsset checks the FPG library first).
+  static DIRECT_ID_BASE = 10000;
+
   constructor() {
     this.graphics = new Map();
-    this.nextId = 1;
+    this.nextId = GraphicsManager.DIRECT_ID_BASE;
   }
 
   // Load graphic
@@ -113,7 +120,7 @@ export class GraphicsManager {
   // Clear all graphics
   clear() {
     this.graphics.clear();
-    this.nextId = 1;
+    this.nextId = GraphicsManager.DIRECT_ID_BASE;
   }
 }
 

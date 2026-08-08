@@ -782,14 +782,42 @@ export class CanvasEngineRuntime {
     return Math.hypot(dx, dy);
   }
 
+  // Real DIV's fget_angle (src/runtime/f.c) computes dy as y0-y1, not
+  // y1-y0 - a Y-up (math-standard) angle convention, the opposite of
+  // screen-space Y-down. get_disty mirrors this with -sin() so the pair
+  // stays each other's correct inverse (get_distx(fget_angle(...), d)
+  // round-trips back to the original dx/dy). Confirmed independently
+  // against BennuGD's mod_math.c, which does the same negation.
   fgetAngleNative(x1, y1, x2, y2) {
     const dx = (Number(x2) || 0) - (Number(x1) || 0);
-    const dy = (Number(y2) || 0) - (Number(y1) || 0);
+    const dy = (Number(y1) || 0) - (Number(y2) || 0);
     return this.toDivAngleFromRadians(Math.atan2(dy, dx));
   }
 
   fgetDistanceNative(x1, y1, x2, y2) {
     return this.distanceNative(x1, y1, x2, y2);
+  }
+
+  // near_angle(angle, final_angle, increment): eases `angle` toward
+  // `final_angle` by at most `increment` (degree-thousandths), taking the
+  // shorter way around the circle - DIV manual + src/runtime/f.c's
+  // near_angle(). `pi` here is DIV's own pi constant (180000 = half turn),
+  // not Math.PI.
+  nearAngleNative(angle, finalAngle, increment) {
+    const PI = 180000;
+    let a1 = Number(angle) || 0;
+    const a2 = Number(finalAngle) || 0;
+    const inc = Math.abs(Number(increment) || 0);
+    while (a1 < a2 - PI) a1 += 2 * PI;
+    while (a1 > a2 + PI) a1 -= 2 * PI;
+    if (a1 < a2) {
+      a1 += inc;
+      if (a1 > a2) a1 = a2;
+    } else {
+      a1 -= inc;
+      if (a1 < a2) a1 = a2;
+    }
+    return a1;
   }
 
   // GET_ANGLE(id) / GET_DIST(id): angle/distance from the CURRENT
@@ -868,16 +896,22 @@ export class CanvasEngineRuntime {
     return a + (b - a) * h;
   }
 
-  getDistXNative(distance, angle) {
+  // DIV manual: "x+=get_distx(angle,distance)" - angle first, distance
+  // second. Confirmed against every real .prg in this repo (coins.prg,
+  // pool.prg all call get_distx(some_angle, some_distance)).
+  getDistXNative(angle, distance) {
     const dist = Number(distance) || 0;
     const rad = this.toRadiansFromDivAngle(angle);
     return Math.cos(rad) * dist;
   }
 
-  getDistYNative(distance, angle) {
+  // Negated to match fget_angle's Y-up convention - see the comment on
+  // fgetAngleNative. Also confirmed against BennuGD's own get_disty
+  // (-sin), independently of the DIV source.
+  getDistYNative(angle, distance) {
     const dist = Number(distance) || 0;
     const rad = this.toRadiansFromDivAngle(angle);
-    return Math.sin(rad) * dist;
+    return -Math.sin(rad) * dist;
   }
 
   toRadNative(angle) {
@@ -2644,6 +2678,7 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('distance', this.distanceNative.bind(this));
     this.vm.registerNative('distance_rect', this.distanceRectNative.bind(this));
     this.vm.registerNative('fget_angle', this.fgetAngleNative.bind(this));
+    this.vm.registerNative('near_angle', this.nearAngleNative.bind(this));
     this.vm.registerNative('fget_distance', this.fgetDistanceNative.bind(this));
     // DIV's actual native name (f.c's fname[] table) - alias to the
     // same implementation already registered as fget_distance above.
@@ -3073,7 +3108,12 @@ export class CanvasEngineRuntime {
     const gid = Number(graphId) || 0;
 
     // Library ids start at 0 (see reserveGraphLibrary), so file 0 can be a
-    // real FPG library - try it first regardless of fid's value.
+    // real FPG library - try it first regardless of fid's value. This is
+    // safe even when gid is actually a raw direct-registry id (from
+    // load_map/load_tile/etc.) because those ids start at
+    // GraphicsManager.DIRECT_ID_BASE (10000), well above the 0-999 range
+    // real FPG codes are bounded to, so they can never collide with a
+    // library's own graph codes.
     const lib = this.graphLibraries.get(fid);
     const mapped = lib?.graphs?.get(gid);
     if (mapped !== undefined) {

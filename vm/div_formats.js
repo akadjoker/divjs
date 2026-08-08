@@ -206,7 +206,13 @@ export function parseDivMapBuffer(buffer) {
 
   let palette = null;
   if (bpp === 8) {
-    palette = readPalette(reader, false);
+    // Real load_map() (src/runtime/f.c) reads npuntos from a fixed offset
+    // of 1392 = 48 (header) + 768 (palette) + 576 - the same trailing DAC
+    // gamma/reserved block FPG's palette carries (readPalette's
+    // withGammaBlock), just never wired up for MAP. Skipping it was
+    // shifting every byte after the palette by 576, which shows up as a
+    // torn/shuffled-looking background once decoded as rows.
+    palette = readPalette(reader, true);
   }
 
   const cpointCount = reader.readUInt16();

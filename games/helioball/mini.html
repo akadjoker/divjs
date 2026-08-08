@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DivJS - Mini Helioball (real assets, real scroll+physics)</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #000;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.4;
+    }
+    #log {
+      width: 640px;
+      max-width: 90vw;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 36px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="480"></canvas>
+
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../../divjs.js';
+
+    const canvas = document.getElementById('c');
+    const log = document.getElementById('log');
+
+    function logLine(line) {
+      log.textContent = String(line);
+    }
+
+    const SOURCE = `PROGRAM mini_helioball;
+
+CONST
+    maxspeed = 2000;
+    acceleration = 400;
+    brake = 800;
+
+GLOBAL
+    shipfile;
+    bgmap;
+    idship;
+
+// Same acceleration/brake/friction/max-speed model as heliobal.prg's
+// player1 control block (SWITCH CASE 1) and its "moves the ship" tail -
+// speed_inc_x/y accumulate every frame a direction key is held (a
+// harder brake than accel when reversing direction), constant passive
+// friction of 40/frame once released, position advances by
+// speed_inc/200 each frame, and total speed is clamped to maxspeed
+// along its own direction (fget_angle/fget_dist/get_distx/get_disty -
+// the same trig helpers the ball's bounce/push math below also
+// exercises) rather than per-axis.
+PROCESS ship();
+PRIVATE
+    speed_inc_x; speed_inc_y;
+    realangle; realspeed;
+    inigraph; graphicangle; gfinalangle;
+BEGIN
+    file = shipfile;
+    inigraph = 1;
+    graph = inigraph;
+    ctype = c_scroll;
+    x = 600;
+    y = 480;
+    z = 1;
+    speed_inc_x = 0;
+    speed_inc_y = 0;
+    gfinalangle = 0;
+
+    idship = id;
+
+    LOOP
+        IF (key(_right))
+            IF (speed_inc_x >= 0) speed_inc_x += acceleration; ELSE speed_inc_x += brake; END
+        END
+        IF (key(_left))
+            IF (speed_inc_x <= 0) speed_inc_x -= acceleration; ELSE speed_inc_x -= brake; END
+        END
+        IF (key(_up))
+            IF (speed_inc_y <= 0) speed_inc_y -= acceleration; ELSE speed_inc_y -= brake; END
+        END
+        IF (key(_down))
+            IF (speed_inc_y >= 0) speed_inc_y += acceleration; ELSE speed_inc_y += brake; END
+        END
+
+        x += speed_inc_x / 200;
+        y += speed_inc_y / 200;
+
+        IF (speed_inc_x > 0) speed_inc_x -= 40; END
+        IF (speed_inc_y > 0) speed_inc_y -= 40; END
+        IF (speed_inc_x < 0) speed_inc_x += 40; END
+        IF (speed_inc_y < 0) speed_inc_y += 40; END
+
+        IF (fget_dist(0, 0, speed_inc_x, speed_inc_y) > maxspeed)
+            realangle = fget_angle(0, 0, speed_inc_x, speed_inc_y);
+            speed_inc_x = get_distx(realangle, maxspeed);
+            speed_inc_y = get_disty(realangle, maxspeed);
+        END
+
+ 
+        realangle = fget_angle(0, 0, speed_inc_x, speed_inc_y);
+        realspeed = fget_dist(0, 0, speed_inc_x, speed_inc_y);
+
+        // heliobal.prg's own ship-graphic rotation trick (its lines
+        // 587-592): the ship doesn't rotate for real - ships.fpg has 24
+        // pre-rendered frames per ship (codes 1..24 for this one), and
+        // the script eases a facing angle toward the movement heading,
+        // then eases a slower "graphic angle" toward that (the lag is
+        // what gives it a banking-into-the-turn feel), and picks the
+        // frame that's nearest that angle.
+        IF (realspeed > 200)
+            angle = near_angle(angle, realangle, 10000);
+            graphicangle = realangle - angle;
+            gfinalangle = near_angle(gfinalangle, graphicangle, 15000);
+            WHILE (gfinalangle < 0) gfinalangle += 360000; END
+            WHILE (gfinalangle >= 360000) gfinalangle -= 360000; END
+            // gfinalangle/near_angle/fget_angle are floats here (unlike
+            // real DIV, where every store into a 32-bit int variable
+            // truncates automatically) - int() forces a clean integer
+            // graph id, otherwise a fractional id misses the FPG lookup
+            // and the ship's sprite silently fails to draw that frame.
+            graph = inigraph + int(gfinalangle / 15000);
+        END
+
+         IF (x < 45) x = 45; END
+         IF (x > 1155) x = 1155; END
+         IF (y < 45) y = 45; END
+         IF (y > 915) y = 915; END
+
+        FRAME;
+    END
+END
+
+// Straight port of heliobal.prg's ball() process (its lines 328-406):
+// the ball carries its own ballangle/ballspeed, brakes 100/frame,
+// and a ship touching it (collision(TYPE ship)) kicks it off along
+// the combined angle of "away from the ship" and "the ship's own
+// heading" - the same fget_angle/fget_dist/get_distx/get_disty
+// quartet the ship's own movement uses. Wall bounces mirror the
+// angle across the wall's axis the same way the real game does.
+// Only the goal-area carve-out is dropped (no goals/second ship here).
+PROCESS ball();
+PRIVATE
+    hitship; ballangle; ballspeed;
+    addangx; addangy; angx; angy; real_speed;
+BEGIN
+    file = shipfile;
+    graph = 50;
+    ctype = c_scroll;
+    x = 600;
+    y = 480;
+    z = 0;
+    ballangle = 45000;
+    ballspeed = 0;
+
+    LOOP
+        x += get_distx(ballangle, ballspeed / 200);
+        y += get_disty(ballangle, ballspeed / 200);
+
+        IF (ballspeed > 0) ballspeed -= 100; ELSE ballspeed = 0; END
+
+        // hitship is this process's own scratch var, not the shared
+        // GLOBAL idship (the camera target) - heliobal.prg's ball()
+        // keeps its own PRIVATE idship for exactly this reason, so a
+        // no-collision frame (assigns 0) never clobbers the camera.
+        IF (hitship = collision(TYPE ship))
+            ballspeed = hitship.realspeed + 2000;
+
+            real_speed = hitship.realspeed;
+            IF (real_speed > 400) real_speed = 400; END
+
+            addangx = get_distx(get_angle(hitship) + 180000, 400);
+            addangy = get_disty(get_angle(hitship) + 180000, 400);
+            angx = get_distx(hitship.realangle, real_speed);
+            angy = get_disty(hitship.realangle, real_speed);
+            addangx += angx; addangy += angy;
+
+            ballangle = fget_angle(0, 0, addangx, addangy);
+            x += get_distx(ballangle, ballspeed / 200);
+            y += get_disty(ballangle, ballspeed / 200);
+        END
+
+        IF (y < 12 OR y > 948)
+            ballangle = fget_angle(0, 0, get_distx(ballangle, 200), -(get_disty(ballangle, 200)));
+            ballspeed += 100;
+            x += get_distx(ballangle, ballspeed / 200);
+            y += get_disty(ballangle, ballspeed / 200);
+            IF (y < 12) y = 13; END
+            IF (y > 948) y = 947; END
+        END
+
+        IF (x < 12 OR x > 1188)
+            ballangle = fget_angle(0, 0, -(get_distx(ballangle, 200)), get_disty(ballangle, 200));
+            ballspeed += 100;
+            x += get_distx(ballangle, ballspeed / 200);
+            y += get_disty(ballangle, ballspeed / 200);
+            IF (x < 12) x = 13; END
+            IF (x > 1188) x = 1187; END
+        END
+
+        FRAME;
+    END
+END
+
+BEGIN
+    set_mode(640, 480);
+    screen_color('#000');
+
+    shipfile = load_fpg("fpg/ships.fpg");
+    bgmap = load_map("map/stadium.map");
+
+    ship();
+    ball();
+
+    // Same idea as heliobal.prg's own setup: one scroll plane over the
+    // stadium map, camera locked onto the ship process.
+    start_scroll(0, 0, bgmap, 0, 0, 0);
+    scroll[0].camera = idship;
+
+    LOOP
+        write(0, 16, 16, 0, 'MINI HELIOBALL ');
+        write(0, 16, 36, 0, 'arrows to accelerate the ship, push the ball around');
+        FRAME;
+    END
+END`;
+
+    fetch('fpg/ships.fpg', { method: 'HEAD' })
+      .then(() => {
+        try {
+          runDivDemo({
+            canvas,
+            source: SOURCE,
+            clearColor: '#000',
+            onLog: (line) => { logLine(line); },
+            onError: (err) => {
+              logLine('error: ' + (err?.message || String(err)));
+              console.error(err);
+            }
+          });
+          logLine('running: mini helioball (real assets + scroll + physics)');
+        } catch (err) {
+          logLine('error: ' + (err?.message || String(err)));
+          console.error(err);
+        }
+      })
+      .catch((err) => {
+        logLine('error: could not reach assets (' + (err?.message || String(err)) + ') - serve this over HTTP, not file://');
+      });
+  </script>
+</body>
+</html>
