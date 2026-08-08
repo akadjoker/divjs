@@ -1,7 +1,7 @@
 // AST node types
 
 export class Program {
-  constructor(name, globals, structs, processes, functions, mainBlock) {
+  constructor(name, globals, structs, processes, functions, mainBlock, mainPrivates = [], locals = []) {
     this.type = 'program';
     this.name = name;
     this.globals = globals;
@@ -9,6 +9,11 @@ export class Program {
     this.processes = processes;
     this.functions = functions;
     this.mainBlock = mainBlock;
+    // PRIVATE declared at top level, i.e. MAIN's own privates - MAIN is a
+    // process in DIV and may declare them like any other.
+    this.mainPrivates = mainPrivates;
+    // LOCAL section: fields every process gets its own copy of.
+    this.locals = locals;
   }
 }
 
@@ -68,14 +73,14 @@ export class If {
 // A SWITCH has no fallthrough between cases by design: each CASE body
 // runs and then control jumps straight to the end of the SWITCH, so BREAK
 // is never needed to keep cases separate (unlike C's switch). BREAK still
-// works normally *inside* a case body, but — like inside an IF — it
+// works normally *inside* a case body, but - like inside an IF - it
 // refers to whatever loop the SWITCH itself is nested in, if any; SWITCH
 // doesn't open its own loop context.
 export class Switch {
   constructor(subject, cases, defaultBody) {
     this.type = 'switch';
     this.subject = subject;
-    this.cases = cases; // Array<{ values: Expr[], body: Block }> — a CASE can list several comma-separated values sharing one body
+    this.cases = cases; // Array<{ values: Expr[], body: Block }> - a CASE can list several comma-separated values sharing one body
     this.defaultBody = defaultBody; // Block | null
   }
 }
@@ -86,6 +91,18 @@ export class For {
     this.varName = varName;
     this.start = start;
     this.end = end;
+    this.step = step;
+    this.body = body;
+  }
+}
+
+// C-style FOR (init; condition; step) - kept distinct from For, whose
+// counted DIV form has different semantics.
+export class CFor {
+  constructor(init, condition, step, body) {
+    this.type = 'cfor';
+    this.init = init;
+    this.condition = condition;
     this.step = step;
     this.body = body;
   }
@@ -232,7 +249,7 @@ export class TypeOperator {
   }
 }
 
-// OFFSET <global> — a live reference to a GLOBAL, used with WRITE/WRITE_INT
+// OFFSET <global> - a live reference to a GLOBAL, used with WRITE/WRITE_INT
 // so the on-screen text auto-refreshes as the global changes instead of
 // needing to be redrawn every frame by hand.
 export class OffsetOperator {

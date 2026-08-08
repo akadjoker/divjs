@@ -3,7 +3,7 @@
 // globals, mainAddr }, where instructions is a flat array of plain
 // { opcode, operands } objects.
 //
-// compiler/bytecode.js already has a disassemble() method — but it lives
+// compiler/bytecode.js already has a disassemble() method - but it lives
 // on the Bytecode/Instruction classes, which nothing in the real compile
 // path ever instantiates (Compiler.emit()/addConstant() just push onto
 // plain arrays on `this`). That disassemble() is unreachable dead code.
@@ -11,7 +11,7 @@
 // `new Compiler().compile(ast)`.
 //
 // Output groups instructions under the PROCESS/FUNCTION/MAIN they belong
-// to (derived from processTable/functionTable/mainAddr — the compiler
+// to (derived from processTable/functionTable/mainAddr - the compiler
 // itself doesn't record explicit end addresses, so this reconstructs
 // them by sorting every entry point by address and taking each one's end
 // as the next entry's start), and annotates operands that are otherwise
@@ -19,7 +19,7 @@
 // LOAD_LOCAL/STORE_LOCAL resolves the slot to a variable name when the
 // enclosing PROCESS's processTable.locals map has one (functionTable
 // entries don't carry a locals map today, so slots inside a FUNCTION body
-// print bare — see the note in buildAddressRanges), LOAD_GLOBAL/
+// print bare - see the note in buildAddressRanges), LOAD_GLOBAL/
 // STORE_GLOBAL resolves against the bytecode's `globals` map, and jump
 // opcodes are marked "-> target" instead of a bare address.
 
@@ -45,7 +45,7 @@ function buildAddressRanges(bytecode) {
 
   for (const [name, info] of bytecode.functionTable) {
     // compileFunction() now publishes a .locals map for its own body,
-    // same as processTable entries always have — resolves slot numbers
+    // same as processTable entries always have - resolves slot numbers
     // to variable names inside a FUNCTION instead of printing them bare.
     entries.push({ name, kind: 'FUNCTION', addr: info.addr, locals: info.locals || null });
   }
@@ -106,7 +106,7 @@ function formatOperands(bytecode, instr, localsByIdx, globalsByIdx) {
 }
 
 // Returns the disassembly as a single string. `bytecode` is exactly what
-// Compiler.compile() returns — no wrapping, no extra instantiation.
+// Compiler.compile() returns - no wrapping, no extra instantiation.
 export function disassemble(bytecode) {
   const lines = [];
   const ranges = buildAddressRanges(bytecode);

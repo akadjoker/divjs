@@ -17,10 +17,10 @@ function isLegacyDivFile(filePath) {
 	const rel = relative(rootDir, filePath).replaceAll('\\', '/');
 	// examples/*.div predates this compiler's actual grammar; demos/*.div
 	// are DIV/Fenix reference source pulled from an external
-	// implementation for API reference only — neither was ever meant to
+	// implementation for API reference only - neither was ever meant to
 	// compile against this project's tokenizer/parser. demos/*.html (the
 	// interactive browser demos actually built against this engine) is
-	// deliberately NOT excluded here — those should compile cleanly.
+	// deliberately NOT excluded here - those should compile cleanly.
 	return rel.startsWith('examples/') || (rel.startsWith('demos/') && rel.endsWith('.div'));
 }
 
@@ -53,7 +53,7 @@ function walkFiles(dir, out = []) {
 function extractInlineDivSources(htmlText) {
 	const sources = [];
 	// Demo HTML files use "const SOURCE = ..." (uppercase); index.html and
-	// examples/ use "const source = ..." (lowercase) — match both rather
+	// examples/ use "const source = ..." (lowercase) - match both rather
 	// than assuming one convention.
 	const re = /const\s+SOURCE\s*=\s*`([\s\S]*?)`\s*;/gi;
 	let m;

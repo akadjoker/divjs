@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DivJS - Tutorial 3</title>
+  <title>DivJS - Tutorial 4</title>
   <style>
     * {
       margin: 0;
@@ -35,6 +35,11 @@
       border: 4px solid #4a9eff;
       border-radius: 8px;
       box-shadow: 0 10px 30px rgba(74, 158, 255, 0.3);
+      /* Native DIV resolution is 320x200; scale up for a modern display
+         while keeping the script's coordinates 1:1 with the original. */
+      width: 960px;
+      height: 600px;
+      image-rendering: pixelated;
     }
 
     .info {
@@ -47,7 +52,7 @@
 <body>
   <div class="container">
     <h1>🎮 DivJS Tutorial 4</h1>
-    <canvas id="gameCanvas" width="640" height="400"></canvas>
+    <canvas id="gameCanvas" width="320" height="200"></canvas>
     <div id="log">booting...</div>
   </div>
 
@@ -55,6 +60,8 @@
     import { runDivDemo } from '../divjs.js';
 
     const source = `
+COMPILER_OPTIONS _extended_conditions;
+
 PROGRAM Tutorial_4;
 
 GLOBAL
@@ -62,15 +69,15 @@ GLOBAL
     apples=0;            // Number of apples on screen
     score=0,topscore=0;  // Variables for topscore and score
 
-
 BEGIN
-    // Loads file with game's graphic
-    load_fpg('../assets/div-support/tutor4.fpg');
 
+    load_fpg('../assets/div-support/tutor4.fpg');    // Loads graphics' file
     put_screen(0,1);                    // Puts background screen
     // Puts score and topscore texts
+    set_color('#ff8');
     write_int(0,64,8,0,&score);
     write_int(0,256,8,0,&topscore);
+    set_fps(30);
 
     // Creates worm head which controls the rest of the body
     worm_head(8,96,8,0);
@@ -101,10 +108,17 @@ PRIVATE
 
 BEGIN
     graph=2;                // Puts the graphic
+    // Circle collision instead of the default box. The worm moves on an
+    // 8-pixel grid with 8x8 sprites, so a full-size box sits flush
+    // against the neighbouring segment's box; a slightly smaller circle
+    // leaves clearance so only a real overlap counts as a crash.
+    set_collision_shape(1);
+    set_collision_radius(1);
 
     // And a worm body is created, that creates the other ones
     worm_segment(128,priority+1);
 
+    
     REPEAT
         FRAME(200);              // Visualizes everything
 
@@ -136,6 +150,9 @@ BEGIN
     // Repeats until it crashes with the wall (get_pixel) or
     // with it's own body
     UNTIL (get_pixel(x,y)!=0 or collision(type worm_segment));
+    //UNTIL ( collision(type worm_segment));
+    //UNTIL (get_pixel(x,y)!=0 );
+    
 
     // Fades screen on and off, for the next step
     fade_off();
@@ -165,6 +182,12 @@ END
 PROCESS worm_segment(n,priority)
 
 BEGIN
+    // Match the head's collision shape (see worm_head).
+    set_collision_shape(1);
+    set_collision_radius(1);
+
+    x=father.x;
+    y=father.y;
     // If it is not the last body, creates another one with higher priority
     // and a minor number of body
     IF (n>0) worm_segment(n-1,priority+1); END
@@ -180,6 +203,7 @@ BEGIN
             // If not, doesn't put a graphic
             graph=0;
         END
+        
         // Takes father's variables, the body that is ahead,
         // without refreshing, that means, where it was
         x=father.x;
@@ -201,11 +225,9 @@ BEGIN
     LOOP FRAME; END
 END
 
-
 `;
 
     const canvas = document.getElementById('gameCanvas');
-    const ctx = canvas.getContext('2d');
     const log = document.getElementById('log');
 
     let statusLine = '';
@@ -219,6 +241,9 @@ END
         canvas,
         source: source,
         clearColor: '#000',
+        // Set to true to draw collision shapes, pivots and control
+        // points over every process (with a colour legend bottom-left).
+        debugDrawProcessBounds: false,
         onLog: (line) => { logLine(line); },
         onFrame: ({ runtime }) => {
           const fps = Math.round(runtime.fpsValue || 0);

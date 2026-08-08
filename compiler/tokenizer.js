@@ -25,6 +25,7 @@ export const TokenType = {
   REPEAT: 'REPEAT',
   UNTIL: 'UNTIL',
   LOOP: 'LOOP',
+  LOCAL: 'LOCAL',
   FRAME: 'FRAME',
   RETURN: 'RETURN',
   BREAK: 'BREAK',
@@ -51,6 +52,8 @@ export const TokenType = {
   STAR: 'STAR',        // *
   SLASH: 'SLASH',      // /
   PERCENT: 'PERCENT',  // %
+  INCREMENT: 'INCREMENT',       // ++
+  DECREMENT: 'DECREMENT',       // --
   PLUS_ASSIGN: 'PLUS_ASSIGN',   // +=
   MINUS_ASSIGN: 'MINUS_ASSIGN', // -=
   STAR_ASSIGN: 'STAR_ASSIGN',   // *=
@@ -100,6 +103,9 @@ const KEYWORDS = {
   'REPEAT': TokenType.REPEAT,
   'UNTIL': TokenType.UNTIL,
   'LOOP': TokenType.LOOP,
+  'LOCAL': TokenType.LOCAL,
+  // DIV spells the modulus operator MOD as well as %
+  'MOD': TokenType.PERCENT,
   'FRAME': TokenType.FRAME,
   'RETURN': TokenType.RETURN,
   'BREAK': TokenType.BREAK,
@@ -112,6 +118,11 @@ const KEYWORDS = {
   'OR': TokenType.OR,
   'TYPE': TokenType.TYPE,
   'OFFSET': TokenType.OFFSET
+};
+
+// Keywords that stand in for an operator symbol.
+const KEYWORD_OPERATOR_VALUES = {
+  [TokenType.PERCENT]: '%'
 };
 
 // Lexer class
@@ -160,11 +171,28 @@ export class Lexer {
     }
   }
 
+  // True when a "--" at the current position is the decrement operator
+  // rather than the start of a single-line comment. Both spellings are
+  // supported (DIV proper only has // and /* */, but this engine's own
+  // demos use -- for comments), so they're told apart by what precedes:
+  // decrement only ever follows a value - an identifier, a number, or a
+  // closing ) / ] - while a comment follows a statement boundary.
+  isDecrementContext() {
+    const prev = this.tokens[this.tokens.length - 1];
+    if (!prev) {
+      return false;
+    }
+    return prev.type === TokenType.IDENTIFIER ||
+      prev.type === TokenType.NUMBER ||
+      prev.type === TokenType.RPAREN ||
+      prev.type === TokenType.RBRACKET;
+  }
+
   // Skip comments
   skipComment() {
-    // Single-line: // or --
+    // Single-line: // or -- (the latter only when it isn't a decrement)
     if ((this.current() === '/' && this.peek() === '/') ||
-        (this.current() === '-' && this.peek() === '-')) {
+        (this.current() === '-' && this.peek() === '-' && !this.isDecrementContext())) {
       while (this.current() && this.current() !== '\n') this.advance();
       if (this.current() === '\n') this.advance();
       return true;
@@ -203,7 +231,7 @@ export class Lexer {
     // Standard backslash escapes. The previous implementation only
     // special-cased "\" followed by the *same* quote character (so a
     // string could contain its own delimiter), and treated every other
-    // backslash as a literal character — meaning "line1\nline2" produced
+    // backslash as a literal character - meaning "line1\nline2" produced
     // the four literal characters '\', 'n' between "line1" and "line2"
     // instead of an actual newline. Any DIV script trying to embed a
     // newline, tab, or literal backslash in a string (e.g. for a
@@ -294,7 +322,12 @@ export class Lexer {
         const id = this.readIdentifier();
         const keyword = KEYWORDS[id.toUpperCase()];
         if (keyword) {
-          this.tokens.push(new Token(keyword, id, line, col));
+          // Word-spelled operators carry the symbol as their value, since
+          // the parser passes token.value straight through as the operator
+          // name (compileBinary only knows the symbols). Without this,
+          // "a MOD b" reached the compiler as the operator "MOD".
+          const value = KEYWORD_OPERATOR_VALUES[keyword] ?? id;
+          this.tokens.push(new Token(keyword, value, line, col));
         } else {
           this.tokens.push(new Token(TokenType.IDENTIFIER, id, line, col));
         }
@@ -327,6 +360,22 @@ export class Lexer {
         this.advance();
         this.advance();
         this.tokens.push(new Token(TokenType.GTE, '>=', line, col));
+        continue;
+      }
+
+      // ++/-- must be tested before += and -=, and before the bare
+      // +/- single-character cases further down.
+      if (char === '+' && this.peek() === '+') {
+        this.advance();
+        this.advance();
+        this.tokens.push(new Token(TokenType.INCREMENT, '++', line, col));
+        continue;
+      }
+
+      if (char === '-' && this.peek() === '-') {
+        this.advance();
+        this.advance();
+        this.tokens.push(new Token(TokenType.DECREMENT, '--', line, col));
         continue;
       }
 
@@ -437,6 +486,13 @@ export class Lexer {
         case '!':
           this.advance();
           this.tokens.push(new Token(TokenType.NOT, '!', line, col));
+          break;
+        case '&':
+          // A lone & is DIV's address-of operator - "&score" is just
+          // another spelling of "OFFSET score" (&& was already consumed
+          // as AND above), so emit the same token the parser expects.
+          this.advance();
+          this.tokens.push(new Token(TokenType.OFFSET, '&', line, col));
           break;
         default:
           throw new Error(`Unexpected character '${char}' at line ${line}, col ${col}`);

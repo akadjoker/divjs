@@ -7,10 +7,10 @@
 // of a renderer: spawn N processes, each with a small per-frame update
 // (move + bounce off screen bounds), run for a fixed number of ticks with
 // no rendering at all (this measures VM/scheduler throughput in
-// isolation, not canvas draw cost — CanvasEngineRuntime.render() is a
+// isolation, not canvas draw cost - CanvasEngineRuntime.render() is a
 // separate, additive cost this doesn't attempt to measure), and report
 // ms/tick and ticks/sec at each process count. The goal is finding where
-// this VM's per-tick cost stops being roughly linear in process count —
+// this VM's per-tick cost stops being roughly linear in process count -
 // that inflection point is the answer to "how far can this go".
 
 import { Lexer } from '../compiler/tokenizer.js';
@@ -74,7 +74,7 @@ function runOne(count, ticks) {
 
   // Spawning happens in batches of SPAWN_BATCH per tick (via the
   // "spawner" process in the generated source) instead of one giant FOR
-  // loop in MAIN — see BUGS.md "MAIN silently truncates and permanently
+  // loop in MAIN - see BUGS.md "MAIN silently truncates and permanently
   // stops on large spawn loops" for why: a single-tick spawn loop hits
   // the 100,000-instruction per-tick budget guard (vm.js's runMain())
   // well before 5,000 processes with this per-spawn instruction cost,
@@ -147,7 +147,7 @@ for (const count of counts) {
 }
 
 if (results.length >= 2) {
-  console.log('\nScaling check (ideal is a constant us/process/tick across rows above —');
+  console.log('\nScaling check (ideal is a constant us/process/tick across rows above -');
   console.log('a rising trend means per-tick cost is growing faster than linearly in N):');
   const first = results[0];
   const last = results[results.length - 1];
@@ -156,7 +156,7 @@ if (results.length >= 2) {
   const ratio = lastUs / firstUs;
   console.log(`  ${first.count} processes: ${firstUs.toFixed(2)} us/process/tick`);
   console.log(`  ${last.count} processes: ${lastUs.toFixed(2)} us/process/tick`);
-  console.log(`  ratio: ${ratio.toFixed(2)}x ${ratio < 1.5 ? '(roughly linear, healthy)' : ratio < 3 ? '(some superlinear growth)' : '(clearly superlinear — investigate)'}`);
+  console.log(`  ratio: ${ratio.toFixed(2)}x ${ratio < 1.5 ? '(roughly linear, healthy)' : ratio < 3 ? '(some superlinear growth)' : '(clearly superlinear - investigate)'}`);
 }
 
 const sixtyFpsBudgetMs = 1000 / 60;

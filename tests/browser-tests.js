@@ -32,6 +32,17 @@ function assert(condition, message) {
   }
 }
 
+// MAIN (id 1) and the engine-owned mouse process are always present in
+// processManager - MAIN is created in the VM constructor itself, and the
+// mouse is created by registerNatives(). Most of these tests only care
+// about the process(es) the script under test actually spawned, so filter
+// those two out rather than assuming index 0 / a raw count is the script's
+// own process, the way earlier tests (written before MAIN/mouse became
+// real processes) did.
+function getUserProcesses(vm) {
+  return vm.processManager.getAll().filter((p) => !p.isMain && !p.isMouse);
+}
+
 function approx(a, b, eps = 1e-6) {
   return Math.abs(a - b) <= eps;
 }
@@ -76,7 +87,7 @@ end`;
   runtime.beginFrame(1 / 60);
   vm.tick();
 
-  const procs = vm.processManager.getAll();
+  const procs = getUserProcesses(vm);
   assert(procs.length === 1, 'esperava 1 processo');
   const p = procs[0];
   assert(approx(p.x, 15), `x esperado 15, obtido ${p.x}`);
@@ -185,7 +196,7 @@ end`;
   runtime.beginFrame(1 / 60);
   vm.tick();
 
-  const p = vm.processManager.getAll()[0];
+  const p = getUserProcesses(vm)[0];
   assert(!!p, 'processo nao criado');
   assert(p.frameValue === 42, `frameValue esperado 42, obtido ${p.frameValue}`);
 }
@@ -210,7 +221,7 @@ end`;
   runtime.beginFrame(1 / 60);
   vm.tick();
 
-  const p = vm.processManager.getAll()[0];
+  const p = getUserProcesses(vm)[0];
   assert(!!p, 'processo nao criado');
   assert(p.frameValue === 100, `frame default esperado 100, obtido ${p.frameValue}`);
 }
@@ -254,7 +265,7 @@ end`;
   runtime.beginFrame(1 / 60);
   vm.tick();
 
-  const p = vm.processManager.getAll()[0];
+  const p = getUserProcesses(vm)[0];
   assert(!!p, 'processo nao criado');
   assert(p.x === 5, `x esperado 5 apos while break/continue, obtido ${p.x}`);
   assert(p.y === 12, `y esperado 12 (3 + 1 + 3 + 5), obtido ${p.y}`);
@@ -396,15 +407,15 @@ async function testXAdvanceMovesByAngle() {
 }
 
 async function testXAdvanceHandlesAnglesAboveHalfCircle() {
-  // xadvanceNative() used to try auto-detecting argument order —
-  // xadvance(distance, angle) vs xadvance(angle, distance) — by guessing
+  // xadvanceNative() used to try auto-detecting argument order -
+  // xadvance(distance, angle) vs xadvance(angle, distance) - by guessing
   // that whichever argument has magnitude > 180000 "must be" the
   // distance, since a DIV angle "shouldn't" exceed 180000 (180.000°).
   // That assumption is wrong: toRadiansFromDivAngle() never wraps or
   // clamps its input, and this project's own shipped demo increments an
   // angle unboundedly frame after frame, confirming angles routinely
   // span the full 0-360000 convention (a full turn), not just half of
-  // it. Any legitimate angle between 180001 and 360000 (180°-360° — the
+  // it. Any legitimate angle between 180001 and 360000 (180°-360° - the
   // entire back half of a circle) used to get silently misclassified as
   // "must be the distance", producing a movement wildly wrong in both
   // magnitude and direction. Fixed to a plain fixed (distance, angle)
@@ -428,7 +439,7 @@ async function testXAdvanceHandlesAnglesAboveHalfCircle() {
 
   vm.currentProcess = process;
 
-  // 270000 (270°) points straight up in this engine's trig convention —
+  // 270000 (270°) points straight up in this engine's trig convention -
   // under the old heuristic, 270000 > 180000 would have been
   // misclassified as the distance, with 10 misread as the angle.
   runtime.xadvanceNative(10, 270000);
@@ -543,7 +554,7 @@ end`;
   runtime.beginFrame(1 / 60);
   vm.tick();
 
-  const p = vm.processManager.getAll()[0];
+  const p = getUserProcesses(vm)[0];
   assert(!!p, 'processo nao criado');
   assert(p.x === 1, `x esperado 1 com and/not, obtido ${p.x}`);
   assert(p.y === 2, `y esperado 2 com or, obtido ${p.y}`);
@@ -612,7 +623,7 @@ async function testMutualRecursionAndForwardCallsResolveCorrectly() {
   // Functions and processes were each compiled in a single top-to-bottom
   // pass with no pre-registration step, so a call to one declared later in
   // the same list silently fell through to CALL_NATIVE instead of
-  // CALL/SPAWN_PROCESS — there is no declaration order that resolves both
+  // CALL/SPAWN_PROCESS - there is no declaration order that resolves both
   // directions of mutual recursion between two functions, so it was
   // unconditionally broken; any function calling a process (or vice
   // versa) declared later in the source hit the same failure.
@@ -711,7 +722,10 @@ async function testMissingSpawnProcessFailsGracefully() {
   });
 
   vm.tick();
-  assert(vm.processManager.count() === 0, `SPAWN de processo inexistente nao devia criar processo, count=${vm.processManager.count()}`);
+  // 1, not 0: MAIN itself is always present (created in the VM
+  // constructor) - the assertion is that the SPAWN added nothing on top
+  // of it.
+  assert(vm.processManager.count() === 1, `SPAWN de processo inexistente nao devia criar processo, count=${vm.processManager.count()}`);
   assert(vm.mainStack[vm.mainStack.length - 1] === 0, 'SPAWN de processo inexistente devia empurrar 0');
 }
 
@@ -781,7 +795,7 @@ end`;
   runtime.beginFrame(1 / 60);
   vm.tick();
 
-  const p = vm.processManager.getAll()[0];
+  const p = getUserProcesses(vm)[0];
   assert(!!p, 'processo nao criado');
   assert(p.x === 1 && p.y === 1, `retornos aninhados esperados x=1,y=1; obtido x=${p.x}, y=${p.y}`);
   assert(p.stack.length === 0, `stack do processo devia ficar vazia, size=${p.stack.length}`);
@@ -811,7 +825,7 @@ end`;
   runtime.beginFrame(1 / 60);
   vm.tick();
 
-  const p = vm.processManager.getAll()[0];
+  const p = getUserProcesses(vm)[0];
   assert(!!p, 'processo nao criado');
 
   const slotVy = runtime.getProcessLocalSlot(p, 'vy');
@@ -867,7 +881,7 @@ end`;
   runtime.beginFrame(1 / 60);
   vm.tick();
 
-  const p = vm.processManager.getAll()[0];
+  const p = getUserProcesses(vm)[0];
   assert(!!p, 'processo nao criado');
   assert(p.locals[slotI] === 4, `i esperado 4 apos for, obtido ${p.locals[slotI]}`);
   assert(p.locals[slotGraph] === 111, `graph esperado 111, obtido ${p.locals[slotGraph]}`);
@@ -881,11 +895,11 @@ async function testCanonicalColorAndTagFields() {
   // scroll[i].alpha already uses elsewhere in this runtime, kept
   // consistent rather than introducing a second incompatible alpha
   // convention), and tag (a free-form number for a game author's own
-  // gameplay logic — distinct from `type`/process.type, which is
+  // gameplay logic - distinct from `type`/process.type, which is
   // already the hash of the process's declared name, used by
   // collision()/signal(), and not meant for reassignment). Storage
   // only: nothing in the renderer applies these to a draw call
-  // automatically — a process's own LOOP body still calls set_color()
+  // automatically - a process's own LOOP body still calls set_color()
   // itself, same as before these fields existed.
   const source = `program canonical_color_fields;
 
@@ -927,13 +941,13 @@ end`;
   assert(JSON.stringify(seen) === JSON.stringify([255, 255, 255, 100, 0, 10, 20, 30, 50, 99]),
     `esperava defaults [255,255,255,100,0] seguidos de valores escritos [10,20,30,50,99], obtido ${JSON.stringify(seen)}`);
 
-  const process = vm.processManager.getAll()[0];
+  const process = getUserProcesses(vm)[0];
   assert(process.red === 10 && process.green === 20 && process.blue === 30 &&
     process.alpha === 50 && process.tag === 99,
     `campos deviam estar sincronizados no objeto Process, obtido red=${process.red} green=${process.green} blue=${process.blue} alpha=${process.alpha} tag=${process.tag}`);
 
   // A process param named "tag" (or red/green/blue/alpha) collides with
-  // the fixed slot name the same way a param named "id" already does —
+  // the fixed slot name the same way a param named "id" already does -
   // confirm the param wins (matches existing canonical-field-name-as-
   // param behavior, not a new special case).
   const paramSource = `program canonical_field_as_param;
@@ -1055,30 +1069,35 @@ end`;
     `FOR descendente esperava [5,4,3,2,1,0], obtido ${JSON.stringify(seen)}`);
 }
 
-async function testChainedAssignmentIsCompileError() {
-  // compileAssignment() stores directly and leaves nothing on the stack —
-  // correct when assignment is used as a statement, but "a = b = c" parses
-  // the right-hand side as a nested Assign expression too. Compiling that
-  // used to silently corrupt the stack (the outer store would pop whatever
-  // the rest of the expression happened to leave behind, or the pop()
-  // underflow default) instead of failing loudly. It must be rejected at
-  // compile time instead.
+async function testChainedAssignmentCompilesAndEvaluatesToTheAssignedValue() {
+  // compileExpression's 'assign' case (compiler.js) deliberately supports
+  // assignment as a sub-expression - that is what makes classic DIV's
+  // "extended conditions" idiom work, e.g.
+  // "IF (apple_id = collision(TYPE apple))": assign, then test the
+  // assigned value, in one expression. "x = y = 5" exercises the exact
+  // same mechanism (the outer assignment's value is the inner
+  // assignment's own compiled-as-expression result) and is valid DIV
+  // syntax as a consequence, not a special case to reject - this used to
+  // be asserted as a compile error, before that support existed.
   const source = `program chained_assign;
 
 begin
   var x = 0;
   var y = 0;
   x = y = 5;
+  print(x);
+  print(y);
   frame;
 end`;
 
-  let threw = false;
-  try {
-    compileSource(source);
-  } catch (error) {
-    threw = true;
-  }
-  assert(threw, 'atribuicao encadeada (x = y = 5) devia falhar a compilar, nao compilou');
+  const bytecode = compileSource(source);
+  const vm = new VM();
+  vm.load(bytecode);
+  const seen = [];
+  vm.registerNative('print', (v) => { seen.push(v); return 0; });
+  vm.tick();
+  assert(seen.length === 2 && seen[0] === 5 && seen[1] === 5,
+    `atribuicao encadeada (x = y = 5) devia dar x=5, y=5, obtido ${JSON.stringify(seen)}`);
 }
 
 async function testMainDoesNotInheritLastProcessLocalScope() {
@@ -1087,8 +1106,8 @@ async function testMainDoesNotInheritLastProcessLocalScope() {
   // block. That left main compiling against whatever localMap the *last*
   // function or process (if any) had populated: any name used there as a
   // param/private/var would make compileIdentifier() resolve that same
-  // name inside main via LOAD_LOCAL/STORE_LOCAL — reading/writing an index
-  // in main's own locals array that main never touched — instead of
+  // name inside main via LOAD_LOCAL/STORE_LOCAL - reading/writing an index
+  // in main's own locals array that main never touched - instead of
   // LOAD_GLOBAL/STORE_GLOBAL against the actual global of the same name.
   // Not a rare-name edge case: "x", "y", "id", "speed", "score" are
   // exactly the names likely to be both a GLOBAL and a process param.
@@ -1114,12 +1133,14 @@ end`;
   const processSeen = [];
   processVm.registerNative('print', (v) => { processSeen.push(v); return 0; });
   processVm.tick();
-  // Execution order within a tick is main first, then newly spawned
-  // processes, so main's print(score) is seen before p's.
-  assert(processSeen[0] === 100,
-    `main devia ler o GLOBAL score (100) mesmo apos PROCESS p(score) ter sido compilado, obtido ${JSON.stringify(processSeen)}`);
-  assert(processSeen[1] === 5,
+  // SPAWN_PROCESS runs a freshly spawned process's own body immediately,
+  // up to its first FRAME, in the same tick as the spawn call (vm.js) -
+  // so p's print(score) (its own param) runs *during* "p(5);", before
+  // main's own next statement. p's value is seen first, main's second.
+  assert(processSeen[0] === 5,
     `processo p devia ler o seu proprio parametro score (5), obtido ${JSON.stringify(processSeen)}`);
+  assert(processSeen[1] === 100,
+    `main devia ler o GLOBAL score (100) mesmo apos PROCESS p(score) ter sido compilado, obtido ${JSON.stringify(processSeen)}`);
 
   // Same failure mode when the last declared entity is a FUNCTION instead
   // of a PROCESS (a program with no processes at all).
@@ -1153,7 +1174,7 @@ async function testStringEscapeSequences() {
   // character used to delimit the string (so a string could contain its
   // own delimiter), treating every other backslash as a plain literal
   // character. "line1\nline2" produced the four literal characters
-  // '\', 'n' between "line1" and "line2" instead of an actual newline —
+  // '\', 'n' between "line1" and "line2" instead of an actual newline -
   // any script trying to embed a newline or tab in a string (e.g. for a
   // multi-line text() call) got silently wrong data with no error.
   const cases = [
@@ -1180,7 +1201,7 @@ async function testStringEscapeSequences() {
 
 async function testDuplicateDeclarationsAreCompileErrors() {
   // A second "PROCESS p" (or FUNCTION, or GLOBAL) with the same name used
-  // to silently overwrite the Map entry from the first — no error, no
+  // to silently overwrite the Map entry from the first - no error, no
   // indication which body actually runs. A copy-pasted process with an
   // un-updated name, or a FUNCTION and a PROCESS accidentally sharing a
   // name (compileCall() checks processTable before functionTable, so the
@@ -1213,7 +1234,7 @@ async function testGlobalBlockFormDeclaresMultipleNames() {
   //     lives;
   //     high_score = 100;
   // parseGlobal() reads one declaration and keeps going as long as the
-  // next token is still identifier-like — isIdentifierLike() already
+  // next token is still identifier-like - isIdentifierLike() already
   // excludes GLOBAL/PROCESS/FUNCTION/BEGIN, so the block naturally ends
   // at the next section with no special-case "end of block" detection
   // needed. A single declaration is just this same loop running once,
@@ -1289,7 +1310,7 @@ end`);
 
 async function testGlobalWithoutInitialValueDefaultsToZeroNotAnotherGlobalsConstant() {
   // compileGlobal()'s no-explicit-value branch used to emit
-  // "LOAD_CONST 0" with the literal number 0 as the operand — but
+  // "LOAD_CONST 0" with the literal number 0 as the operand - but
   // LOAD_CONST's operand is a constant *pool index*, not a value; every
   // other call site in the compiler correctly goes through
   // addConstant(value) first. This one bypassed it and just assumed
@@ -1325,7 +1346,7 @@ end`;
 
 async function testFrameValueThrottlesExecutionFrequency() {
   // frame(n) stored the value on the process (this.currentProcess.
-  // frameValue = ...) but nothing ever read it back afterwards — the
+  // frameValue = ...) but nothing ever read it back afterwards - the
   // syntax existed and compiled, but had zero runtime effect. Every
   // process ran on every single tick no matter what it passed to frame(),
   // silently. Verify the fix actually throttles: frame(default/100) still
@@ -1359,13 +1380,48 @@ end`;
   assert(alwaysCount === 10,
     `frame() por omissao devia correr em todos os 10 ticks, correu em ${alwaysCount}`);
 
-  const throttledSource = `program frame_throttled;
+  // FRAME(n) for n < 100 asks to run *more* than once per real frame -
+  // this scheduler only ever runs a process once per tick (see tick()'s
+  // loop in vm.js), so that request is clamped at "run every tick"
+  // rather than granting extra runs it has no way to honor; frameDebt is
+  // clamped at 0 for exactly this reason (vm.js's FRAME handler). Only
+  // n > 100 (asking to run *less* often) is representable as skipped
+  // frames.
+  const fastSource = `program frame_fast;
 
 process p();
 begin
   loop
     print(1);
     frame(50);
+  end
+end
+
+begin
+  p();
+  frame;
+end`;
+
+  const fastBytecode = compileSource(fastSource);
+  const fastVm = new VM();
+  fastVm.load(fastBytecode);
+  let fastCount = 0;
+  fastVm.registerNative('print', () => { fastCount += 1; return 0; });
+  for (let i = 0; i < 10; i += 1) {
+    fastVm.tick();
+  }
+  assert(fastCount === 10,
+    `frame(50) (< 100, sem forma de correr mais que 1x/tick) devia correr em todos os 10 ticks, correu em ${fastCount}`);
+
+  // FRAME(200) accrues 100 of debt each run, so it runs, then skips one,
+  // then runs again - every other tick.
+  const throttledSource = `program frame_throttled;
+
+process p();
+begin
+  loop
+    print(1);
+    frame(200);
   end
 end
 
@@ -1384,11 +1440,11 @@ end`;
   }
   // Steady-state is exactly every other tick; over 40 ticks (plus one
   // extra run from the initial full-credit seed) that's 20 or 21, well
-  // short of 40 and well above a token handful — a generous band that's
+  // short of 40 and well above a token handful - a generous band that's
   // still tight enough to catch "frame(n) still does nothing" (which
   // would give 40) or "frame(n) stops the process" (which would give 0).
   assert(throttledCount >= 15 && throttledCount <= 25,
-    `frame(50) ao longo de 40 ticks esperava entre 15 e 25 execucoes, obtido ${throttledCount}`);
+    `frame(200) ao longo de 40 ticks esperava entre 15 e 25 execucoes, obtido ${throttledCount}`);
 }
 
 async function testSwitchCaseHasNoFallthrough() {
@@ -1472,7 +1528,7 @@ async function testSwitchSubjectEvaluatedOnceAndBreakPassesThroughToLoop() {
   // Two things worth locking down together: the subject expression is
   // evaluated exactly once (stored in a hidden local) even though it's
   // compared against every CASE value, and BREAK/CONTINUE inside a CASE
-  // body are transparent to SWITCH — they refer to whatever loop the
+  // body are transparent to SWITCH - they refer to whatever loop the
   // SWITCH itself is nested in, since SWITCH doesn't open its own loop
   // context (matching how IF already behaves).
   const subjectSource = `program switch_subject_once;
@@ -1532,7 +1588,7 @@ async function testSwitchCaseWithMultipleValues() {
   // ("CASE 1, 2, 3"), matching if the subject equals *any* of them.
   // Verify a match at each position in the list (first/middle/last),
   // falling through to the next CASE when none match, and that testing
-  // stops as soon as one value matches — a later value in the same list
+  // stops as soon as one value matches - a later value in the same list
   // must not be evaluated at all once an earlier one already hit.
   const positions = [
     [1, 100], // matches the first value in the list
@@ -1595,7 +1651,7 @@ end`;
 
 async function testSwitchWithZeroCasesIsCompileError() {
   // A SWITCH with no CASE at all is almost certainly a mistake (an empty
-  // shell that can never do anything, DEFAULT included — DEFAULT without
+  // shell that can never do anything, DEFAULT included - DEFAULT without
   // at least one CASE to fall back from isn't a meaningful construct
   // either), so the parser rejects it rather than silently compiling to
   // a no-op.
@@ -1618,7 +1674,7 @@ end`;
 
 async function testCompileErrorsIncludeSourceLocation() {
   // None of the compiler's own errors (as opposed to the parser's syntax
-  // errors, which always had this) carried a source location before —
+  // errors, which always had this) carried a source location before -
   // "BREAK used outside loop" or "Unknown variable: x" gave no indication
   // of *where*, forcing a manual search through the whole file. The
   // parser now stamps every statement and expression node with .line/
@@ -1663,7 +1719,7 @@ async function testCompileErrorsIncludeSourceLocation() {
 
 async function testConstantPoolIsDeduplicated() {
   // addConstant() used to push every literal unconditionally, even a
-  // value identical to one already in the pool — a repeated 0, a
+  // value identical to one already in the pool - a repeated 0, a
   // repeated color string, whatever. Measured 38% waste on the repo's
   // own shipped demo (index.html) before the fix. Verify a handful of
   // repeated literals collapse to a single slot each, reused by every
@@ -1688,15 +1744,15 @@ end`;
 }
 
 async function testForWithConstantStepUsesShortExitTest() {
-  // compileFor()'s general exit test — needed when the step is a genuine
-  // runtime expression — compiles "(step >= 0 AND i <= end) OR (step < 0
+  // compileFor()'s general exit test - needed when the step is a genuine
+  // runtime expression - compiles "(step >= 0 AND i <= end) OR (step < 0
   // AND i >= end)" into roughly 30 instructions, re-evaluated on every
   // single iteration. When the step is a literal ("STEP 2", "STEP -1", or
   // the implicit default of 1), its sign is already known at compile
   // time, so the exit test collapses to one LTE or GTE comparison
   // instead. This covers "STEP -N" too, which the parser represents as
   // Unary('-', Number(N)) rather than a bare Number literal (the lexer
-  // never reads a sign into a NUMBER token) — getConstantNumericValue()
+  // never reads a sign into a NUMBER token) - getConstantNumericValue()
   // has to see through that one level of unary minus, not just match
   // expr.type === 'number' directly.
   const ascendingSource = `program for_const_step;
@@ -1735,7 +1791,7 @@ end`;
     // <end>, LTE/GTE, JUMP_IF_FALSE); the general AND/OR form is roughly
     // 30. Rather than pin an exact instruction count (brittle against
     // unrelated future codegen changes), assert there's no JUMP_IF_TRUE
-    // in the whole program — the short form never emits one, while the
+    // in the whole program - the short form never emits one, while the
     // general AND/OR short-circuit codegen always does (twice, for the
     // two "..OR.." branches). A regression back to the general form for
     // a constant step would make this JUMP_IF_TRUE count go from 0 to 4.
@@ -1756,7 +1812,7 @@ end`;
 async function testDisassemblerProducesReadableLabeledOutput() {
   // compiler/bytecode.js's own disassemble() lives on the Bytecode/
   // Instruction classes, which nothing in the real compile path ever
-  // instantiates — Compiler.emit()/addConstant() push onto plain arrays
+  // instantiates - Compiler.emit()/addConstant() push onto plain arrays
   // on `this` and compile() returns a plain object, never a Bytecode
   // instance. That disassemble() is unreachable. compiler/disasm.js
   // works on the bytecode object actually returned by compile().
@@ -1787,8 +1843,8 @@ end`;
 }
 
 async function testDisassemblerResolvesFunctionAndMainLocalNames() {
-  // functionTable entries used to only ever get { addr, params } —
-  // unlike processTable, which always carried a .locals map — so
+  // functionTable entries used to only ever get { addr, params } -
+  // unlike processTable, which always carried a .locals map - so
   // LOAD_LOCAL/STORE_LOCAL inside a FUNCTION body printed a bare slot
   // number in disasm.js's output even though the same instructions
   // inside a PROCESS body correctly resolved to a variable name. MAIN's
@@ -1825,22 +1881,22 @@ end`;
 async function testMainSurvivesLargeSpawnLoopAcrossMultipleTicks() {
   // runMain()'s per-tick instruction budget (100,000, guarding against a
   // genuine infinite loop that never reaches FRAME) used to set
-  // mainFinished = true the moment it was exceeded — permanently, since
+  // mainFinished = true the moment it was exceeded - permanently, since
   // tick() only calls runMain() at all while !mainFinished. A MAIN-level
   // FOR loop spawning enough processes to cross that budget in one tick
   // (a plausible pattern: a wave spawner, a particle burst) would
   // silently spawn only a fraction of what was requested and then never
-  // run MAIN again for the rest of the program — no error surfaced
+  // run MAIN again for the rest of the program - no error surfaced
   // anywhere a game author would see, just fewer processes than asked
   // for and a dead MAIN. Confirmed directly: requesting 5,000 processes
   // in one FOR loop used to always produce exactly 3,225 live ones,
   // regardless of how much larger the requested count was (5,000/
-  // 10,000/20,000/50,000 all produced that same 3,225 — the loop always
+  // 10,000/20,000/50,000 all produced that same 3,225 - the loop always
   // died at the same iteration count for the same per-spawn instruction
   // cost). Fixed by letting a *single* budget exhaustion resume on the
   // next tick instead of stopping permanently, while still killing
   // MAIN after several (5) *consecutive* exhaustions with zero progress
-  // — preserving the original safety net for a genuine infinite loop.
+  // - preserving the original safety net for a genuine infinite loop.
   const source = `program large_spawn;
 
 process bunny(x, y);
@@ -1864,7 +1920,7 @@ end`;
   vm.load(bytecode);
 
   // The fix needs at least 2 ticks to finish 5,000 spawns (3,225 fit in
-  // the first tick's budget, the rest resume on the second) — give it a
+  // the first tick's budget, the rest resume on the second) - give it a
   // handful more as headroom without masking a real regression back to
   // the old permanent-stop behavior, which would plateau at 3,225
   // forever no matter how many ticks it's given.
@@ -1872,10 +1928,11 @@ end`;
     vm.tick();
   }
 
+  // 5001, not 5000: getAll() also counts MAIN itself (a real Process).
   const liveCount = vm.processManager.getAll().length;
-  assert(liveCount === 5000,
-    `esperava 5000 processos vivos apos varios ticks, obtido ${liveCount} ` +
-    `(3225 e o valor exato que o bug antigo produzia, truncado para sempre)`);
+  assert(liveCount === 5001,
+    `esperava 5001 processos vivos (5000 bunnies + MAIN) apos varios ticks, obtido ${liveCount} ` +
+    `(3226 e o valor exato que o bug antigo produzia, truncado para sempre)`);
   assert(vm.mainFinished === false,
     'MAIN devia continuar vivo (para chegar ao seu proprio LOOP FRAME final), nao mainFinished=true');
 }
@@ -1884,7 +1941,7 @@ async function testGenuineInfiniteLoopInMainIsStillCaught() {
   // The other half of the fix above: a MAIN-level loop that truly never
   // reaches FRAME no matter how many extra ticks it's given (not just
   // "needs one or two more ticks to finish real work") must still be
-  // caught and stopped — otherwise every tick would burn a full 100,000-
+  // caught and stopped - otherwise every tick would burn a full 100,000-
   // instruction budget forever, which is strictly worse than the old
   // behavior for this specific case.
   const source = `program genuine_infinite_loop;
@@ -1920,7 +1977,7 @@ async function testCollisionExcludesSelf() {
   // TYPE and tested collidesWith() without ever excluding the calling
   // process itself. A process's own bounding box always overlaps itself,
   // so collision(TYPE X) called from inside a process of type X returned
-  // that process's own id on every single frame — breaking any same-type
+  // that process's own id on every single frame - breaking any same-type
   // collision check (enemy-vs-enemy, bullet-vs-bullet) before it could
   // ever see a real hit.
   const soloSource = `program collision_self;
@@ -1929,6 +1986,7 @@ process enemy(x, y);
 begin
   width = 20;
   height = 20;
+  graph = 1;
   if (collision(TYPE enemy))
     print(999);
   end
@@ -1952,17 +2010,20 @@ end`;
     `processo sozinho nao devia colidir consigo proprio, obtido ${JSON.stringify(soloSeen)}`);
 
   // A real collision between two distinct instances of the same TYPE must
-  // still be detected — the fix must exclude only the caller, not the type.
+  // still be detected - the fix must exclude only the caller, not the type.
   const pairSource = `program collision_pair;
 
 process enemy(x, y);
 begin
   width = 20;
   height = 20;
-  if (collision(TYPE enemy))
-    print(1);
+  graph = 1;
+  loop
+    if (collision(TYPE enemy))
+      print(1);
+    end
+    frame;
   end
-  frame;
 end
 
 begin
@@ -1977,6 +2038,16 @@ end`;
   const pairRuntime = createRuntime(pairVm);
   const pairSeen = [];
   pairVm.registerNative('print', (v) => { pairSeen.push(v); return 0; });
+  pairRuntime.beginFrame(1 / 60);
+  pairVm.tick();
+  // The first tick alone isn't enough: SPAWN_PROCESS runs each spawned
+  // process immediately, in spawn order, up to its own FRAME - so when
+  // enemy(10,10) runs its first collision() check, enemy(15,15) hasn't
+  // been spawned by MAIN yet, and only the second enemy sees a partner
+  // already in place (1 print). Both enemies are regular scheduled
+  // processes by the second tick, each looping back to its own
+  // collision() check with the other now positioned too.
+  pairSeen.length = 0;
   pairRuntime.beginFrame(1 / 60);
   pairVm.tick();
   assert(pairSeen.length === 2,
@@ -2073,7 +2144,7 @@ end`;
   runtime.beginFrame(1 / 60);
   vm.tick();
 
-  const p = vm.processManager.getAll()[0];
+  const p = getUserProcesses(vm)[0];
   assert(!!p, 'processo nao criado');
   assert(p.ctype === CType.C_SCROLL, `ctype esperado ${CType.C_SCROLL}, obtido ${p.ctype}`);
 
@@ -2085,8 +2156,8 @@ async function testCollisionByType() {
   const vm = new VM();
   const runtime = createRuntime(vm);
 
-  const player = vm.processManager.create('player', { x: 10, y: 10, width: 20, height: 20 });
-  const enemy = vm.processManager.create('enemy', { x: 20, y: 20, width: 20, height: 20 });
+  const player = vm.processManager.create('player', { x: 10, y: 10, width: 20, height: 20, graph: 1 });
+  const enemy = vm.processManager.create('enemy', { x: 20, y: 20, width: 20, height: 20, graph: 1 });
   vm.currentProcess = player;
 
   const enemyType = vm.processManager.getTypeCode('enemy');
@@ -2098,9 +2169,12 @@ async function testCircleCollisionUsesExplicitRadius() {
   const vm = new VM();
   const runtime = createRuntime(vm);
 
-  // width/height are tiny, so default radius would be too small to collide.
-  const a = vm.processManager.create('a', { x: 10, y: 10, width: 8, height: 8 });
-  const b = vm.processManager.create('b', { x: 50, y: 10, width: 8, height: 8 });
+  // width/height are tiny, so default radius would be too small to collide
+  // (b's own fallback circle radius is width*0.5=4 - preferCircle applies
+  // to both sides, see collideProcesses). a's explicit radius of 30 needs
+  // the gap between centers to be under 30+4=34 to register.
+  const a = vm.processManager.create('a', { x: 10, y: 10, width: 8, height: 8, graph: 1 });
+  const b = vm.processManager.create('b', { x: 35, y: 10, width: 8, height: 8, graph: 1 });
 
   vm.currentProcess = a;
   runtime.setCollisionRadiusNative(30);
@@ -2115,8 +2189,8 @@ async function testExplicitCollisionBoxesOverrideLargeImplicitBounds() {
   const runtime = createRuntime(vm);
 
   // Two huge sprites overlapping if implicit width/height is used.
-  const a = vm.processManager.create('a', { x: 100, y: 100, width: 200, height: 200 });
-  const b = vm.processManager.create('b', { x: 220, y: 120, width: 200, height: 200 });
+  const a = vm.processManager.create('a', { x: 100, y: 100, width: 200, height: 200, graph: 1 });
+  const b = vm.processManager.create('b', { x: 220, y: 120, width: 200, height: 200, graph: 1 });
 
   vm.currentProcess = a;
   runtime.clearCollisionBoxesNative();
@@ -2136,8 +2210,8 @@ async function testCBoxBoxCollisionPenetrationSignAndCodes() {
   const vm = new VM();
   const runtime = createRuntime(vm);
 
-  const a = vm.processManager.create('a', { x: 100, y: 100, width: 32, height: 32, angle: 0 });
-  const b = vm.processManager.create('b', { x: 124, y: 104, width: 32, height: 32, angle: 0 });
+  const a = vm.processManager.create('a', { x: 100, y: 100, width: 32, height: 32, angle: 0, graph: 1 });
+  const b = vm.processManager.create('b', { x: 124, y: 104, width: 32, height: 32, angle: 0, graph: 1 });
 
   vm.currentProcess = a;
   runtime.clearCollisionBoxesNative();
@@ -2161,8 +2235,8 @@ async function testCBoxCircleCircleCollisionAndCodes() {
   const vm = new VM();
   const runtime = createRuntime(vm);
 
-  const a = vm.processManager.create('a', { x: 100, y: 100, width: 40, height: 40, angle: 0 });
-  const b = vm.processManager.create('b', { x: 130, y: 100, width: 40, height: 40, angle: 0 });
+  const a = vm.processManager.create('a', { x: 100, y: 100, width: 40, height: 40, angle: 0, graph: 1 });
+  const b = vm.processManager.create('b', { x: 130, y: 100, width: 40, height: 40, angle: 0, graph: 1 });
 
   vm.currentProcess = a;
   runtime.clearCollisionBoxesNative();
@@ -2186,15 +2260,21 @@ async function testCBoxBoxCircleCollisionAndCodes() {
   const vm = new VM();
   const runtime = createRuntime(vm);
 
-  const a = vm.processManager.create('a', { x: 100, y: 100, width: 40, height: 40, angle: 0 });
-  const b = vm.processManager.create('b', { x: 126, y: 104, width: 40, height: 40, angle: 0 });
+  const a = vm.processManager.create('a', { x: 100, y: 100, width: 40, height: 40, angle: 0, graph: 1 });
+  const b = vm.processManager.create('b', { x: 110, y: 104, width: 40, height: 40, angle: 0, graph: 1 });
 
   vm.currentProcess = a;
   runtime.clearCollisionBoxesNative();
+  // Local box (0,0)-(24,24) on a 40x40 process spans world [80,104]x[80,104]
+  // (localToWorld centers on the process, so a corner at local (24,24) on a
+  // 40-wide box lands at process.x + 24 - 20 = process.x + 4).
   runtime.addCollisionBoxNative(0, 0, 24, 24, 401);
 
   vm.currentProcess = b;
   runtime.clearCollisionBoxesNative();
+  // Local circle center (12,12) r=12 on a 40x40 process is world
+  // (process.x + 12 - 20, process.y + 12 - 20) = (process.x - 8, process.y - 8),
+  // i.e. (102, 96) here - well inside a's box above.
   runtime.addCollisionCircleNative(12, 12, 12, 402);
 
   vm.currentProcess = a;
@@ -2210,8 +2290,8 @@ async function testCBoxPenetrationYAxisSign() {
   const vm = new VM();
   const runtime = createRuntime(vm);
 
-  const a = vm.processManager.create('a', { x: 100, y: 100, width: 32, height: 32, angle: 0 });
-  const b = vm.processManager.create('b', { x: 104, y: 124, width: 32, height: 32, angle: 0 });
+  const a = vm.processManager.create('a', { x: 100, y: 100, width: 32, height: 32, angle: 0, graph: 1 });
+  const b = vm.processManager.create('b', { x: 104, y: 124, width: 32, height: 32, angle: 0, graph: 1 });
 
   vm.currentProcess = a;
   runtime.clearCollisionBoxesNative();
@@ -2232,13 +2312,13 @@ async function testCBoxPenetrationYAxisSign() {
 async function testCrossProcessFixedSlotsAreLiveWithinSameFrame() {
   // vm.js's runProcess() used to sync only x/y from locals back onto the
   // Process object right after each process yields, while width, height,
-  // ctype, region, and angle were left to ProcessManager.sweep() — which
+  // ctype, region, and angle were left to ProcessManager.sweep() - which
   // runs once, after every process in the tick has already executed. That
   // made x/y "live" within the same frame (visible to any process that
   // runs later in the same tick) but left the other five canonical fields
   // a full frame stale for the same readers: a process that grows its own
   // hitbox mid-frame wouldn't have that reflected in a collision() check
-  // made against it later in that same tick — only on the next one.
+  // made against it later in that same tick - only on the next one.
   //
   // Reproduce it end-to-end: "grower" (spawned first, so it runs first
   // each tick) sets its own width/height to 200 starting on frame 1;
@@ -2253,6 +2333,7 @@ process grower(x, y);
 begin
   width = 10;
   height = 10;
+  graph = 1;
   loop
     width = 200;
     height = 200;
@@ -2264,6 +2345,7 @@ process watcher(x, y);
 begin
   width = 5;
   height = 5;
+  graph = 1;
   loop
     if (collision(TYPE grower))
       print(1);
@@ -2310,13 +2392,17 @@ async function testLetMeAloneKillsOthers() {
 }
 
 async function testPriorityFieldSortsDrawList() {
-  // priority is canonical slot 13. Lower value draws first (behind),
-  // higher value draws last (in front). getDrawList() returns a sorted
-  // copy rebuilt only when the dirty flag is set.
+  // Z is canonical slot 15 and is what actually governs draw order in
+  // DIV - i.c:1441 picks the greatest _Z each pass, so the highest Z
+  // paints first and ends up furthest back (see the comment on
+  // getDrawList in process.js). PRIORITY (slot 13) only affects
+  // *execution* order, not paint order - despite this test's name, it
+  // exercises the same dirty-flag/getDrawList machinery via Z, which is
+  // the field that's actually supposed to sort the list.
   const source = `program t;
-process actor(prio);
+process actor(zval);
 begin
-  priority = prio;
+  z = zval;
   loop frame; end
 end
 begin
@@ -2329,10 +2415,12 @@ end`;
   vm.load(compileSource(source));
   vm.tick();
   const dl = vm.processManager.getDrawList();
-  assert(dl.length === 3, `esperava 3 processos, obtido ${dl.length}`);
+  // 4, not 3: getDrawList() includes MAIN (a real Process itself, default
+  // priority/z 0) alongside the 3 spawned actors.
+  assert(dl.length === 4, `esperava 4 processos, obtido ${dl.length}`);
   for (let i = 1; i < dl.length; i++) {
-    assert(dl[i].priority >= dl[i - 1].priority,
-      `draw list fora de ordem: [${dl.map(p => p.priority).join(',')}]`);
+    assert(dl[i].z <= dl[i - 1].z,
+      `draw list fora de ordem: [${dl.map(p => p.z).join(',')}]`);
   }
 
   // Default priority is 0
@@ -2438,7 +2526,7 @@ begin p(); loop frame; end end`;
 }
 
 async function testGlobalInlineCommaForm() {
-  // GLOBAL a, b, c = 5; — all on one line, comma-separated, single ;
+  // GLOBAL a, b, c = 5; - all on one line, comma-separated, single ;
   // Each name gets its own optional initializer left-to-right.
   const source = `program t;
 global a, b, c = 5;
@@ -2456,13 +2544,16 @@ end`;
   assert(JSON.stringify(seen) === JSON.stringify([0, 0, 5]),
     `esperava [0,0,5], obtido ${JSON.stringify(seen)}`);
 
-  // mixed: some with initializers, some without
+  // mixed: some with initializers, some without. Names avoid x/y/z on
+  // purpose - those are MAIN's own canonical process fields (slots 0, 1,
+  // 15; MAIN is a real Process too), which correctly take priority over
+  // a same-named GLOBAL inside MAIN's body, same as inside any PROCESS.
   const src2 = `program t;
-global x = 1, y, z = 3;
+global p1 = 1, p2, p3 = 3;
 begin
-  print(x);
-  print(y);
-  print(z);
+  print(p1);
+  print(p2);
+  print(p3);
   frame;
 end`;
   const vm2 = new VM();
@@ -2475,7 +2566,7 @@ end`;
 }
 
 async function testPrivateCommaForm() {
-  // PRIVATE vx, vy = 3; — comma-separated inside a PROCESS
+  // PRIVATE vx, vy = 3; - comma-separated inside a PROCESS
   const source = `program t;
 process p();
 private vx, vy = 3;
@@ -2617,22 +2708,22 @@ end`));
 
 async function testPriorityDirtyFlagIgnoresUnrelatedFunctionLocals() {
   // The VM notifies ProcessManager.markPriorityDirty() whenever
-  // STORE_LOCAL writes to slot 13 — the canonical `priority` field inside
+  // STORE_LOCAL writes to slot 13 - the canonical `priority` field inside
   // a PROCESS body. But a FUNCTION's own locals are a completely
-  // separate, freshly-allocated slot sequence starting at 0 — nothing
+  // separate, freshly-allocated slot sequence starting at 0 - nothing
   // stops a FUNCTION with 14 params/VARs from putting its own 14th local
   // at slot 13 too, purely by coincidence. Without the currentProcess/
   // callStack guard, calling such a function marked the draw list dirty
   // on every call, for every process, even though no process's priority
-  // actually changed — silently undermining the whole point of caching
+  // actually changed - silently undermining the whole point of caching
   // the sorted draw list (confirmed reproducible: a FUNCTION with 14
   // params does put its 14th local at slot 13). The guard requires being
   // directly in a process's own top-level body (currentProcess set,
-  // callStack empty) — so a priority write from inside a FUNCTION the
+  // callStack empty) - so a priority write from inside a FUNCTION the
   // process itself calls doesn't trigger this path either, but that's
   // not a real capability lost: `priority` inside a FUNCTION was never a
   // reference to any process's canonical field to begin with (FUNCTION
-  // locals don't get the canonical slot table PROCESS bodies do) — it's
+  // locals don't get the canonical slot table PROCESS bodies do) - it's
   // just an ordinary, unrelated local variable there, with or without
   // this fix.
   const source = `program priority_false_positive;
@@ -2666,7 +2757,7 @@ end`;
   const originalSort = Array.prototype.sort;
   Array.prototype.sort = function (...args) { sortCalls += 1; return originalSort.apply(this, args); };
   try {
-    vm.tick(); // calls f() again — used to spuriously mark the draw list dirty
+    vm.tick(); // calls f() again - used to spuriously mark the draw list dirty
     vm.processManager.getDrawList();
   } finally {
     Array.prototype.sort = originalSort;
@@ -2680,16 +2771,20 @@ async function testArrayAndStructBoundsChecking() {
   // LOAD/STORE_LOCAL_IDX and LOAD/STORE_GLOBAL_IDX computed `base + index`
   // directly with no validation at all. An out-of-bounds index silently
   // read or wrote whatever unrelated global/local/struct-instance
-  // happened to sit at that computed offset — confirmed for GLOBAL
+  // happened to sit at that computed offset - confirmed for GLOBAL
   // arrays, PRIVATE arrays, and STRUCT arrays (including array-valued
   // fields within a struct) alike, since they all route through the same
-  // four opcodes. A constant out-of-bounds index (the common case — an
+  // four opcodes. A constant out-of-bounds index (the common case - an
   // off-by-one literal, or a loop bound of `size` instead of `size-1`)
   // is now a compile error; a variable index whose value isn't known
   // until runtime is bounds-checked in the VM instead, rejecting the
   // read/write rather than touching unrelated storage.
 
-  // Constant index out of bounds: compile-time rejection.
+  // Constant index out of bounds: compile-time rejection. DIV declares
+  // arrays by their LAST INDEX, not their length (see compileGlobal in
+  // compiler.js) - "a[3]" is 4 elements, valid indices 0..3 - so a[3] is
+  // the last legal slot, not out of bounds; a[4] is the first one that
+  // actually is.
   let threwOnConstantOOB = false;
   try {
     compileSource(`program array_const_oob;
@@ -2697,13 +2792,13 @@ async function testArrayAndStructBoundsChecking() {
 global a[3], b[3];
 
 begin
-  a[3] = 999;
+  a[4] = 999;
   frame;
 end`);
   } catch (error) {
     threwOnConstantOOB = true;
   }
-  assert(threwOnConstantOOB, 'indice constante fora dos limites (a[3] com size 3) devia falhar a compilar');
+  assert(threwOnConstantOOB, 'indice constante fora dos limites (a[4] com ultimo indice valido 3) devia falhar a compilar');
 
   let threwOnNegativeConstant = false;
   try {
@@ -2729,7 +2824,7 @@ global a[3], b[3];
 
 begin
   b[0] = 111; b[1] = 222; b[2] = 333;
-  var i = 3;
+  var i = 4;
   a[i] = 999;
   print(b[0]);
   print(b[1]);
@@ -2775,8 +2870,8 @@ end`;
   // right after it (structs share the same underlying global-slot
   // counter as plain GLOBALs and each other). Checked here via the
   // combined offset against the struct's total reserved footprint
-  // (count * instanceSize) rather than per-term, which — same caveat as
-  // the flat-array case — doesn't catch every pathological combination
+  // (count * instanceSize) rather than per-term, which - same caveat as
+  // the flat-array case - doesn't catch every pathological combination
   // of a too-large index on one term offset by a negative one on
   // another, but does catch the practical case: a single index running
   // past the end of the struct's own block.
@@ -2792,7 +2887,7 @@ end
 
 begin
   enemyB[0].hp = 111; enemyB[0].mana = 222;
-  var i = 2;
+  var i = 3;
   enemyA[i].x = 999;
   print(enemyB[0].hp);
   print(enemyB[0].mana);
@@ -2955,7 +3050,7 @@ export async function runAllTests() {
     ['priority field sorts draw list (dirty-flag, slot 13)', testPriorityFieldSortsDrawList],
     ['if/else parses and runs both branches (+ chained else if)', testIfElseBothBranchesParseAndRun],
     ['for with negative step counts down', testForNegativeStepCountsDown],
-    ['chained assignment (a = b = c) is a compile error', testChainedAssignmentIsCompileError],
+    ['chained assignment (a = b = c) compiles and evaluates to the assigned value', testChainedAssignmentCompilesAndEvaluatesToTheAssignedValue],
     ['main does not inherit the last process/function local scope', testMainDoesNotInheritLastProcessLocalScope],
     ['string escape sequences (\\n, \\t, \\\\, \\")', testStringEscapeSequences],
     ['duplicate PROCESS/FUNCTION/GLOBAL names are compile errors', testDuplicateDeclarationsAreCompileErrors],

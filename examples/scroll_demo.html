@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DivJS -Tutorial 0</title>
+  <title>DivJS - Scroll Demo</title>
   <style>
     * {
       margin: 0;
@@ -35,6 +35,11 @@
       border: 4px solid #4a9eff;
       border-radius: 8px;
       box-shadow: 0 10px 30px rgba(74, 158, 255, 0.3);
+      /* Native DIV resolution is 320x200; scale up for a modern display
+         while keeping the script's coordinates 1:1 with the original. */
+      width: 960px;
+      height: 600px;
+      image-rendering: pixelated;
     }
 
     .info {
@@ -46,8 +51,8 @@
 
 <body>
   <div class="container">
-    <h1>🎮 DivJS Tutorial 0</h1>
-    <canvas id="gameCanvas" width="640" height="480"></canvas>
+    <h1>🎮 DivJS Scroll Demo</h1>
+    <canvas id="gameCanvas" width="320" height="200"></canvas>
     <div id="log">booting...</div>
   </div>
 
@@ -55,64 +60,29 @@
     import { runDivDemo } from '../divjs.js';
 
     const source = `
-    
-PROGRAM Tutorial_1;
-BEGIN
-    load_fpg('../assets/div-support/tutor1.fpg');
-    put_screen(0,63);   // Puts background screen
-    ship(320,240,41);   // Creates ship process
-    // Creates with a loop 4 big asteroids
-    FROM x=1 TO 8; asteroid(); END
-END
+PROGRAM example_start_scroll;
 
-//-------------------------------------------------------------------
-// Process ship
-// Handles player's ship
-// Entries: Coordinates and graphic's code number
-//-------------------------------------------------------------------
+PRIVATE
+    file1;
 
-PROCESS ship(x,y,graph)
 BEGIN
+    file1=load_fpg('../assets/div-support/help.fpg');
+
+    start_scroll(0, file1, 103, 102, 0, 15);
+
+    scroll.camera=id;
+
+    ctype=c_scroll;
+    graph=100;
+    write(0, 160, 0, 1, "Use the cursors to move the ball");
     LOOP
-        // Checks if left or right keys are pressed
-        // And modifies angle if they are so
-        IF (key(_left)) angle=angle+10000; END
-        IF (key(_right)) angle=angle-10000; END
-        // If up key is pressed, moves ship upwards
-        IF (key(_up)) advance(8); END
-        FRAME;  // Shows ship's graphic on screen
+        IF (key(_right)) x+=2; END
+        IF (key(_left)) x-=2; END
+        IF (key(_down)) y+=2; END
+        IF (key(_up)) y-=2; END
+        FRAME;
     END
 END
-
-//-------------------------------------------------------------------
-// Process asteroid
-// Handles all game asteroids, big and small ones
-//-------------------------------------------------------------------
-
-PROCESS asteroid()
-BEGIN
-    LOOP
-        // Creates an asteroid on top left corner
-        // (Coordinates: 0,0) and asigns a code number to the graphic
-        x=0; y=0; graph=1;
-        // Chooses an angle randomly
-        angle=rand(-180000,180000);
-        // Repeats while it is on screen
-        WHILE (x>=0 AND x<=640 AND
-               y>=0 AND y<=480)
-            // Animates graphic, adding one to it's code number
-            graph=graph+1;
-            // If animation's limit is overpassed, reinitializes it
-            IF (graph==21) graph=1; END
-            // Makes graphic to advance into a certain direction
-            advance(4);
-            FRAME;      // Prints graphic on screen
-        END
-    END
-END
-
-
-
 
 `;
 
@@ -130,12 +100,15 @@ END
         canvas,
         source: source,
         clearColor: '#000',
+        // Set to true to draw collision shapes, pivots and control
+        // points over every process (with a colour legend bottom-left).
+        debugDrawProcessBounds: false,
         onLog: (line) => { logLine(line); },
         onFrame: ({ runtime }) => {
           const fps = Math.round(runtime.fpsValue || 0);
           const procs = runtime.vm?.processManager?.getAll?.() || [];
           const active = procs.filter(p => p.active && !p.suspended && !p.dead);
-          
+
         },
         onError: (err) => {
           logLine('error: ' + (err?.message || String(err)));

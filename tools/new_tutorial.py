@@ -89,7 +89,6 @@ END
 `;
 
     const canvas = document.getElementById('gameCanvas');
-    const ctx = canvas.getContext('2d');
     const log = document.getElementById('log');
 
     let statusLine = '';
@@ -103,6 +102,9 @@ END
         canvas,
         source: source,
         clearColor: '#000',
+        // Set to true to draw collision shapes, pivots and control
+        // points over every process (with a colour legend bottom-left).
+        debugDrawProcessBounds: false,
         onLog: (line) => {{ logLine(line); }},
         onFrame: ({{ runtime }}) => {{
           const fps = Math.round(runtime.fpsValue || 0);
@@ -148,7 +150,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if not NAME_RE.match(args.name):
-        print(f"error: '{args.name}' isn't a safe file base name — use letters/digits/_/- only, starting with a letter.", file=sys.stderr)
+        print(f"error: '{args.name}' isn't a safe file base name - use letters/digits/_/- only, starting with a letter.", file=sys.stderr)
         return 1
 
     out_path = EXAMPLES_DIR / f"{args.name}.html"

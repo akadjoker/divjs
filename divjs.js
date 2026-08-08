@@ -53,7 +53,10 @@ export function runDivDemo(options) {
   } = options || {};
 
   const canvasEl = resolveCanvas(canvas);
-  const screenCtx = canvasEl.getContext('2d');
+  // willReadFrequently: get_pixel() reads back single pixels, potentially
+  // every frame (DIV scripts use it for scenery collision), which the
+  // browser otherwise warns is slow against a GPU-backed canvas.
+  const screenCtx = canvasEl.getContext('2d', { willReadFrequently: true });
 
   if (width) {
     canvasEl.width = Number(width) || canvasEl.width;
@@ -64,7 +67,9 @@ export function runDivDemo(options) {
 
   const useVirtualScreen = Number.isFinite(Number(virtualWidth)) && Number.isFinite(Number(virtualHeight));
   const runtimeCanvas = useVirtualScreen ? document.createElement('canvas') : canvasEl;
-  const runtimeCtx = useVirtualScreen ? runtimeCanvas.getContext('2d') : screenCtx;
+  const runtimeCtx = useVirtualScreen
+    ? runtimeCanvas.getContext('2d', { willReadFrequently: true })
+    : screenCtx;
 
   if (useVirtualScreen) {
     runtimeCanvas.width = Math.max(1, Number(virtualWidth));
@@ -171,6 +176,13 @@ export function runDivDemo(options) {
         emitError(err);
         return;
       }
+      // exit() sets vm.halted to mean "stop the whole program" - render
+      // this final frame, then stop rescheduling the RAF loop instead of
+      // sitting idle-but-alive forever.
+      if (vm.halted) {
+        running = false;
+        return;
+      }
       rafId = requestAnimationFrame(loop);
     };
 
@@ -182,11 +194,11 @@ export function runDivDemo(options) {
       return;
     }
 
-    // A process spawned this tick (by MAIN or by another process — see
+    // A process spawned this tick (by MAIN or by another process - see
     // SPAWN_PROCESS's immediate-run in vm.js) can already reference a
     // graphic/font whose load_fpg/load_fnt/load_map fetch() is still in
     // flight. Rendering immediately would draw the fallback placeholder
-    // for it — hold this frame until anything that started loading this
+    // for it - hold this frame until anything that started loading this
     // tick has settled (allSettled: a failed load already logs its own
     // warning via onLog, it shouldn't block the frame forever).
     if (runtime.pendingLoads && runtime.pendingLoads.length > 0) {
