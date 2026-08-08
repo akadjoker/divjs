@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DivJS - Language Features Test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 860px;
+      line-height: 1.4;
+    }
+    #log {
+      width: 860px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="860" height="560"></canvas>
+  <p>
+    Isolated test of this session's new language/VM features - CONST,
+    get_id() (existence check + same-tick iteration), CLONE, timer[],
+    scan_code, prefix ++/--, pi/get_angle()/get_dist(). Each line turns
+    green when its own check passes, red if not. Press any key to see
+    scan_code update.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM language_features_test;
+
+CONST
+    expected_const = 12345;
+    half_const = expected_const / 5;
+
+GLOBAL
+    g_const_ok = 0;
+
+    g_getid_exist_before = -1;
+    g_getid_exist_after = -1;
+
+    g_getid_iter_count = 0;
+    g_getid_iter_sum = 0;
+
+    g_clone_count = 0;
+    g_clone_x0 = 0;
+    g_clone_x1 = 0;
+    g_clone_x2 = 0;
+
+    g_timer_snapshot1 = 0;
+    g_timer_snapshot2 = 0;
+    g_timer_reset_ok = 0;
+
+    g_scan_code = 0;
+
+    g_prefix_result = 0;
+    g_prefix_var = 10;
+
+    g_angle_ok = 0;
+    g_dist_ok = 0;
+
+PROCESS marker(n);
+BEGIN
+    width = 10; height = 10;
+    LOOP FRAME; END
+END
+
+PROCESS clone_demo();
+BEGIN
+    x = 100;
+    g_clone_x0 = x;
+    g_clone_count = g_clone_count + 1;
+    CLONE
+        x = 200;
+        g_clone_x1 = x;
+        g_clone_count = g_clone_count + 1;
+        CLONE
+            x = 300;
+            g_clone_x2 = x;
+            g_clone_count = g_clone_count + 1;
+        END
+    END
+    LOOP FRAME; END
+END
+
+PROCESS runner();
+BEGIN
+    // --- CONST ---
+    IF (expected_const == 12345 AND half_const == 2469)
+        g_const_ok = 1;
+    END
+
+    // --- get_id(): existence check before/after spawn ---
+    g_getid_exist_before = get_id(TYPE marker);
+
+    VAR m1 = marker(1);
+    VAR m2 = marker(2);
+    VAR m3 = marker(3);
+    FRAME; // let get_id's per-tick cursor reset
+
+    g_getid_exist_after = get_id(TYPE marker);
+    FRAME; // that call above also consumes an iteration slot - reset before the next check
+
+    // --- get_id(): same-tick iteration over all 3 ---
+    VAR id_a = get_id(TYPE marker);
+    VAR id_b = get_id(TYPE marker);
+    VAR id_c = get_id(TYPE marker);
+    VAR id_d = get_id(TYPE marker); // exhausted -> 0
+    IF (id_a <> 0 AND id_b <> 0 AND id_c <> 0 AND id_d == 0 AND id_a <> id_b AND id_b <> id_c)
+        g_getid_iter_count = 3;
+    END
+
+    // --- CLONE ---
+    clone_demo();
+    FRAME;
+
+    // --- timer[] ---
+    timer[0] = 0;
+    g_timer_snapshot1 = timer[0];
+    FRAME;
+    FRAME;
+    FRAME;
+    g_timer_snapshot2 = timer[0];
+    timer[0] = 0;
+    IF (timer[0] < g_timer_snapshot2)
+        g_timer_reset_ok = 1;
+    END
+
+    // --- prefix ++/-- as an expression ---
+    g_prefix_result = ++g_prefix_var * 2; // (10+1)*2 = 22, and g_prefix_var becomes 11
+
+    // --- pi / get_angle / get_dist ---
+    VAR pcheck = marker(999);
+    pcheck.x = 100;
+    pcheck.y = 0;
+    x = 0; y = 0;
+    VAR a = get_angle(pcheck);
+    VAR d = get_dist(pcheck);
+    IF (a == 0) g_angle_ok = 1; END
+    IF (d == 100) g_dist_ok = 1; END
+
+    LOOP
+        g_scan_code = scan_code;
+        FRAME;
+    END
+END
+
+BEGIN
+    set_mode(860, 560);
+    screen_color('#0e1a29');
+
+    runner();
+
+    LOOP
+        // Every write()/write_int() below runs fresh each frame (values
+        // like timer[0] and scan_code are genuinely live) - each call
+        // creates a brand new persistent text object rather than
+        // updating one in place, so without clearing first they'd pile
+        // up at the same position forever instead of replacing.
+        delete_text(all_text);
+
+        write(0, 16, 14, 0, 'LANGUAGE FEATURES TEST');
+
+        IF (g_const_ok) set_color('#6bff99'); ELSE set_color('#ff5a5a'); END
+        write(0, 16, 40, 0, 'CONST (pi-independent, value + arithmetic):');
+        write_int(0, 480, 40, 0, g_const_ok);
+
+        IF (g_getid_exist_before == 0 AND g_getid_exist_after <> 0)
+            set_color('#6bff99');
+        ELSE
+            set_color('#ff5a5a');
+        END
+        write(0, 16, 64, 0, 'get_id existence check (0 before spawn, nonzero after):');
+        write(0, 16, 84, 0, '  before:');
+        write_int(0, 120, 84, 0, g_getid_exist_before);
+        write(0, 220, 84, 0, 'after:');
+        write_int(0, 300, 84, 0, g_getid_exist_after);
+
+        IF (g_getid_iter_count == 3) set_color('#6bff99'); ELSE set_color('#ff5a5a'); END
+        write(0, 16, 108, 0, 'get_id same-tick iteration (3 distinct ids, then 0):');
+        write_int(0, 560, 108, 0, g_getid_iter_count);
+
+        IF (g_clone_count == 3 AND g_clone_x0 == 100 AND g_clone_x1 == 200 AND g_clone_x2 == 300)
+            set_color('#6bff99');
+        ELSE
+            set_color('#ff5a5a');
+        END
+        write(0, 16, 132, 0, 'CLONE x3 nested (x=100,200,300):');
+        write_int(0, 380, 132, 0, g_clone_x0);
+        write_int(0, 430, 132, 0, g_clone_x1);
+        write_int(0, 480, 132, 0, g_clone_x2);
+
+        IF (g_timer_reset_ok) set_color('#6bff99'); ELSE set_color('#ff5a5a'); END
+        write(0, 16, 156, 0, 'timer[0] (auto-increments, resets on assign):');
+        write(0, 16, 176, 0, '  after 3 frames (ms):');
+        write_int(0, 220, 176, 0, g_timer_snapshot2);
+        write(0, 320, 176, 0, 'live:');
+        write_int(0, 380, 176, 0, timer[0]);
+
+        set_color('#5cc6ff');
+        write(0, 16, 200, 0, 'scan_code (press any key):');
+        write_int(0, 280, 200, 0, g_scan_code);
+
+        IF (g_prefix_result == 22 AND g_prefix_var == 11)
+            set_color('#6bff99');
+        ELSE
+            set_color('#ff5a5a');
+        END
+        write(0, 16, 224, 0, '++x as expression ((10+1)*2=22, x becomes 11):');
+        write_int(0, 560, 224, 0, g_prefix_result);
+        write_int(0, 620, 224, 0, g_prefix_var);
+
+        IF (g_angle_ok AND g_dist_ok) set_color('#6bff99'); ELSE set_color('#ff5a5a'); END
+        write(0, 16, 248, 0, 'get_angle/get_dist to a process at (100,0) from (0,0):');
+        write_int(0, 620, 248, 0, g_angle_ok);
+        write_int(0, 650, 248, 0, g_dist_ok);
+
+        FRAME;
+    END
+END`;
+
+    const canvas = document.getElementById('c');
+    const log = document.getElementById('log');
+
+    function logLine(line) {
+      log.textContent = String(line);
+    }
+
+    try {
+      runDivDemo({
+        canvas,
+        source: SOURCE,
+        clearColor: '#0e1a29',
+        onLog: (line) => { logLine(line); },
+        onError: (err) => {
+          logLine('error: ' + (err?.message || String(err)));
+          console.error(err);
+        }
+      });
+      logLine('running: language features test');
+    } catch (err) {
+      logLine('error: ' + (err?.message || String(err)));
+      console.error(err);
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DivJS - Candy (procedural graphics, no assets)</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 460px;
+      line-height: 1.4;
+    }
+    #log {
+      width: 460px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 36px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="460" height="540"></canvas>
+  <p>
+    Match-3 built entirely from draw_rect() - no FPG/FNT/PCM assets at
+    all, so it's a clean test of whether the VM itself works, independent
+    of any asset pipeline. Click a tile, then click an adjacent one to
+    swap; a swap that makes no 3-in-a-row match undoes itself.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM candy_test;
+
+CONST
+    cols = 8;
+    rows = 8;
+    cellsize = 48;
+    boardx = 20;
+    boardy = 60;
+    ncolors = 5;
+
+GLOBAL
+    board[63];
+    matched[63];
+    score = 0;
+    sel_x = -1;
+    sel_y = -1;
+    mouse_prev = 0;
+
+FUNCTION cell_color(x, y);
+BEGIN
+    RETURN board[y * cols + x];
+END
+
+FUNCTION set_cell(x, y, v);
+BEGIN
+    board[y * cols + x] = v;
+    RETURN 0;
+END
+
+FUNCTION swap_cells(ax, ay, bx, by);
+BEGIN
+    VAR tmp = cell_color(ax, ay);
+    set_cell(ax, ay, cell_color(bx, by));
+    set_cell(bx, by, tmp);
+    RETURN 0;
+END
+
+// Marks every cell that is part of a horizontal or vertical run of 3+
+// same color into matched[], returns how many cells got marked.
+FUNCTION find_matches();
+BEGIN
+    VAR x = 0; VAR y = 0; VAR c = 0; VAR runlen = 0; VAR count = 0; VAR k = 0;
+
+    FOR x = 0 TO 63
+        matched[x] = 0;
+    END
+    count = 0;
+
+    FOR y = 0 TO rows - 1
+        x = 0;
+        WHILE (x < cols)
+            c = cell_color(x, y);
+            runlen = 1;
+            WHILE (x + runlen < cols AND cell_color(x + runlen, y) == c)
+                runlen = runlen + 1;
+            END
+            IF (runlen >= 3)
+                FOR k = x TO x + runlen - 1
+                    IF (matched[y * cols + k] == 0)
+                        matched[y * cols + k] = 1;
+                        count = count + 1;
+                    END
+                END
+            END
+            x = x + runlen;
+        END
+    END
+
+    FOR x = 0 TO cols - 1
+        y = 0;
+        WHILE (y < rows)
+            c = cell_color(x, y);
+            runlen = 1;
+            WHILE (y + runlen < rows AND cell_color(x, y + runlen) == c)
+                runlen = runlen + 1;
+            END
+            IF (runlen >= 3)
+                FOR k = y TO y + runlen - 1
+                    IF (matched[k * cols + x] == 0)
+                        matched[k * cols + x] = 1;
+                        count = count + 1;
+                    END
+                END
+            END
+            y = y + runlen;
+        END
+    END
+
+    RETURN count;
+END
+
+FUNCTION clear_and_refill();
+BEGIN
+    VAR i = 0; VAR cleared = 0;
+    FOR i = 0 TO 63
+        IF (matched[i])
+            board[i] = rand(1, ncolors);
+            cleared = cleared + 1;
+        END
+    END
+    RETURN cleared;
+END
+
+FUNCTION is_adjacent(ax, ay, bx, by);
+BEGIN
+    VAR dx = ax - bx;
+    IF (dx < 0) dx = -dx; END
+    VAR dy = ay - by;
+    IF (dy < 0) dy = -dy; END
+    IF ((dx == 1 AND dy == 0) OR (dx == 0 AND dy == 1))
+        RETURN 1;
+    END
+    RETURN 0;
+END
+
+PROCESS board_setup();
+PRIVATE
+    i; found;
+BEGIN
+    FOR i = 0 TO 63
+        board[i] = rand(1, ncolors);
+    END
+    // Reroll away any matches already present in the initial layout.
+    found = find_matches();
+    WHILE (found > 0)
+        clear_and_refill();
+        found = find_matches();
+    END
+    LOOP FRAME; END
+END
+
+PROCESS game();
+PRIVATE
+    gx; gy; mx; my; gained;
+BEGIN
+    LOOP
+        IF (mouse_button(0))
+            IF (mouse_prev == 0)
+                mx = mouse_x() - boardx;
+                my = mouse_y() - boardy;
+                IF (mx >= 0 AND my >= 0)
+                    gx = mx / cellsize;
+                    gy = my / cellsize;
+                    IF (gx < cols AND gy < rows)
+                        IF (sel_x == -1)
+                            sel_x = gx;
+                            sel_y = gy;
+                        ELSE
+                            IF (is_adjacent(sel_x, sel_y, gx, gy))
+                                swap_cells(sel_x, sel_y, gx, gy);
+                                IF (find_matches() > 0)
+                                    gained = clear_and_refill();
+                                    score = score + gained * 10;
+                                    // Cascade: keep resolving any new
+                                    // matches the refill itself created.
+                                    WHILE (find_matches() > 0)
+                                        gained = clear_and_refill();
+                                        score = score + gained * 10;
+                                    END
+                                ELSE
+                                    swap_cells(sel_x, sel_y, gx, gy);
+                                END
+                                sel_x = -1;
+                                sel_y = -1;
+                            ELSE
+                                sel_x = gx;
+                                sel_y = gy;
+                            END
+                        END
+                    END
+                END
+            END
+            mouse_prev = 1;
+        ELSE
+            mouse_prev = 0;
+        END
+        FRAME;
+    END
+END
+
+PROCESS renderer();
+PRIVATE
+    x; y; c; px; py;
+BEGIN
+    LOOP
+        delete_text(all_text);
+
+        FOR y = 0 TO rows - 1
+            FOR x = 0 TO cols - 1
+                c = cell_color(x, y);
+                IF (c == 1) set_color('#ff5a5a'); END
+                IF (c == 2) set_color('#5affa0'); END
+                IF (c == 3) set_color('#5cc6ff'); END
+                IF (c == 4) set_color('#ffd35a'); END
+                IF (c == 5) set_color('#c58aff'); END
+
+                px = boardx + x * cellsize;
+                py = boardy + y * cellsize;
+                draw_rect(px + 3, py + 3, cellsize - 6, cellsize - 6);
+
+                IF (sel_x == x AND sel_y == y)
+                    set_color('#ffffff');
+                    draw_rect(px, py, cellsize, 2);
+                    draw_rect(px, py + cellsize - 2, cellsize, 2);
+                    draw_rect(px, py, 2, cellsize);
+                    draw_rect(px + cellsize - 2, py, 2, cellsize);
+                END
+            END
+        END
+
+        set_color('#d7e6f5');
+        write(0, 20, 34, 0, 'score:');
+        write_int(0, 90, 34, 0, score);
+
+        FRAME;
+    END
+END
+
+BEGIN
+    set_mode(460, 540);
+    screen_color('#0e1a29');
+    board_setup();
+    FRAME;
+    game();
+    renderer();
+    LOOP FRAME; END
+END`;
+
+    const canvas = document.getElementById('c');
+    const log = document.getElementById('log');
+
+    function logLine(line) {
+      log.textContent = String(line);
+    }
+
+    try {
+      runDivDemo({
+        canvas,
+        source: SOURCE,
+        clearColor: '#0e1a29',
+        onLog: (line) => { logLine(line); },
+        onError: (err) => {
+          logLine('error: ' + (err?.message || String(err)));
+          console.error(err);
+        }
+      });
+      logLine('running: candy match-3 (no assets)');
+    } catch (err) {
+      logLine('error: ' + (err?.message || String(err)));
+      console.error(err);
+    }
+  </script>
+</body>
+</html>
