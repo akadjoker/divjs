@@ -372,8 +372,29 @@ function collideShapePair(shapeA, shapeB) {
 }
 
 function collideProcesses(a, b, ax = a.x, ay = a.y, bx = b.x, by = b.y, options = {}) {
-  const shapesA = getProcessShapes(a, ax, ay, !!options.preferCircle);
-  const shapesB = getProcessShapes(b, bx, by, !!options.preferCircle);
+  // Fast path for the overwhelmingly common case in any real scene: two
+  // plain boxes, neither with explicit collision boxes nor a circle
+  // shape. getProcessShapes' default box shape allocates a closure and
+  // 4 corner-point objects per side (getCorners) plus an AABB and a
+  // shape-wrapper object, on every single pairwise test - collidesBoxBox
+  // does the same job (including the angle!=0 SAT fallback) with just 2
+  // AABB objects for the axis-aligned case, which is itself the common
+  // one (most sprites never rotate). See ProcessManager.collision() etc.
+  // for how often this runs: once per (caller, candidate-of-that-type)
+  // pair, every time a script calls collision()/collision_circle()/...
+  const preferCircleFlag = !!options.preferCircle;
+  if (
+    !preferCircleFlag &&
+    a.collisionShape !== 'circle' && b.collisionShape !== 'circle' &&
+    !(Array.isArray(a.cboxes) && a.cboxes.length > 0) &&
+    !(Array.isArray(b.cboxes) && b.cboxes.length > 0)
+  ) {
+    const hit = collidesBoxBox(a, b, ax, ay, bx, by);
+    return { hit: hit.hit, mtvX: hit.mtvX, mtvY: hit.mtvY, cboxCodeA: -1, cboxCodeB: -1 };
+  }
+
+  const shapesA = getProcessShapes(a, ax, ay, preferCircleFlag);
+  const shapesB = getProcessShapes(b, bx, by, preferCircleFlag);
 
   for (const sa of shapesA) {
     for (const sb of shapesB) {
