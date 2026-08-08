@@ -891,6 +891,30 @@ export class ProcessManager {
     return 0;
   }
 
+  // Returns ID of the first process of typeCode whose AABB overlaps the
+  // given rectangle - used by path_find's grid-blocking test (_nodeBlocked
+  // in runtime.js) instead of a single point sample at the cell's center.
+  // A center-only test lets a path clip a wall's corner or squeeze
+  // through whenever the grid's cell size doesn't line up exactly with
+  // the wall's own size/position (the common case - a wall dragged to an
+  // arbitrary pixel position on a coarser pathfinding grid), which reads
+  // as "the bot cuts through walls" even though A* itself is working
+  // correctly off of what the blocked-check told it.
+  rectOverlapsType(minX, maxX, minY, maxY, typeCode) {
+    const processIds = this.byType.get(typeCode);
+    if (!processIds) return 0;
+    for (const id of processIds) {
+      const p = this.get(id);
+      if (!p || !p.active) continue;
+      const aabb = processAABB(p);
+      if (aabb.maxX <= minX || aabb.minX >= maxX || aabb.maxY <= minY || aabb.minY >= maxY) {
+        continue;
+      }
+      return id;
+    }
+    return 0;
+  }
+
   // Returns ID of first process of typeCode that would collide with
   // currentProcess if it were placed at (tx, ty). Position is not changed.
   placeMeeting(currentProcess, tx, ty, typeCode) {

@@ -61,7 +61,7 @@ GLOBAL g_target_y = 440;
 GLOBAL g_path = 0;
 GLOBAL g_path_len = 0;
 GLOBAL g_path_idx = 1;
-GLOBAL g_repath_cd = 0;
+GLOBAL g_need_repath = 1;
 GLOBAL g_grid = 16;
 GLOBAL g_diag = 1;
 GLOBAL g_wall_type = 0;
@@ -71,17 +71,24 @@ GLOBAL g_step_state = 0;
 
 PROCESS wall(px, py, w, h);
 BEGIN
-  x = px;
-  y = py;
+  // px,py is this wall's top-left corner (how the call sites in MAIN
+  // read most naturally for level layout) - but every process's own x/y
+  // is always its CENTER as far as collision/path_find are concerned
+  // (see getCenter in process.js), and draw_rect(x,y,...) draws from
+  // its top-left. Store the center in x/y so collision sees the wall
+  // where it's actually drawn, and shift back by half the size when
+  // drawing so the visible rectangle still starts at px,py.
   width = w;
   height = h;
+  x = px + w / 2;
+  y = py + h / 2;
 
   LOOP
     set_color('#37506a');
-    draw_rect(x, y, width, height);
+    draw_rect(x - width / 2, y - height / 2, width, height);
 
     set_color('#5a7c9d');
-    draw_rect(x + 2, y + 2, width - 4, height - 4);
+    draw_rect(x - width / 2 + 2, y - height / 2 + 2, width - 4, height - 4);
 
     FRAME;
   END
@@ -96,7 +103,7 @@ BEGIN
   height = 16;
 
   LOOP
-    IF (g_repath_cd <= 0)
+    IF (g_need_repath)
       IF (g_path) path_clear(g_path); END
 
       g_path = path_find(x + 8, y + 8, g_target_x, g_target_y, g_wall_type, g_grid, g_diag, 8192);
@@ -105,9 +112,7 @@ BEGIN
       IF (g_path)
         g_last_repath_ok = path_assign(g_path, 1);
       END
-      g_repath_cd = 0.22;
-    ELSE
-      g_repath_cd = g_repath_cd - get_delta();
+      g_need_repath = 0;
     END
 
     g_step_state = path_step(speed, 2);
@@ -154,7 +159,7 @@ BEGIN
       IF (g_mouse_prev == 0)
         g_target_x = mouse_x();
         g_target_y = mouse_y();
-        g_repath_cd = 0;
+        g_need_repath = 1;
       END
       g_mouse_prev = 1;
     ELSE

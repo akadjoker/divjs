@@ -9,6 +9,7 @@ import { parseBennuBdfFont } from './bennu_bdf.js';
 import { loadDivFpgFromUrl, loadDivFntFromUrl, loadDivMapFromUrl } from './div_formats.js';
 import { getProcessShapes, setPivotResolver } from './process.js';
 import { font6x8Pixel, FONT_6X8_WIDTH, FONT_6X8_HEIGHT } from './font_6x8.js';
+import { MinHeap } from './min_heap.js';
 
 export const CType = {
   C_SCREEN: 0,
@@ -1842,9 +1843,15 @@ export class CanvasEngineRuntime {
 
   _nodeBlocked(gx, gy, cellSize, obstacleTypeCode) {
     if (!obstacleTypeCode) return false;
-    const cx = gx * cellSize + Math.floor(cellSize * 0.5);
-    const cy = gy * cellSize + Math.floor(cellSize * 0.5);
-    const hit = this.vm?.processManager?.collisionPoint(cx, cy, obstacleTypeCode) || 0;
+    // Whole-cell rectangle, not just its center point - a single-point
+    // sample let the path clip a wall's corner or squeeze through a gap
+    // that's actually solid whenever the pathfinding grid's cell size
+    // doesn't line up exactly with the wall's own size/position.
+    const minX = gx * cellSize;
+    const minY = gy * cellSize;
+    const hit = this.vm?.processManager?.rectOverlapsType(
+      minX, minX + cellSize, minY, minY + cellSize, obstacleTypeCode
+    ) || 0;
     return hit > 0;
   }
 
@@ -1916,23 +1923,29 @@ export class CanvasEngineRuntime {
       ? this._octileDistance.bind(this)
       : this._manhattanDistance.bind(this);
 
-    const open = [{ key: startKey, x: sx, y: sy, g: 0, f: heuristic(sx, sy, ex, ey) }];
-    const openMap = new Map([[startKey, open[0]]]);
+    // Binary min-heap keyed on f-score, instead of a plain array scanned
+    // linearly for its minimum every pop (O(m) per pop, O(m^2) overall
+    // for a search that visits m nodes - the default maxNodes of 4096
+    // could mean tens of millions of comparisons for one path_find()
+    // call). No decrease-key: when a shorter path to an already-queued
+    // node is found below, a fresh heap entry is pushed for it rather
+    // than updating the old one in place: the stale entry is simply
+    // skipped when it's eventually popped (staleness detected via
+    // gScore, since its g no longer matches the best known cost for that
+    // key - the closed-set check alone isn't enough once entries for the
+    // same key can now coexist in the heap).
+    const open = new MinHeap();
+    open.push({ key: startKey, x: sx, y: sy, g: 0, priority: heuristic(sx, sy, ex, ey) });
     const closed = new Set();
     const cameFrom = new Map();
     const gScore = new Map([[startKey, 0]]);
 
     let visited = 0;
 
-    while (open.length > 0 && visited < maxVisited) {
-      let bestIndex = 0;
-      for (let i = 1; i < open.length; i++) {
-        if (open[i].f < open[bestIndex].f) bestIndex = i;
-      }
-
-      const current = open.splice(bestIndex, 1)[0];
-      openMap.delete(current.key);
+    while (open.size > 0 && visited < maxVisited) {
+      const current = open.pop();
       if (closed.has(current.key)) continue;
+      if (current.g > gScore.get(current.key)) continue; // stale entry, superseded below
       closed.add(current.key);
       visited += 1;
 
@@ -1965,16 +1978,7 @@ export class CanvasEngineRuntime {
         cameFrom.set(nKey, current.key);
         gScore.set(nKey, tentativeG);
         const f = tentativeG + heuristic(nx, ny, ex, ey);
-
-        const existing = openMap.get(nKey);
-        if (existing) {
-          existing.g = tentativeG;
-          existing.f = f;
-        } else {
-          const node = { key: nKey, x: nx, y: ny, g: tentativeG, f };
-          open.push(node);
-          openMap.set(nKey, node);
-        }
+        open.push({ key: nKey, x: nx, y: ny, g: tentativeG, priority: f });
       }
     }
 
