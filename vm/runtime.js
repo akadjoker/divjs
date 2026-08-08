@@ -2733,6 +2733,8 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('stop_sound', () => 0);
     this.vm.registerNative('load_pal', () => 0);
     this.vm.registerNative('unload_fpg', () => 0);
+    this.vm.registerNative('unload_pcm', () => 0);
+    this.vm.registerNative('unload_map', () => 0);
     this.vm.registerNative('map_get_pixel', () => 0);
     this.vm.registerNative('load_bdf_font', this.loadBdfFontNative.bind(this));
     this.vm.registerNative('load_bdf_font_text', this.loadBdfFontTextNative.bind(this));
