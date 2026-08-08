@@ -1,5 +1,6 @@
 import { OpCodes } from './bytecode.js';
 import { hashCode } from '../utils/hash.js';
+import * as ast from './ast.js';
 
 // Returns the numeric value of `expr` if it's a compile-time constant -
 // a bare number literal ("STEP 2") or a unary minus directly wrapping one
@@ -18,6 +19,50 @@ function getConstantNumericValue(expr) {
   }
   return null;
 }
+
+// Builtin constants available without a GLOBAL/CONST declaration.
+// Shared between compileIdentifier (runtime lookup) and
+// Compiler.evalConstExpr (CONST-block folding), so pi/true/false/etc.
+// only have one definition to keep in sync.
+const BUILTIN_CONSTANTS = {
+  _left: 'ArrowLeft', _right: 'ArrowRight',
+  _up: 'ArrowUp',     _down: 'ArrowDown',
+  _space: ' ', _enter: 'Enter', _esc: 'Escape', _backspace: 'Backspace',
+  _tab: 'Tab', _shift: 'Shift', _ctrl: 'Control', _control: 'Control', _alt: 'Alt',
+  _fire: 'z',
+  _a: 'a', _b: 'b', _c: 'c', _d: 'd', _e: 'e', _f: 'f',
+  _g: 'g', _h: 'h', _i: 'i', _j: 'j', _k: 'k', _l: 'l',
+  _m: 'm', _n: 'n', _o: 'o', _p: 'p', _q: 'q', _r: 'r',
+  _s: 's', _t: 't', _u: 'u', _v: 'v', _w: 'w', _x: 'x',
+  _y: 'y', _z: 'z',
+  _0: '0', _1: '1', _2: '2', _3: '3', _4: '4',
+  _5: '5', _6: '6', _7: '7', _8: '8', _9: '9',
+  true: 1, false: 0,
+  c_screen: 0, c_scroll: 1, c_m7: 2,
+  s_kill: 0, s_wakeup: 1, s_sleep: 2, s_freeze: 3,
+  s_kill_tree: 100, s_wakeup_tree: 101, s_sleep_tree: 102, s_freeze_tree: 103,
+  // Classic DIV single-argument SET_MODE resolution constants - see
+  // VIDEO_MODE_TABLE in runtime.js's setModeNative for the decode.
+  // Negative so they can never collide with a legitimate width value
+  // passed to the (width, height) two-argument form this engine's own
+  // demos already use.
+  m320x200: -1, m640x480: -2, m320x240: -3, m320x400: -4, m360x240: -5,
+  m360x360: -6, m376x282: -7, m640x400: -8, m800x600: -9, m1024x768: -10,
+  // "This constant defines the equivalence in degree thousandths of the
+  // mathematical constant pi" (DIV manual) - i.e. pi = half a turn in
+  // the ANGLE field's own AXIS units (360000 = full circle), not
+  // Math.PI radians. Scripts write angle math directly in this unit
+  // ("direction = direction + pi/32;") with no radian conversion
+  // needed, matching toRadiansFromDivAngle's 1000ths-of-a-degree
+  // convention already used everywhere else (angle, cos, sin,
+  // fget_angle, ...).
+  pi: 180000,
+  // delete_text(all_text) removes every text created by write()/
+  // write_int() - deleteTextNative already treats id 0 as "delete all"
+  // (see runtime.js), so this is just the named constant DIV scripts
+  // use instead of a bare 0.
+  all_text: 0
+};
 
 export class Compiler {
   constructor() {
@@ -110,6 +155,11 @@ export class Compiler {
       this.processTable.set(proc.name, { addr: -1, params: proc.params, privates: proc.privates, locals: {} });
     }
 
+    // CONST section, resolved before anything that might reference one
+    // (a GLOBAL initializer, a PROCESS body, ...) - see compileConsts.
+    this.constMap = new Map();
+    this.compileConsts(program.consts || []);
+
     // Compile globals first
     for (const global of program.globals) {
       this.compileGlobal(global);
@@ -152,7 +202,10 @@ export class Compiler {
     this.resetCanonicalLocals();
     this.declarePrivates(program.mainPrivates);
     for (const priv of program.mainPrivates || []) {
-      if (priv.size !== undefined) continue; // arrays start zeroed
+      if (priv.size !== undefined) {
+        this.emitPrivateArrayInit(priv);
+        continue;
+      }
       if (priv.value) {
         this.compileExpression(priv.value);
         this.emit(OpCodes.STORE_LOCAL, this.localMap.get(priv.name));
@@ -185,21 +238,96 @@ export class Compiler {
   }
 
   // Compile global
+  // CONST name=expr entries carry no runtime storage - each is folded
+  // to a plain number right here, in declaration order, so later entries
+  // can reference earlier ones (coins.prg: "maximum_incline=pi;
+  // minimum_incline=-pi;"). Every later compileIdentifier() reference to
+  // the name is replaced with the resolved literal (see its constMap
+  // check).
+  compileConsts(consts) {
+    for (const decl of consts) {
+      if (this.constMap.has(decl.name)) {
+        throw new Error(`Duplicate CONST name: "${decl.name}" is declared more than once.${this.locSuffix(decl)}`);
+      }
+      const value = this.evalConstExpr(decl.value, decl);
+      this.constMap.set(decl.name, value);
+    }
+  }
+
+  // Minimal compile-time evaluator for CONST expressions: numeric
+  // literals, +/-/*// and unary +/-, and identifiers that resolve to an
+  // earlier CONST or one of compileIdentifier's builtin constants (pi,
+  // true, false, c_scroll, ...) - covers every real DIV CONST block
+  // that isn't itself just a bare literal (e.g. "maximum_incline=pi;",
+  // "half=power_maximum/2;").
+  evalConstExpr(expr, declNode) {
+    const fail = () => {
+      throw new Error(
+        `CONST "${declNode.name}" must be a compile-time constant expression (literals, +-*/ and earlier CONSTs/builtins only)${this.locSuffix(declNode)}`
+      );
+    };
+    switch (expr.type) {
+      case 'number':
+        return expr.value;
+      case 'unary': {
+        const v = this.evalConstExpr(expr.operand, declNode);
+        if (expr.operator === '-') return -v;
+        if (expr.operator === '+') return v;
+        return fail();
+      }
+      case 'binary': {
+        const a = this.evalConstExpr(expr.left, declNode);
+        const b = this.evalConstExpr(expr.right, declNode);
+        switch (expr.operator) {
+          case '+': return a + b;
+          case '-': return a - b;
+          case '*': return a * b;
+          case '/': return a / b;
+          default: return fail();
+        }
+      }
+      case 'identifier': {
+        const nameLower = expr.name.toLowerCase();
+        if (this.constMap.has(expr.name)) {
+          return this.constMap.get(expr.name);
+        }
+        if (Object.prototype.hasOwnProperty.call(BUILTIN_CONSTANTS, nameLower) &&
+          typeof BUILTIN_CONSTANTS[nameLower] === 'number') {
+          return BUILTIN_CONSTANTS[nameLower];
+        }
+        return fail();
+      }
+      default:
+        return fail();
+    }
+  }
+
   compileGlobal(stmt) {
     if (this.globalMap.has(stmt.name)) {
       throw new Error(`Duplicate GLOBAL name: "${stmt.name}" is declared more than once.${this.locSuffix(stmt)}`);
     }
 
     if (stmt.size !== undefined) {
-      // Array: evaluate size at compile time (must be a constant number)
-      const declared = getConstantNumericValue(stmt.size);
-      if (declared === null || declared < 0 || !Number.isInteger(declared)) {
-        throw new Error(`GLOBAL array size must be a non-negative integer literal${this.locSuffix(stmt)}`);
+      // Array: evaluate size at compile time (must be a constant number).
+      let sizeVal;
+      if (stmt.size === null) {
+        // "name[]= a,b,c;" - size comes straight from the initializer
+        // list's own length (see parseGlobal), not a declared last
+        // index - there isn't one to add 1 to here.
+        if (!stmt.initializers || stmt.initializers.length === 0) {
+          throw new Error(`GLOBAL array "${stmt.name}[]" with no declared size needs an initializer list to infer it from${this.locSuffix(stmt)}`);
+        }
+        sizeVal = stmt.initializers.length;
+      } else {
+        const declared = getConstantNumericValue(stmt.size);
+        if (declared === null || declared < 0 || !Number.isInteger(declared)) {
+          throw new Error(`GLOBAL array size must be a non-negative integer literal${this.locSuffix(stmt)}`);
+        }
+        // DIV declares arrays by their LAST INDEX, not their length, so
+        // "board[99]" holds 100 elements indexed 0..99 - which is why
+        // tutor6 initialises it with "100 dup (1)" and iterates 0 TO 99.
+        sizeVal = declared + 1;
       }
-      // DIV declares arrays by their LAST INDEX, not their length, so
-      // "board[99]" holds 100 elements indexed 0..99 - which is why
-      // tutor6 initialises it with "100 dup (1)" and iterates 0 TO 99.
-      const sizeVal = declared + 1;
       const base = this.nextGlobalSlot;
       this.nextGlobalSlot += sizeVal;
       this.globalMap.set(stmt.name, { isArray: true, base, size: sizeVal });
@@ -397,6 +525,23 @@ export class Compiler {
 
   // Allocates slots for a PRIVATE section. Shared by PROCESS bodies and
   // by MAIN, which in DIV is a process and may declare privates too.
+  // Emits the STORE_LOCAL for each value in a PRIVATE array's own
+  // initializer list ("PRIVATE control[3]=FALSE,FALSE,FALSE;" - same
+  // "value, value, N DUP(value)" syntax GLOBAL/STRUCT accept, via
+  // parsePrivate). Only the given values are written; a list shorter
+  // than the array leaves the remainder at their normal zero default
+  // (unlike GLOBAL, a local slot already reads 0 unless written, so
+  // there's no need to explicitly zero the rest here).
+  emitPrivateArrayInit(priv) {
+    const init = priv.initializers;
+    if (!init || init.length === 0) return;
+    const entry = this.localMap.get(priv.name);
+    for (let i = 0; i < init.length; i++) {
+      this.compileExpression(init[i]);
+      this.emit(OpCodes.STORE_LOCAL, entry.base + i);
+    }
+  }
+
   declarePrivates(privates) {
     for (const priv of privates || []) {
       if (this.localMap.has(priv.name)) continue;
@@ -444,7 +589,10 @@ export class Compiler {
 
     // Initialize private locals once when process starts.
     for (const priv of stmt.privates) {
-      if (priv.size !== undefined) continue; // arrays: uninitialized slots read as 0
+      if (priv.size !== undefined) {
+        this.emitPrivateArrayInit(priv);
+        continue;
+      }
       if (priv.value) {
         this.compileExpression(priv.value);
       } else {
@@ -965,6 +1113,16 @@ export class Compiler {
         this.compileExpression(stmt.value);
         this.emit(OpCodes.STORE_GLOBAL, entry);
       }
+      // Bare "timer = v" means timer[0] = v, same shorthand as the bare
+      // read in compileIdentifier - only reachable when nothing already
+      // declared "timer" as a real local/global (checked above), so a
+      // script using the name for its own variable is unaffected.
+      else if (name.toLowerCase() === 'timer') {
+        this.emit(OpCodes.LOAD_CONST, this.addConstant('timer'));
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(0));
+        this.compileExpression(stmt.value);
+        this.emit(OpCodes.CALL_NATIVE, '__set_path', 3);
+      }
       else {
         const idx = this.nextLocalSlot;
         this.nextLocalSlot += 1;
@@ -1072,32 +1230,7 @@ export class Compiler {
   compileIdentifier(expr) {
     const name = expr.name;
     const nameLower = name.toLowerCase(); // constants are case-insensitive
-
-    // Builtin constants available without GLOBAL declarations.
-    const builtinConstants = {
-      _left: 'ArrowLeft', _right: 'ArrowRight',
-      _up: 'ArrowUp',     _down: 'ArrowDown',
-      _space: ' ', _enter: 'Enter', _esc: 'Escape', _backspace: 'Backspace',
-      _tab: 'Tab', _shift: 'Shift', _ctrl: 'Control', _control: 'Control', _alt: 'Alt',
-      _fire: 'z',
-      _a: 'a', _b: 'b', _c: 'c', _d: 'd', _e: 'e', _f: 'f',
-      _g: 'g', _h: 'h', _i: 'i', _j: 'j', _k: 'k', _l: 'l',
-      _m: 'm', _n: 'n', _o: 'o', _p: 'p', _q: 'q', _r: 'r',
-      _s: 's', _t: 't', _u: 'u', _v: 'v', _w: 'w', _x: 'x',
-      _y: 'y', _z: 'z',
-      _0: '0', _1: '1', _2: '2', _3: '3', _4: '4',
-      _5: '5', _6: '6', _7: '7', _8: '8', _9: '9',
-      true: 1, false: 0,
-      c_screen: 0, c_scroll: 1, c_m7: 2,
-      s_kill: 0, s_wakeup: 1, s_sleep: 2, s_freeze: 3,
-      s_kill_tree: 100, s_wakeup_tree: 101, s_sleep_tree: 102, s_freeze_tree: 103,
-      // Classic DIV single-argument SET_MODE resolution constants - see
-      // VIDEO_MODE_TABLE in runtime.js's setModeNative for the decode.
-      // Negative so they can never collide with a legitimate width value
-      // passed to the (width, height) two-argument form this engine's own
-      // demos already use.
-      m320x200: -1, m640x480: -2
-    };
+    const builtinConstants = BUILTIN_CONSTANTS;
 
     // Check if local
     if (this.localMap.has(name)) {
@@ -1119,6 +1252,12 @@ export class Compiler {
     else if (Object.prototype.hasOwnProperty.call(builtinConstants, nameLower)) {
       this.emit(OpCodes.LOAD_CONST, this.addConstant(builtinConstants[nameLower]));
     }
+    // CONST block entries - resolved to a plain number back in
+    // compileConsts, case-sensitive like GLOBAL/LOCAL (unlike the
+    // builtins above, which the language treats case-insensitively).
+    else if (this.constMap.has(name)) {
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(this.constMap.get(name)));
+    }
     // Real DIV exposes FPS as a bare read-only global (current frame
     // rate), not a function call - rewritten into the get_fps native the
     // runtime already provides, same trick as mouse.x/mouse.left in
@@ -1127,6 +1266,33 @@ export class Compiler {
     // works normally.
     else if (nameLower === 'fps') {
       this.emit(OpCodes.CALL_NATIVE, 'get_fps', 0);
+    }
+    // Real DIV's "fading" is a bare read-only global too: 1 while a
+    // fade_on/fade_off/fade is in progress, back to 0 once it finishes
+    // (DIV manual: "the fading variable will automatically become equal
+    // to true (1)... and when it is finished, it will recover its
+    // original value, false (0)"). Same trick as fps - rewritten into
+    // the is_fading native the runtime already provides.
+    else if (nameLower === 'fading') {
+      this.emit(OpCodes.CALL_NATIVE, 'is_fading', 0);
+    }
+    // Real DIV's "scan_code" is a bare read-only global holding the scan
+    // code of the last key pressed this frame, or 0 if none was (DIV
+    // manual: "will be at 0 if no key has been pressed in the previous
+    // frame"). Rewritten into a native the runtime tracks per frame.
+    else if (nameLower === 'scan_code') {
+      this.emit(OpCodes.CALL_NATIVE, 'get_scan_code', 0);
+    }
+    // Bare "timer" (no index) means timer[0] - DIV manual: "if only one
+    // counter is needed, it is possible to use timer simply". The
+    // indexed form (timer[0], timer[9], ...) already works through the
+    // generic __get_path machinery once state.timer exists as an array
+    // (see ensureTimerState in runtime.js) - this just covers the
+    // no-index shorthand, which never reaches compilePathGet at all.
+    else if (nameLower === 'timer') {
+      this.emit(OpCodes.LOAD_CONST, this.addConstant('timer'));
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(0));
+      this.emit(OpCodes.CALL_NATIVE, '__get_path', 2);
     }
     // Bare FATHER/SON - DIV's relative-process references used as plain
     // values, e.g. "signal(son, s_kill_tree)". The "father.x" member form
@@ -1283,6 +1449,31 @@ export class Compiler {
 
     const name = expr.callee.name;
     const argc = expr.args.length;
+
+    // DIV's GET_POINT(file, graph, point, &x, &y) - the two trailing
+    // OFFSET args are out-parameters the native writes the point's x/y
+    // into directly (a different use of "&" than the OFFSET operator's
+    // usual WRITE-live-reference role, and the only real DIV out-param
+    // pattern this compiler needs: no other builtin uses it in the wild
+    // besides GET_POINT). No true by-reference native calling
+    // convention exists here, so this desugars to the equivalent pair
+    // of assignments using the get_point_x/get_point_y convenience
+    // natives instead of trying to pass a writable slot through
+    // CALL_NATIVE's plain by-value argument stack.
+    if (name.toLowerCase() === 'get_point' && argc === 5 &&
+      expr.args[3].type === 'offset_operator' && expr.args[4].type === 'offset_operator') {
+      const [fileArg, graphArg, pointArg, xOut, yOut] = expr.args;
+      this.compileAssignment(new ast.Assign(
+        new ast.Identifier(xOut.name),
+        new ast.Call(new ast.Identifier('get_point_x'), [fileArg, graphArg, pointArg])
+      ));
+      this.compileAssignment(new ast.Assign(
+        new ast.Identifier(yOut.name),
+        new ast.Call(new ast.Identifier('get_point_y'), [fileArg, graphArg, pointArg])
+      ));
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(0));
+      return;
+    }
 
     // Process/function arity is known at compile time (unlike natives,
     // which register themselves on the VM at runtime, after compilation

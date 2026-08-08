@@ -11,6 +11,7 @@ export const TokenType = {
   FUNCTION: 'FUNCTION',
   STRUCT: 'STRUCT',
   GLOBAL: 'GLOBAL',
+  CONST: 'CONST',
   PRIVATE: 'PRIVATE',
   VAR: 'VAR',
   BEGIN: 'BEGIN',
@@ -67,6 +68,7 @@ export const TokenType = {
   DOT: 'DOT',
   COMMA: 'COMMA',
   SEMICOLON: 'SEMICOLON',
+  COLON: 'COLON',
 
   // Special
   EOF: 'EOF'
@@ -89,6 +91,7 @@ const KEYWORDS = {
   'FUNCTION': TokenType.FUNCTION,
   'STRUCT': TokenType.STRUCT,
   'GLOBAL': TokenType.GLOBAL,
+  'CONST': TokenType.CONST,
   'PRIVATE': TokenType.PRIVATE,
   'VAR': TokenType.VAR,
   'BEGIN': TokenType.BEGIN,
@@ -273,10 +276,18 @@ export class Lexer {
     throw new Error(`Unterminated string at line ${startLine}, col ${startCol}`);
   }
 
-  // Read identifier or keyword
+  // Read identifier or keyword. Accepts any non-ASCII character too
+  // (code point >= 128), not just [a-zA-Z0-9_] - real DIV source from
+  // its DOS-era 8-bit charset era routinely has accented letters in
+  // identifiers (Spanish variable names being the common case: "ángulo"
+  // etc.), and DIV's own compiler never restricted names to ASCII.
+  isIdentifierChar(ch) {
+    return /[a-zA-Z0-9_]/.test(ch) || ch.charCodeAt(0) >= 128;
+  }
+
   readIdentifier() {
     let id = '';
-    while (this.current() && /[a-zA-Z0-9_]/.test(this.current())) {
+    while (this.current() && this.isIdentifierChar(this.current())) {
       id += this.advance();
     }
     return id;
@@ -318,7 +329,7 @@ export class Lexer {
       }
 
       // Identifier or keyword
-      if (/[a-zA-Z_]/.test(char)) {
+      if (/[a-zA-Z_]/.test(char) || char.charCodeAt(0) >= 128) {
         const id = this.readIdentifier();
         const keyword = KEYWORDS[id.toUpperCase()];
         if (keyword) {
@@ -353,6 +364,17 @@ export class Lexer {
         this.advance();
         this.advance();
         this.tokens.push(new Token(TokenType.LTE, '<=', line, col));
+        continue;
+      }
+
+      // Classic-DIV/Pascal "<>" spelling of not-equal, alongside "!=" -
+      // normalized to the same token value as "!=" so the parser/
+      // compiler (which dispatch on the operator string) don't need to
+      // know about the second spelling at all.
+      if (char === '<' && this.peek() === '>') {
+        this.advance();
+        this.advance();
+        this.tokens.push(new Token(TokenType.NEQ, '!=', line, col));
         continue;
       }
 
@@ -482,6 +504,12 @@ export class Lexer {
         case ';':
           this.advance();
           this.tokens.push(new Token(TokenType.SEMICOLON, ';', line, col));
+          break;
+        case ':':
+          // Classic-DIV "CASE n:" (colon-terminated case value, each
+          // body then closed with its own END) - see parseSwitch.
+          this.advance();
+          this.tokens.push(new Token(TokenType.COLON, ':', line, col));
           break;
         case '!':
           this.advance();

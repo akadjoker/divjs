@@ -83,6 +83,8 @@ export class CanvasEngineRuntime {
     this.nextTextId = 1; // ids handed out by write/write_int, for delete_text
 
     this.keys = {};
+    this._scanCode = 0;
+    this._scanCodePending = 0;
     this.drawCommands = [];
     this.currentColor = '#ffffff'; // DIV draws text white by default
     this.cameraX = 0;
@@ -102,7 +104,14 @@ export class CanvasEngineRuntime {
     this.state = {
       scroll: [],
       region: {},
-      graphs: {}
+      graphs: {},
+      // DIV's timer[] - a fixed 10-slot table (timer[0]..timer[9]),
+      // each counting milliseconds elapsed since it was last reset by
+      // assignment (see beginFrame's auto-increment and the bare
+      // "timer"/"timer[n]" handling in compiler.js). Read/write already
+      // routes through the generic __get_path/__set_path machinery
+      // (same as scroll[]) purely because this is a plain array here.
+      timer: new Array(10).fill(0)
     };
 
     this.bitmapFonts = new Map();
@@ -174,8 +183,36 @@ export class CanvasEngineRuntime {
     return graph;
   }
 
+  // DIV's standard PC-XT scan code table (DIV manual, "Key codes"),
+  // keyed the same way this.keys already is - by the JS KeyboardEvent
+  // "key" string set via setKeyState. Only covers the keys scripts
+  // actually reference by name; scan_code just needs to be a nonzero,
+  // DIV-accurate value for whichever one was last pressed.
+  static SCAN_CODES = {
+    Escape: 1,
+    '1': 2, '2': 3, '3': 4, '4': 5, '5': 6, '6': 7, '7': 8, '8': 9, '9': 10, '0': 11,
+    Backspace: 14, Tab: 15,
+    q: 16, w: 17, e: 18, r: 19, t: 20, y: 21, u: 22, i: 23, o: 24, p: 25,
+    Enter: 28, Control: 29,
+    a: 30, s: 31, d: 32, f: 33, g: 34, h: 35, j: 36, k: 37, l: 38,
+    Shift: 42,
+    z: 44, x: 45, c: 46, v: 47, b: 48, n: 49, m: 50,
+    Alt: 56, ' ': 57,
+    F1: 59, F2: 60, F3: 61, F4: 62, F5: 63, F6: 64, F7: 65, F8: 66, F9: 67, F10: 68,
+    Home: 71, ArrowUp: 72, PageUp: 73,
+    ArrowLeft: 75, ArrowRight: 77,
+    End: 79, ArrowDown: 80, PageDown: 81, Insert: 82, Delete: 83,
+    F11: 87, F12: 88
+  };
+
   setKeyState(key, isDown) {
     this.keys[key] = !!isDown;
+    if (isDown) {
+      const code = CanvasEngineRuntime.SCAN_CODES[key];
+      if (code !== undefined) {
+        this._scanCodePending = code;
+      }
+    }
   }
 
   clearKeyState() {
@@ -238,6 +275,21 @@ export class CanvasEngineRuntime {
     this.totalTime += dt;
     this.fpsAccumTime += dt;
     this.fpsAccumFrames += 1;
+
+    // DIV's timer[] counts milliseconds elapsed since each slot was last
+    // reset by assignment - advance every slot every frame.
+    const dtMs = dt * 1000;
+    const timers = this.state.timer;
+    for (let i = 0; i < timers.length; i++) {
+      timers[i] += dtMs;
+    }
+
+    // scan_code is transient - DIV manual: "will be at 0 if no key has
+    // been pressed in the previous frame" - so it must clear if this
+    // frame didn't see a fresh keydown, not stay latched like KEY()'s
+    // held-state check does.
+    this._scanCode = this._scanCodePending || 0;
+    this._scanCodePending = 0;
 
     if (this.fpsAccumTime >= 0.25) {
       this.fpsValue = this.fpsAccumFrames / this.fpsAccumTime;
@@ -440,9 +492,22 @@ export class CanvasEngineRuntime {
   // that matches a known mode constant (see the negative m320x200/
   // m640x480 entries in compiler.js's builtinConstants), decode it here;
   // otherwise fall back to the plain two-argument form.
+  // Every SET_MODE constant the DIV manual lists ("Establishes a new
+  // video mode... The allowed videomodes... are the following ones").
+  // Values match compiler.js's builtinConstants (m320x200/m640x480 kept
+  // at their original -1/-2 for backward compat with anything already
+  // relying on those two specific numbers).
   static VIDEO_MODE_TABLE = {
     '-1': [320, 200],
-    '-2': [640, 480]
+    '-2': [640, 480],
+    '-3': [320, 240],
+    '-4': [320, 400],
+    '-5': [360, 240],
+    '-6': [360, 360],
+    '-7': [376, 282],
+    '-8': [640, 400],
+    '-9': [800, 600],
+    '-10': [1024, 768]
   };
 
   setModeNative(width, height) {
@@ -721,6 +786,28 @@ export class CanvasEngineRuntime {
 
   fgetDistanceNative(x1, y1, x2, y2) {
     return this.distanceNative(x1, y1, x2, y2);
+  }
+
+  // GET_ANGLE(id) / GET_DIST(id): angle/distance from the CURRENT
+  // process to another process's position. DIV manual: "get_angle(id2)
+  // would be equivalent to fget_angle(x, y, id2.x, id2.y)" - x,y being
+  // the caller's own position.
+  getAngleNative(processId) {
+    const self = this.vm?.currentProcess;
+    const other = this.vm?.processManager?.get(Number(processId) || 0);
+    if (!self || !other) return 0;
+    return this.fgetAngleNative(self.x, self.y, other.x, other.y);
+  }
+
+  getDistNative(processId) {
+    const self = this.vm?.currentProcess;
+    const other = this.vm?.processManager?.get(Number(processId) || 0);
+    if (!self || !other) return 0;
+    return this.fgetDistanceNative(self.x, self.y, other.x, other.y);
+  }
+
+  getScanCodeNative() {
+    return this._scanCode || 0;
   }
 
   hermiteNative(fromValue, toValue, t) {
@@ -1274,6 +1361,19 @@ export class CanvasEngineRuntime {
       align: Number(align) || 0
     });
     return id;
+  }
+
+  // DIV's MOVE_TEXT(id, x, y) - repositions a text created by
+  // WRITE/WRITE_INT in place, same id write() itself returned. Used a
+  // lot for sliding-in menus/credits (a REPEAT loop nudging x/y and
+  // calling FRAME each step).
+  moveTextNative(textId, x, y) {
+    const id = Number(textId) || 0;
+    const cmd = this.drawCommands.find((c) => c.type === 'text' && c.id === id);
+    if (!cmd) return 0;
+    cmd.x = Number(x) || 0;
+    cmd.y = Number(y) || 0;
+    return 1;
   }
 
   // DIV's DELETE_TEXT(id) - removes a text created by WRITE/WRITE_INT.
@@ -2495,6 +2595,12 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('distance_rect', this.distanceRectNative.bind(this));
     this.vm.registerNative('fget_angle', this.fgetAngleNative.bind(this));
     this.vm.registerNative('fget_distance', this.fgetDistanceNative.bind(this));
+    // DIV's actual native name (f.c's fname[] table) - alias to the
+    // same implementation already registered as fget_distance above.
+    this.vm.registerNative('fget_dist', this.fgetDistanceNative.bind(this));
+    this.vm.registerNative('get_angle', this.getAngleNative.bind(this));
+    this.vm.registerNative('get_dist', this.getDistNative.bind(this));
+    this.vm.registerNative('get_scan_code', this.getScanCodeNative.bind(this));
     this.vm.registerNative('hermite', this.hermiteNative.bind(this));
     this.vm.registerNative('get_distx', this.getDistXNative.bind(this));
     this.vm.registerNative('get_disty', this.getDistYNative.bind(this));
@@ -2558,6 +2664,25 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('load_map', this.loadMapNative.bind(this));
     this.vm.registerNative('load_fpg', this.loadFpgNative.bind(this));
     this.vm.registerNative('load_fnt', this.loadFntNative.bind(this));
+    this.vm.registerNative('move_text', this.moveTextNative.bind(this));
+    // Dummy no-ops: real DIV natives with no implementation here yet.
+    // Registered so calling them is silent (returns 0) instead of
+    // spamming "Native function not found" - covers the actual usage
+    // seen porting coins.prg/pool.prg. sound is entirely unimplemented
+    // (no audio subsystem at all yet); load_pal/unload_fpg are no-ops
+    // because there's no separate palette/library-unload state to
+    // apply them to; map_get_pixel needs a palette-index pixel read on
+    // an arbitrary loaded graphic (see the pending get_pixel palette-
+    // index item) - real DIV games' collision-by-color-map logic (e.g.
+    // coins.prg's check_position) silently does nothing until that
+    // lands, same as it did unregistered.
+    this.vm.registerNative('load_pcm', () => 0);
+    this.vm.registerNative('sound', () => 0);
+    this.vm.registerNative('change_sound', () => 0);
+    this.vm.registerNative('stop_sound', () => 0);
+    this.vm.registerNative('load_pal', () => 0);
+    this.vm.registerNative('unload_fpg', () => 0);
+    this.vm.registerNative('map_get_pixel', () => 0);
     this.vm.registerNative('load_bdf_font', this.loadBdfFontNative.bind(this));
     this.vm.registerNative('load_bdf_font_text', this.loadBdfFontTextNative.bind(this));
     this.vm.registerNative('__get_path', this.getPathNative.bind(this));

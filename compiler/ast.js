@@ -1,7 +1,7 @@
 // AST node types
 
 export class Program {
-  constructor(name, globals, structs, processes, functions, mainBlock, mainPrivates = [], locals = []) {
+  constructor(name, globals, structs, processes, functions, mainBlock, mainPrivates = [], locals = [], consts = []) {
     this.type = 'program';
     this.name = name;
     this.globals = globals;
@@ -14,6 +14,10 @@ export class Program {
     this.mainPrivates = mainPrivates;
     // LOCAL section: fields every process gets its own copy of.
     this.locals = locals;
+    // CONST section: name=expr pairs resolved to plain numbers at
+    // compile time (see Compiler.compileConsts) - no runtime storage,
+    // must come before GLOBAL in source order per the DIV manual.
+    this.consts = consts;
   }
 }
 

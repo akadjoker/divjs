@@ -123,11 +123,14 @@ export class Parser {
     const mainBlock = [];
     const mainPrivates = [];
     const locals = [];
+    const consts = [];
 
     // Parse all top-level declarations
     while (!this.is(TokenType.EOF)) {
       const declToken = this.current();
-      if (this.is(TokenType.GLOBAL)) {
+      if (this.is(TokenType.CONST)) {
+        consts.push(...this.parseConst());
+      } else if (this.is(TokenType.GLOBAL)) {
         globals.push(...this.parseGlobal());
       } else if (this.is(TokenType.STRUCT)) {
         const s = this.parseStructDecl();
@@ -170,7 +173,7 @@ export class Parser {
       }
     }
 
-    return new ast.Program(name, globals, structs, processes, functions, mainBlock, mainPrivates, locals);
+    return new ast.Program(name, globals, structs, processes, functions, mainBlock, mainPrivates, locals, consts);
   }
 
   parseStructDecl() {
@@ -269,7 +272,13 @@ export class Parser {
         let size;
         let initializers = null;
         if (this.match(TokenType.LBRACKET)) {
-          size = this.parseExpression();
+          // "name[]= a,b,c;" - DIV lets the size come from the
+          // initializer list's own length instead of a declared last
+          // index (contrast "board[99] = 100 dup(1);", where 99 *is*
+          // the declared last index). null (not undefined) marks this
+          // for the compiler - undefined still means "no brackets at
+          // all", i.e. a plain scalar.
+          size = this.is(TokenType.RBRACKET) ? null : this.parseExpression();
           this.expect(TokenType.RBRACKET, 'Expected ] after array size');
           // An array may also carry an initializer list, using the same
           // "value, value, N DUP(value)" syntax STRUCT accepts -
@@ -295,6 +304,34 @@ export class Parser {
     }
 
     return globals;
+  }
+
+  // CONST section (must precede GLOBAL per the DIV manual): a block of
+  // "name=expr;" entries, one or more per line, no size/array form.
+  // Unlike GLOBAL these never get runtime storage - Compiler.compileConsts
+  // folds each expression to a plain number at compile time and every
+  // later reference to the name is replaced with that literal.
+  parseConst() {
+    this.pos++; // consume CONST
+
+    const consts = [];
+    while (this.isIdentifierLike(this.current())) {
+      do {
+        const declToken = this.current();
+        const name = this.readIdentifierLike('Expected const name');
+        this.expect(TokenType.EQUALS, `Expected = after const name "${name}"`);
+        const value = this.parseExpression();
+        consts.push({ name, value, line: declToken.line, col: declToken.col });
+      } while (this.match(TokenType.COMMA));
+
+      this.expect(TokenType.SEMICOLON, 'Expected ; after const declaration');
+    }
+
+    if (consts.length === 0) {
+      throw new Error(`Expected at least one name after CONST at ${this.current().line}:${this.current().col}`);
+    }
+
+    return consts;
   }
 
   // Parse function
@@ -362,13 +399,22 @@ export class Parser {
       const name = this.readIdentifierLike('Expected private name');
       let value = null;
       let size;
+      let initializers = null;
       if (this.match(TokenType.LBRACKET)) {
         size = this.parseExpression();
         this.expect(TokenType.RBRACKET, 'Expected ] after array size');
+        // An array may also carry an initializer list, same
+        // "value, value, N DUP(value)" syntax GLOBAL/STRUCT accept, e.g.
+        // "PRIVATE control[3]=FALSE,FALSE,FALSE;".
+        if (this.match(TokenType.EQUALS)) {
+          initializers = this.parseInitializerList();
+        }
       } else if (this.match(TokenType.EQUALS)) {
         value = this.parseExpression();
       }
-      decls.push(new ast.Private(name, value, size));
+      const decl = new ast.Private(name, value, size);
+      decl.initializers = initializers;
+      decls.push(decl);
     } while (this.match(TokenType.COMMA));
 
     this.expect(TokenType.SEMICOLON, 'Expected ; after PRIVATE');
@@ -583,6 +629,17 @@ export class Parser {
     this.expect(TokenType.LPAREN, 'Expected ( after SWITCH');
     const subject = this.parseExpression();
     this.expect(TokenType.RPAREN, 'Expected ) after SWITCH subject');
+    // Classic DIV allows an optional ; right after the subject, same as
+    // PROCESS/FUNCTION headers ("SWITCH (program_state);").
+    this.match(TokenType.SEMICOLON);
+
+    // Two DIV-family CASE styles, both accepted: the terse one ("case 1"
+    // ... falls straight into the next CASE/DEFAULT/END with no colon or
+    // per-case terminator) and the classic one ("CASE 1: ... END", each
+    // arm explicitly closed, matching an IF/LOOP/etc body). Detected via
+    // the colon - once a switch commits to one style (its first CASE),
+    // every arm including DEFAULT follows the same convention.
+    let colonStyle = false;
 
     const cases = [];
     while (this.match(TokenType.CASE)) {
@@ -590,7 +647,13 @@ export class Parser {
       while (this.match(TokenType.COMMA)) {
         values.push(this.parseExpression());
       }
+      if (this.match(TokenType.COLON)) {
+        colonStyle = true;
+      }
       const body = new ast.Block(this.parseBlockStatements());
+      if (colonStyle) {
+        this.expect(TokenType.END, 'Expected END after CASE body');
+      }
       cases.push({ values, body });
     }
 
@@ -600,7 +663,11 @@ export class Parser {
 
     let defaultBody = null;
     if (this.match(TokenType.DEFAULT)) {
+      this.match(TokenType.COLON);
       defaultBody = new ast.Block(this.parseBlockStatements());
+      if (colonStyle) {
+        this.expect(TokenType.END, 'Expected END after DEFAULT body');
+      }
     }
 
     this.expect(TokenType.END, 'Expected END after SWITCH');
@@ -856,6 +923,23 @@ export class Parser {
       const operator = this.previous().type === TokenType.NOT ? '!' : this.previous().value;
       const right = this.parseUnary();
       return new ast.Unary(operator, right);
+    }
+
+    // Prefix ++/--, e.g. "score = ++score % 3;", "IF (++score1 == n)" -
+    // increments the target *then* evaluates to its new value, unlike
+    // postfix ++/-- (parsePostfix/statement position), which is only
+    // ever a bare statement desugared to "target = target +- 1" with no
+    // value at all. Desugars to the same "target = target +- 1" shape,
+    // compiled as an assignment-expression (compileExpression's 'assign'
+    // case) so it correctly yields the post-increment value.
+    if (this.is(TokenType.INCREMENT) || this.is(TokenType.DECREMENT)) {
+      const isIncrement = this.is(TokenType.INCREMENT);
+      this.pos++;
+      const target = this.parseUnary();
+      if (target.type !== 'identifier' && target.type !== 'member_access' && target.type !== 'index_access') {
+        throw new Error(`Prefix ${isIncrement ? '++' : '--'} needs a variable, not ${target.type} at ${this.current().line}:${this.current().col}`);
+      }
+      return new ast.Assign(target, new ast.Binary(target, isIncrement ? '+' : '-', new ast.Number(1)));
     }
 
     return this.parsePostfix();
