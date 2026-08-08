@@ -58,8 +58,8 @@ LOCAL
     incr_y;         
 
 PRIVATE
-    �angle2=0;      
-    inc_�angle2=0;
+    angle2=0;      
+    inc_angle2=0;
 
     option=0;       
     options[2];    
@@ -86,7 +86,7 @@ BEGIN
 
     LOOP
         
-        load_pal("fpg/b_menu.fpg");
+ 
         put_screen(1,1);    
 
         
@@ -101,7 +101,7 @@ BEGIN
         graph=2;
 
         
-        y=342; incr_y=0; �angle2=0;
+        y=342; incr_y=0; angle2=0;
         option=0;
 
         fade_on();  
@@ -144,31 +144,31 @@ BEGIN
                 ELSE
                     IF ((key(_down) OR mouse.y>complete_y) AND y<410)   
                         incr_y=y+17;
-                        �angle2=pi/2;
-                        inc_�angle2=-pi/8;
+                        angle2=pi/2;
+                        inc_angle2=-pi/8;
                     END
                     IF ((key(_up) OR mouse.y<complete_y)  AND y>342)     
                         incr_y=y-17;
-                        �angle2=-pi/2;
-                        inc_�angle2=pi/8;
+                        angle2=-pi/2;
+                        inc_angle2=pi/8;
                     END
                 END
             END
 
-            IF (inc_�angle2<>0)       
-                �angle2+=inc_�angle2;
-                y=incr_y+get_disty(�angle2,17);
-                IF (inc_�angle2<0)
-                    IF (�angle2<-pi/2)
+            IF (inc_angle2<>0)       
+                angle2+=inc_angle2;
+                y=incr_y+get_disty(angle2,17);
+                IF (inc_angle2<0)
+                    IF (angle2<-pi/2)
                         y=incr_y+17;
                         incr_y=0;
-                        inc_�angle2=0;
+                        inc_angle2=0;
                     END
                 ELSE
-                    IF (�angle2>pi/2)
+                    IF (angle2>pi/2)
                         y=incr_y-17;
                         incr_y=0;
-                        inc_�angle2=0;
+                        inc_angle2=0;
                     END
                 END
             END
@@ -301,8 +301,7 @@ BEGIN
 END
 
 
-
-
+ 
 
 
 PROCESS ball(graph,x,y);
@@ -523,7 +522,7 @@ PRIVATE
     real_y_mousepos;
     force;             
     distance;          
-    �angle_res;         
+    angle_res;         
 
 BEGIN
     shade(7);      
@@ -592,9 +591,9 @@ BEGIN
 
             
             IF (distance>22)
-                �angle_res=fget_angle(pos_touches_x,pos_touches_y,id_effects.x,id_effects.y);
-                id_effects.x=pos_touches_x+get_distx(�angle_res,22);
-                id_effects.y=pos_touches_y+get_disty(�angle_res,22);
+                angle_res=fget_angle(pos_touches_x,pos_touches_y,id_effects.x,id_effects.y);
+                id_effects.x=pos_touches_x+get_distx(angle_res,22);
+                id_effects.y=pos_touches_y+get_disty(angle_res,22);
             END
 
             

@@ -275,6 +275,10 @@ export class CanvasEngineRuntime {
     this.totalTime += dt;
     this.fpsAccumTime += dt;
     this.fpsAccumFrames += 1;
+    // GET_ID's per-(caller,type) iteration cursor resets "until the next
+    // FRAME statement is executed" (DIV manual) - approximated by
+    // resetting once per real engine tick (see getIdNative).
+    this._frameGeneration = (this._frameGeneration || 0) + 1;
 
     // DIV's timer[] counts milliseconds elapsed since each slot was last
     // reset by assignment - advance every slot every frame.
@@ -808,6 +812,52 @@ export class CanvasEngineRuntime {
 
   getScanCodeNative() {
     return this._scanCode || 0;
+  }
+
+  // GET_ID(type) - DIV manual: "checks to see if there are any
+  // processes of the specified type. If any are found, ... returns the
+  // identifier code of the first occurrence... If there are more
+  // processes of the specified type, ... will return the next
+  // identifier code for each successive call [without a FRAME in
+  // between]... get_id(0) [is] the div_main identifier."
+  //
+  // A very common idiom this is missing entirely broke badly: scripts
+  // use "NOT get_id(TYPE x)" as an existence check ("is there no
+  // process of type x right now?"). An unregistered native silently
+  // returns 0 every time, so "NOT get_id(...)" was always true - firing
+  // logic that's meant to run once (a turn switch, spawning the next
+  // process in a sequence) on *every single tick* instead. Confirmed
+  // exactly this in pool.prg's turn-switch/spawn-next-cue check.
+  //
+  // The iteration cursor (successive calls without an intervening FRAME
+  // advance through every match) resets whenever the calling process or
+  // the queried type changes from the immediately preceding call, OR a
+  // real engine tick has passed since (this._frameGeneration, bumped
+  // once per beginFrame() - approximates "resets... until the next
+  // FRAME statement", since every process's own FRAME happens at most
+  // once per real tick). Without the generation check, the overwhelmingly
+  // common "call get_id(TYPE x) once per tick from the same process" idiom
+  // (an existence check, not an iteration) would advance the cursor every
+  // tick and start returning 0 forever after the first call, which is
+  // exactly backwards.
+  getIdNative(typeCode) {
+    const type = Number(typeCode) || 0;
+    if (type === 0) {
+      return this.vm?.mainProcess?.id || 0;
+    }
+    const callerId = this.vm?.currentProcess?.id ?? 'main';
+    const generation = this._frameGeneration || 0;
+    const cursor = this._getIdCursor;
+    if (!cursor || cursor.callerId !== callerId || cursor.type !== type || cursor.generation !== generation) {
+      this._getIdCursor = { callerId, type, generation, index: 0 };
+    }
+    const ids = this.vm?.processManager ? [...(this.vm.processManager.byType.get(type) || [])] : [];
+    if (this._getIdCursor.index >= ids.length) {
+      return 0;
+    }
+    const id = ids[this._getIdCursor.index];
+    this._getIdCursor.index += 1;
+    return id || 0;
   }
 
   hermiteNative(fromValue, toValue, t) {
@@ -2601,6 +2651,7 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('get_angle', this.getAngleNative.bind(this));
     this.vm.registerNative('get_dist', this.getDistNative.bind(this));
     this.vm.registerNative('get_scan_code', this.getScanCodeNative.bind(this));
+    this.vm.registerNative('get_id', this.getIdNative.bind(this));
     this.vm.registerNative('hermite', this.hermiteNative.bind(this));
     this.vm.registerNative('get_distx', this.getDistXNative.bind(this));
     this.vm.registerNative('get_disty', this.getDistYNative.bind(this));
