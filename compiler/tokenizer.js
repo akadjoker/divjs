@@ -12,6 +12,7 @@ export const TokenType = {
   STRUCT: 'STRUCT',
   GLOBAL: 'GLOBAL',
   CONST: 'CONST',
+  CLONE: 'CLONE',
   PRIVATE: 'PRIVATE',
   VAR: 'VAR',
   BEGIN: 'BEGIN',
@@ -92,6 +93,7 @@ const KEYWORDS = {
   'STRUCT': TokenType.STRUCT,
   'GLOBAL': TokenType.GLOBAL,
   'CONST': TokenType.CONST,
+  'CLONE': TokenType.CLONE,
   'PRIVATE': TokenType.PRIVATE,
   'VAR': TokenType.VAR,
   'BEGIN': TokenType.BEGIN,
@@ -357,6 +359,16 @@ export class Lexer {
         this.advance();
         this.advance();
         this.tokens.push(new Token(TokenType.NEQ, '!=', line, col));
+        continue;
+      }
+
+      // "=>" as a reversed spelling of ">=" - seen in the wild in real
+      // DIV source (helioball's heliobal.prg: "lasty=>400"), so real
+      // DIV's own tokenizer tolerates the character order swapped.
+      if (char === '=' && this.peek() === '>') {
+        this.advance();
+        this.advance();
+        this.tokens.push(new Token(TokenType.GTE, '>=', line, col));
         continue;
       }
 

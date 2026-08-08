@@ -546,12 +546,22 @@ export class Compiler {
     for (const priv of privates || []) {
       if (this.localMap.has(priv.name)) continue;
       if (priv.size !== undefined) {
-        const declared = getConstantNumericValue(priv.size);
-        if (declared === null || declared < 0 || !Number.isInteger(declared)) {
-          throw new Error(`PRIVATE array size must be a non-negative integer literal${this.locSuffix(priv)}`);
+        let sizeVal;
+        if (priv.size === null) {
+          // "name[]=a,b,c;" - size comes straight from the initializer
+          // list's own length, same as GLOBAL (see compileGlobal).
+          if (!priv.initializers || priv.initializers.length === 0) {
+            throw new Error(`PRIVATE array "${priv.name}[]" with no declared size needs an initializer list to infer it from${this.locSuffix(priv)}`);
+          }
+          sizeVal = priv.initializers.length;
+        } else {
+          const declared = getConstantNumericValue(priv.size);
+          if (declared === null || declared < 0 || !Number.isInteger(declared)) {
+            throw new Error(`PRIVATE array size must be a non-negative integer literal${this.locSuffix(priv)}`);
+          }
+          // Last index, not length - same as GLOBAL above.
+          sizeVal = declared + 1;
         }
-        // Last index, not length - same as GLOBAL above.
-        const sizeVal = declared + 1;
         this.localMap.set(priv.name, { isArray: true, base: this.nextLocalSlot, size: sizeVal });
         this.nextLocalSlot += sizeVal;
       } else {
@@ -660,6 +670,10 @@ export class Compiler {
 
       case 'loop':
         this.compileLoop(stmt);
+        break;
+
+      case 'clone':
+        this.compileClone(stmt);
         break;
 
       case 'frame':
@@ -1075,6 +1089,21 @@ export class Compiler {
     const loopEnd = this.instructions.length;
     this.patchLoopJumps(loopCtx, loopStart, loopEnd);
     this.endLoopContext();
+  }
+
+  // CLONE ... END - duplicates the current process (see the CLONE
+  // opcode's handling in vm.js). The block compiles as ordinary
+  // statements right after the opcode; only the *new* clone ever
+  // executes them (vm.js keeps running from ip+1 as the clone), while
+  // the *original* process jumps straight to the operand address,
+  // skipping the block entirely.
+  compileClone(stmt) {
+    this.emit(OpCodes.CLONE, 0);
+    const cloneInstr = this.instructions.length - 1;
+
+    this.compileBlock(stmt.body);
+
+    this.instructions[cloneInstr].operands[0] = this.instructions.length;
   }
 
   // Compile var

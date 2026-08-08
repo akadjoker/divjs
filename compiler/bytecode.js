@@ -56,6 +56,9 @@ export const OpCodes = {
   // Process
   SPAWN_PROCESS: 0x70, // Spawn new process
   FRAME: 0x71,       // Frame yield
+  CLONE: 0x72,       // Duplicate the current process; operand = address
+                      // for the ORIGINAL to jump to (skips the block,
+                      // which only the new clone executes)
   
   // Constants
   LOAD_CONST: 0x80,  // Load constant from pool

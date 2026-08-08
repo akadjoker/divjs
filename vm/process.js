@@ -749,6 +749,31 @@ export class ProcessManager {
     return process;
   }
 
+  // DIV's CLONE statement (vm.js's CLONE opcode): an exact duplicate of
+  // `source` - same name/type (so TYPE checks and collision() still
+  // treat it identically), same locals (position, size, graph, color,
+  // priority, ...), same collision shape/cboxes. Gets its own id (via
+  // the normal create() pipeline) and `source` as its parent, matching
+  // a clone being spawned by the process that cloned itself.
+  duplicate(source, extraParams = {}) {
+    const clone = this.create(source.name, {
+      parentId: source.id,
+      collisionShape: source.collisionShape,
+      collisionRadius: source.collisionRadius,
+      collisionScale: source.collisionScale,
+      ...extraParams
+    });
+    clone.locals = [...source.locals];
+    clone.cboxes = source.cboxes.map((c) => ({ ...c }));
+    clone.frameValue = source.frameValue;
+    // Re-derive canonical fields (x/y/graph/...) from the copied locals,
+    // and this also overwrites locals[5] back to the clone's own id -
+    // create() already set it once, but the locals array got replaced
+    // wholesale right after with source's own (stale) copy.
+    clone.sync();
+    return clone;
+  }
+
   // Get process by ID - O(1) via byId, kept in sync in create()/sweep().
   get(id) {
     if (id === 0) return null; // 0 = null

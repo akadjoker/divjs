@@ -401,7 +401,10 @@ export class Parser {
       let size;
       let initializers = null;
       if (this.match(TokenType.LBRACKET)) {
-        size = this.parseExpression();
+        // "name[]=a,b,c;" - size inferred from the initializer list's own
+        // length instead of a declared last index, same as GLOBAL (see
+        // parseGlobal) - null (not undefined) marks this for the compiler.
+        size = this.is(TokenType.RBRACKET) ? null : this.parseExpression();
         this.expect(TokenType.RBRACKET, 'Expected ] after array size');
         // An array may also carry an initializer list, same
         // "value, value, N DUP(value)" syntax GLOBAL/STRUCT accept, e.g.
@@ -528,6 +531,12 @@ export class Parser {
     // Loop
     if (this.match(TokenType.LOOP)) {
       return this.parseLoop();
+    }
+
+    // CLONE ... END - duplicates the current process; the block only
+    // runs in the new clone, the original resumes right after END.
+    if (this.match(TokenType.CLONE)) {
+      return new ast.Clone(this.parseBlock());
     }
 
     // Frame

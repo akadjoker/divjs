@@ -910,6 +910,49 @@ export class VM {
         break;
       }
 
+      case OpCodes.CLONE: {
+        // DIV's CLONE ... END: duplicates the currently-running process;
+        // the block between CLONE and END is code only the *new* clone
+        // executes (falling through afterward into whatever code follows
+        // the whole CLONE...END, shared with the original) - the
+        // original itself skips the block entirely, jumping straight to
+        // the operand address compileClone() patched to right after END.
+        if (!this.currentProcess) {
+          // No process context to duplicate (shouldn't happen - CLONE is
+          // only ever compiled inside a process/MAIN body) - degrade to
+          // just skipping the block.
+          this.ip = operands[0];
+          break;
+        }
+
+        const clone = this.processManager.duplicate(this.currentProcess);
+        clone.ip = this.ip + 1; // right after this CLONE opcode: start of the block
+        clone.stack = [];
+        clone.callStack = [];
+
+        // Same reasoning as SPAWN_PROCESS above: run the clone's own
+        // block immediately, up to its first FRAME, so it has its actual
+        // state (graph/x/y/...) set before the next real frame renders
+        // instead of showing default/stale values for one frame.
+        const savedProcess = this.currentProcess;
+        const savedStack = this.stack;
+        const savedLocals = this.locals;
+        const savedCallStack = this.callStack;
+        const savedFrameYield = this.frameYield;
+
+        this.runProcess(clone);
+
+        this.currentProcess = savedProcess;
+        this.stack = savedStack;
+        this.locals = savedLocals;
+        this.callStack = savedCallStack;
+        this.frameYield = savedFrameYield;
+        // The original does NOT resume at savedIp+1 like a normal
+        // instruction - it skips the whole block, per the operand.
+        this.ip = operands[0];
+        break;
+      }
+
       case OpCodes.FRAME:
         if (operands[0] === 1) {
           this.frameValue = Number(this.pop()) || 0;

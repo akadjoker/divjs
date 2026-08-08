@@ -135,6 +135,13 @@ export class Loop {
   }
 }
 
+export class Clone {
+  constructor(body) {
+    this.type = 'clone';
+    this.body = body;
+  }
+}
+
 export class Var {
   constructor(name, value) {
     this.type = 'var';
