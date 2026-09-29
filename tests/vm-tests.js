@@ -1,6 +1,5 @@
 // VM / process-manager regression tests. DIV semantics are taken from
-// the DIV Games Studio 2 manual; the line numbers cited are from its OCR
-// text (dgs2.txt).
+// the DIV Games Studio 2 manual.
 
 import { Lexer } from '../compiler/tokenizer.js';
 import { Parser } from '../parser/parser.js';
@@ -107,7 +106,7 @@ END`);
 }
 
 // Signals reach MAIN like any other process (MAIN is the initial
-// process, dgs2 8872-8874).
+// process).
 async function testSignalsToMain()
 {
   for (const sig of ['s_kill', 's_sleep', 's_freeze'])
@@ -155,7 +154,7 @@ END`);
 }
 
 // Asleep: not executed, not drawn, not collidable; frozen: not
-// executed but still drawn and collidable (dgs2 8919-8930, 10683-10692).
+// executed but still drawn and collidable.
 async function testSleepVersusFreeze()
 {
   const { vm, runtime } = setup(`PROGRAM t;
@@ -217,9 +216,9 @@ END`);
   assert(all.filter((p) => p.name === 'filler').length === 120, 'signal(TYPE a, s_kill) nao devia matar nenhum filler');
 }
 
-// SON is the last process created (dgs2 12860-12867), BIGBRO the
-// one the father created just before, SMALLBRO the one just after
-// (dgs2 12396-12411, 12841-12853); links stay right when one dies.
+// SON is the last process created, BIGBRO the
+// one the father created just before, SMALLBRO the one just after;
+// links stay right when one dies.
 async function testSonBigbroSmallbro()
 {
   const { vm, logs } = setup(`PROGRAM t;
@@ -442,7 +441,7 @@ END`);
 }
 
 // let_me_alone() kills every process but the caller - MAIN included when
-// another process calls it (dgs2 9851-9853, 10757-10759).
+// another process calls it.
 async function testLetMeAloneFromChildKillsMain()
 {
   const { vm } = setup(`PROGRAM t;
@@ -461,8 +460,7 @@ END`);
 }
 
 // Pinned manual behaviour (not changed): a self-kill takes effect at the
-// next FRAME (dgs2 10703-10708), and orphans escape tree signals
-// (dgs2 10713-10718).
+// next FRAME, and orphans escape tree signals.
 async function testSelfKillAndOrphansFollowManual()
 {
   const { vm, logs } = setup(`PROGRAM t;

@@ -368,7 +368,7 @@ Constants: waveforms `wave_square`, `wave_triangle`, `wave_saw`,
 | Function | Arguments | Returns | Description |
 |---|---|---|---|
 | `load_wav` | `path` | sound | Loads a sound file the browser can decode (WAV, OGG, MP3), from the project files or a URL. The frame waits for it, like graphics. |
-| `load_pcm` | `path` | sound | DIV's name, same as `load_wav`. DIV's own `.pcm` format is **not** read yet (we have no sample file or description of it): convert such sounds to WAV. |
+| `load_pcm` | `path` | sound | DIV's name, same as `load_wav`. DIV's own `.pcm` format is **not** read yet: convert such sounds to WAV. |
 | `sfx` | `effect[, seed]` | sound | A ready-made effect (`sfx_coin`...); `seed` gives a variation. The same arguments give the same sound (no new sound per call). |
 | `sfx_tone` | `wave, freq, freq_end, ms[, volume]` | sound | A tone of `ms` milliseconds sliding from `freq` to `freq_end` Hz; `volume` 0-100 (default 50). |
 | `sound` | `sound[, volume, frequency]` | channel | Plays a sound, DIV style: `volume` and `frequency` 256 = as recorded (frequency 512 is an octave up and twice as fast). |

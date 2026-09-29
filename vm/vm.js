@@ -216,7 +216,7 @@ export class VM {
     const procCount = procs.length;
 
     // Run MAIN script first (can spawn processes). MAIN is a process like
-    // any other in DIV (the "initial process", dgs2 8872-8874), so the
+    // any other in DIV (the "initial process"), so the
     // signals and FRAME(n) that govern every process govern it too - they
     // used to be ignored: s_kill left MAIN running unseen after its
     // Process was swept, s_sleep/s_freeze did not stop it, and FRAME(300)
@@ -352,20 +352,12 @@ export class VM {
     this.frameYield = false;
     this.callStack = this.mainCallStack;
 
-    // How many consecutive ticks MAIN has run entirely out of budget
-    // without reaching FRAME or finishing. A single instance of this is
-    // not necessarily a bug - a MAIN-level FOR loop spawning several
-    // thousand processes in one logical "tick" can legitimately need
-    // more than 100,000 instructions to finish, and there was previously
-    // no way to express "give me a bit more time" other than the author
-    // manually inserting FRAME calls mid-loop. See BUGS.md #1 for the
-    // exact repro this was written against: requesting 5,000+ processes
-    // in one MAIN-level spawn loop used to silently cap at ~3,225 and
-    // permanently stop MAIN forever, with only a console.error as any
-    // trace. A GENUINE infinite loop that never reaches FRAME no matter
-    // how many extra ticks it gets is still exactly what this guard
-    // exists to catch - MAIN_MAX_CONSECUTIVE_BUDGET_EXHAUSTIONS below is
-    // the line between "needs a few more ticks" and "actually stuck".
+    // How many ticks in a row MAIN has run out of budget without reaching
+    // FRAME or finishing. Once is fine - a MAIN-level loop spawning
+    // thousands of processes can need more than 100,000 instructions - so
+    // MAIN resumes where it left off on the next tick. Only a loop still
+    // stuck after MAX_CONSECUTIVE_BUDGET_EXHAUSTIONS ticks is treated as
+    // an infinite loop and stops MAIN.
     const MAX_CONSECUTIVE_BUDGET_EXHAUSTIONS = 5;
 
     let budget = 100000;
