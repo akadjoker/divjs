@@ -18,6 +18,13 @@ PROGRAM bubbles;
 // integer-free arithmetic in 8 pixel steps shared by the aim line and the
 // real shot, so the dotted line always shows exactly where the bubble lands.
 // Every graphic is drawn at start-up with gfx_* circles and lines.
+//
+// Sound is made by the engine (sfx, sfx_tone, song_*): shots, wall
+// bounces, bubbles sticking, pops that climb in pitch along a group,
+// falling bubbles with a bonus chime, specials, the ceiling's warning
+// rumble and crash, garbage. Music: a title tune, a puzzle tune, a VS
+// tune, a tense one when the bubbles near the line, and jingles for a
+// cleared round, a lost one and a VS result. M turns the music on and off.
 
 GLOBAL
   // ---- geometry: cell centre = (fx + 16 + c*32 + (r%2)*16, FY + 16 + (r + drop)*28)
@@ -51,6 +58,13 @@ GLOBAL
   fe_m[47]; fe_x[47]; fe_y[47]; fe_vx[47]; fe_vy[47]; fe_c[47]; fe_d[47]; fe_t[47]; fe_next = 0;
   pa_t[159]; pa_x[159]; pa_y[159]; pa_vx[159]; pa_vy[159]; pa_c[159]; pa_next = 0;
   ft_t[5]; ft_x[5]; ft_y[5]; ft_s[5]; ft_next = 0;
+  // ---- sound: effects, songs, a frame counter for rate limits and the
+  // rising pitch of the pops of one shot
+  s_shoot = 0; s_bounce = 0; s_stick = 0; s_pop[2]; s_drop = 0; s_bonus = 0; s_special = 0;
+  s_bomb = 0; s_rainbow = 0; s_swap = 0; s_warn = 0; s_ceil = 0; s_crash = 0; s_garb = 0;
+  s_lose = 0; s_menu = 0; s_ok = 0; s_ready = 0; s_go = 0;
+  m_title = 0; m_play = 0; m_vs = 0; m_danger = 0; m_clear = 0; m_over = 0;
+  music_on = 1; cur_song = 0; danger = 0; snd_fr = 0; snd_pop_t = -1; snd_pop_k = 0; snd_garb_t = -1;
 
 // =====================================================================
 // Small helpers and the hex grid
@@ -315,6 +329,11 @@ BEGIN
         IF (fe_d[i] >= 0)                       // burst of particles once
           fe_d[i] = -fe_d[i] - 0.001; fe_t[i] = -fe_d[i];
           FOR k = 1 TO 6 particle(x, y, fe_c[i]); END
+          IF (snd_pop_t != snd_fr)                // pop! one a frame, each a bit higher
+            snd_pop_t = snd_fr;
+            play_sound(s_pop[snd_pop_k % 3], 55, imin(92 + snd_pop_k * 7, 230), (x - 320) / 3);
+            snd_pop_k++;
+          END
         END
         IF (alpha <= 0) fe_m[i] = 0; graph = 0; END
       END
@@ -352,6 +371,131 @@ BEGIN
 END
 
 // =====================================================================
+// Sound: effects and songs made by the engine
+// =====================================================================
+
+FUNCTION make_sounds();
+PRIVATE i;
+BEGIN
+  s_shoot = sfx_tone(wave_square, 480, 920, 85, 30);
+  s_bounce = sfx_tone(wave_triangle, 1250, 900, 40, 35);
+  s_stick = sfx_tone(wave_sine, 320, 170, 80, 55);
+  FOR i = 0 TO 2 s_pop[i] = sfx_tone(wave_sine, 780 + i * 110, 1500 + i * 160, 70, 46); END
+  s_drop = sfx_tone(wave_sine, 1300, 280, 520, 34);
+  s_bonus = sfx(sfx_coin, 4);
+  s_special = sfx(sfx_powerup, 5);
+  s_bomb = sfx(sfx_explosion, 2);
+  s_rainbow = sfx_tone(wave_triangle, 400, 1650, 360, 36);
+  s_swap = sfx_tone(wave_sine, 600, 900, 70, 38);
+  s_warn = sfx_tone(wave_noise, 220, 70, 320, 40);
+  s_ceil = sfx_tone(wave_sine, 130, 40, 320, 70);
+  s_crash = sfx(sfx_hit, 7);
+  s_garb = sfx_tone(wave_square, 210, 520, 60, 24);
+  s_lose = sfx_tone(wave_square, 720, 60, 900, 36);
+  s_menu = sfx_tone(wave_square, 520, 640, 45, 28);
+  s_ok = sfx(sfx_coin, 1);
+  s_ready = sfx_tone(wave_triangle, 440, 440, 160, 50);
+  s_go = sfx_tone(wave_triangle, 880, 880, 300, 50);
+  RETURN 0;
+END
+
+FUNCTION make_songs();
+BEGIN
+  // Title: a happy dino tune in G
+  m_title = song_new(120);
+  song_track(m_title, inst_square,
+    "G5 . D5 . B4 . D5 . | G5 . A5 . B5 - . . | C6 . B5 . A5 . G5 . | A5 - - . D5 - - . |" +
+    "G5 . D5 . B4 . D5 . | G5 . A5 . B5 - . . | C6 . A5 . F#5 . A5 . | G5 - - - . . . . ", 28);
+  song_track(m_title, inst_bass,
+    "G3 . . G3 D4 . . . | G3 . . G3 D4 . . . | C4 . . C4 G3 . . . | D4 . . D4 A3 . . . |" +
+    "G3 . . G3 D4 . . . | E3 . . E3 B3 . . . | D4 . . D4 A3 . . . | G3 . D4 . G3 . . . ", 50);
+  song_track(m_title, inst_drums, "k . h . s . h . | k . h . s . h h ", 30);
+
+  // Puzzle: plucked arpeggios in D minor
+  m_play = song_new(132);
+  song_track(m_play, inst_pluck,
+    "D5 . F5 . A5 . F5 . | C5 . E5 . G5 . E5 . | Bb4 . D5 . F5 . D5 . | A4 . C#5 . E5 . A5 . |" +
+    "D5 . F5 . A5 . D6 . | C6 . A5 . G5 . E5 . | F5 . D5 . E5 . C#5 . | D5 - - - . . . . ", 32);
+  song_track(m_play, inst_bass,
+    "D3 . . . D4 . . . | C3 . . . C4 . . . | Bb2 . . . Bb3 . . . | A2 . . . A3 . . . |" +
+    "D3 . . . D4 . . . | C3 . . . C4 . . . | Bb2 . . . A2 . . . | D3 . . . D4 . . . ", 50);
+  song_track(m_play, inst_pad,
+    "F4 - - - - - - - | E4 - - - - - - - | D4 - - - - - - - | C#4 - - - - - - - |" +
+    "F4 - - - - - - - | E4 - - - - - - - | D4 - - - - - - - | F4 - - - - - - - ", 12);
+  song_track(m_play, inst_drums, "k . . h s . . h | k . h . s . . h ", 28);
+
+  // VS CPU: energetic, in E minor
+  m_vs = song_new(150);
+  song_track(m_vs, inst_square,
+    "E5 . E5 G5 . E5 B5 . | A5 . G5 . F#5 . D5 . | E5 . E5 G5 . E5 B5 . | D6 . B5 . A5 . F#5 . ", 26);
+  song_track(m_vs, inst_bass,
+    "E3 E4 . E3 E4 . E3 E4 | D3 D4 . D3 D4 . D3 D4 | C3 C4 . C3 C4 . C3 C4 | B2 B3 . B2 B3 . B2 B3 ", 54);
+  song_track(m_vs, inst_drums, "k . h k s . h . | k . h k s . h s ", 36);
+
+  // Danger: the bubbles are near the line
+  m_danger = song_new(172);
+  song_track(m_danger, inst_square, "B4 C5 B4 . B4 C5 B4 . | B4 C5 D5 . C5 . B4 . ", 26);
+  song_track(m_danger, inst_bass, "E3 . E3 . E3 . E3 . | F3 . F3 . F3 . F3 . ", 56);
+  song_track(m_danger, inst_drums, "k h s h k h s h | k h s h k s s s ", 38);
+
+  // Jingles (played once)
+  m_clear = song_new(150);
+  song_track(m_clear, inst_square, "G5 B5 D6 G6 - . D6 G6 - - - - . . . . ", 32);
+  song_track(m_clear, inst_bass, "G3 . . . D4 . . . G3 - - - . . . . ", 50);
+  song_track(m_clear, inst_drums, "k . h . s . h . k . . . . . . . ", 34);
+  m_over = song_new(100);
+  song_track(m_over, inst_triangle, "D5 - C#5 - C5 - B4 - | Bb4 - - - - - - - . . . . . . . . ", 42);
+  song_track(m_over, inst_bass, "G3 - - - - - - - | G2 - - - - - - - . . . . . . . . ", 48);
+  RETURN 0;
+END
+
+// Lowest row a bubble of player p reaches (the line is at 12)
+FUNCTION low_row(p);
+PRIVATE i, r;
+BEGIN
+  r = -1;
+  FOR i = 0 TO 103
+    IF (gb[p * 104 + i] > 0) r = imax(r, i / 8 + drop[p]); END
+  END
+  RETURN r;
+END
+
+// M toggles the music; the song follows the screen
+FUNCTION update_music();
+PRIVATE want = 0; lp = 1; r;
+BEGIN
+  snd_fr++;
+  IF (key_pressed(_m))
+    music_on = 1 - music_on;
+    IF (music_on == 0) song_stop(); END
+    cur_song = -1;
+  END
+  IF (music_on == 0) RETURN 0; END
+  want = cur_song;
+  IF (state == 0) want = m_title; END
+  IF (state == 1 OR state == 2)
+    IF (snd_fr % 15 == 0 AND state == 2)
+      r = low_row(0);
+      IF (r >= 10) danger = 1; END
+      IF (r <= 8) danger = 0; END
+    END
+    IF (state == 1) danger = 0; END
+    want = m_play;
+    IF (mode == 1) want = m_vs; END
+    IF (danger) want = m_danger; END
+  END
+  IF (state == 3) want = m_clear; lp = 0; END
+  IF (state == 4) want = m_over; lp = 0; END
+  IF (state == 6) lp = 0; want = m_clear; IF (lost[0] >= 1) want = m_over; END END
+  IF (want < 0) want = 0; END
+  IF (want != cur_song)
+    cur_song = want;
+    IF (want) song_play(want, lp); ELSE song_stop(); END
+  END
+  RETURN 0;
+END
+
+// =====================================================================
 // Resolving a landed shot: pops, bombs, rainbows and falling bubbles
 // =====================================================================
 
@@ -386,8 +530,9 @@ FUNCTION resolve(p, i, col);
 PRIVATE n, k, j, dr, px, py, pts, dx, dy, st;
 BEGIN
   n = 0; r_pop = 0; r_drop = 0;
+  snd_pop_k = 0;
   IF (col >= 9 AND p == 0) n_special++; END
-  IF (col == 9) col = rainbow(p, i); END
+  IF (col == 9) play_sound(s_rainbow, 55, 100, (cxp(p, i) - 320) / 3); col = rainbow(p, i); END
   IF (col == 10)                                  // bomb: clears a ring of about 2 cells
     px = cxp(p, i); py = cyp(p, i);
     FOR k = 0 TO 103
@@ -398,6 +543,7 @@ BEGIN
     END
     fx_bub(1, px, py, 10, 0);
     FOR k = 1 TO 12 particle(px, py, 0); particle(px, py, 2); END
+    play_sound(s_bomb, 75, 100, (px - 320) / 3);
   ELSE
     gb[p * 104 + i] = col;
     k = group(p, i, col);
@@ -419,8 +565,12 @@ BEGIN
     pts = n * 10;
     IF (dr > 0) pts += 10 * pow(2, imin(dr, 12)); END
     sc[p] += pts; n_pops += n; n_drops += dr; r_pop = n; r_drop = dr;
+    IF (dr > 0)                                   // falling bubbles, and the bonus chime
+      play_sound(s_drop, 40 + imin(dr, 10) * 3, 100 - imin(dr, 10) * 3, (cxp(p, i) - 320) / 3);
+      IF (dr >= 3) play_sound(s_bonus, 55, 90 + imin(dr, 12) * 6, (cxp(p, i) - 320) / 3); END
+    END
     float_text(cxp(p, i) - 12, cyp(p, i) - 20, "+" + pts);
-    IF (n + dr >= 8 AND spec[p] == 0) spec[p] = rand(9, 10); END   // earned a special
+    IF (n + dr >= 8 AND spec[p] == 0) spec[p] = rand(9, 10); play_sound(s_special, 60, 100, (fx[p] - 190) / 2); END   // earned a special
     happy[p] = 1.0;
   END
   bv[p]++;
@@ -443,6 +593,7 @@ BEGIN
       k = snap(p, sx[p], sy[p]);
       IF (k >= 0)
         gb[p * 104 + k] = pick_colour(p); n_garbage++;
+        IF (snd_garb_t != snd_fr) snd_garb_t = snd_fr; play_sound(s_garb, 45, 90 + (n_garbage % 4) * 8, (cxp(p, k) - 320) / 3); END
         particle(cxp(p, k), cyp(p, k), 0); particle(cxp(p, k), cyp(p, k), 0);
       END
       n = 99;
@@ -692,6 +843,7 @@ BEGIN
   gfx_text(g_bg, 480, 276, "Space/Up/click fire", 220, 220, 250, 11);
   gfx_text(g_bg, 480, 290, "Down/X/right: swap", 220, 220, 250, 11);
   gfx_text(g_bg, 480, 304, "Esc: title", 220, 220, 250, 11);
+  gfx_text(g_bg, 480, 318, "M: music on/off", 220, 220, 250, 11);
   RETURN 0;
 END
 
@@ -758,6 +910,7 @@ BEGIN
   ctext(gr, 220, 302, "VS CPU", 6, 255, 255, 255, 20);
   ctext(gr, 220, 380, "Left/Right or mouse: aim", 24, 230, 230, 255, 14);
   ctext(gr, 220, 400, "Space/Up/click: fire  Down/X/right click: swap", 45, 230, 230, 255, 12);
+  ctext(gr, 220, 420, "M: music on/off", 15, 230, 230, 255, 12);
   RETURN 0;
 END
 
@@ -948,6 +1101,7 @@ BEGIN
             IF (key_pressed(_space) OR key_pressed(_up) OR click) fire = 1; END
             IF (key_pressed(_down) OR key_pressed(_x) OR rclick)
               k = cur[p]; cur[p] = nxt[p]; nxt[p] = k;
+              play_sound(s_swap, 45, 100, (fx[p] + 128 - 320) / 3);
             END
           ELSE
             fire = cpu_aim(p);
@@ -966,13 +1120,14 @@ BEGIN
           IF (fire)
             fcol[p] = cur[p]; cur[p] = nxt[p]; nxt[p] = deal(p);
             find_low(p); launch(p, ang[p]); ph[p] = 1; pt[p] = 0; n = 0;
+            play_sound(s_shoot, 50 - p * 15, 92 + fcol[p] * 3, (fx[p] + 128 - 320) / 3);
             IF (p == 0) n_shots++; END
           END
         CASE 1                                      // flying: 2 steps of 8 px a frame
           FOR t = 1 TO 2
             IF (ph[p] == 1)
               s = adv(p);
-              IF (s == 2) n = 1; END
+              IF (s == 2) n = 1; play_sound(s_bounce, 40 - p * 12, 100, (sx[p] - 320) / 3); END
               IF (s == 1)
                 k = snap(p, sx[p], sy[p]);
                 IF (p == 0)
@@ -981,6 +1136,7 @@ BEGIN
                   IF (n) n_bounce_shots++; END
                 END
                 n = resolve(p, k, fcol[p]);
+                IF (n == 0) play_sound(s_stick, 50 - p * 15, 95 + fcol[p] * 2, (sx[p] - 320) / 3); END
                 // VS: drops, and pops beyond three, go to the rival as garbage
                 IF (mode == 1) gar[1 - p] += imin(r_drop + imax(0, r_pop - 3), 10); END
 
@@ -993,13 +1149,16 @@ BEGIN
           IF (pt[p] > 0.12)
             IF (shots[p] >= ceil_n[p])
               drop[p]++; voff[p] = -RH; shots[p] = 0; bv[p]++; n_ceil++;
+              play_sound(s_ceil, 75, 100, (fx[p] - 190) / 2); play_sound(s_crash, 50, 70, (fx[p] - 190) / 2);
             END
             IF (gar[p] > 0)                         // incoming garbage, one bubble a frame
               garbage_one(p); gar[p]--;
             ELSE
               ph[p] = 0;
+              // the ceiling will come down within two shots: a warning rumble
+              IF (ceil_n[p] - shots[p] <= 2) play_sound(s_warn, 50 - p * 20, 100 + (ceil_n[p] - shots[p] == 1) * 25, (fx[p] - 190) / 2); END
             END
-            IF (crossed(p)) lost[p] = 0.01; n_losses++; END
+            IF (crossed(p)) lost[p] = 0.01; n_losses++; play_sound(s_lose, 60, 100 - p * 10, (fx[p] - 190) / 2); END
             IF (count_colours(p) == 0 AND mode == 1) lost[1 - p] = 0.01; END
             IF (count_colours(p) == 0 AND mode == 0)
               state = 3; st_t = 0; n_clears++;
@@ -1054,6 +1213,7 @@ BEGIN
     banner("VS ROUND " + vs_round, 9 + ndig(vs_round), "YOU " + wins[0] + "  -  " + wins[1] + " CPU", 15, "Pop and drop to send garbage!", 29, 255, 150, 200);
   END
   put_screen(0, g_bg);
+  play_sound(s_ready, 50, 100, 0);
   state = 1; st_t = 0; lvl_t = 0;
   RETURN 0;
 END
@@ -1065,18 +1225,22 @@ BEGIN
 END
 
 FUNCTION title_frame();
+PRIVATE old;
 BEGIN
+  old = menu;
   IF (key_pressed(_up) OR key_pressed(_down)) menu = 1 - menu; END
   IF (key_pressed(_1)) menu = 0; END
   IF (key_pressed(_2)) menu = 1; END
   IF (mouse.x > 60 AND mouse.x < 380 AND mouse.y > 250 AND mouse.y < 330)
     menu = (mouse.y > 290);
   END
+  IF (menu != old) play_sound(s_menu, 55, 100 - menu * 10, 0); END
   draw_rect(64, 254 + menu * 40, 312, 32, 'rgba(255,255,255,0.3)');
   set_color('#ffe080');
   text(180, 340, "HIGH SCORE " + hi);
   IF (key_pressed(_space) OR key_pressed(_enter) OR click)
     mode = menu; level = 1; vs_round = 1; sc[0] = 0; sc[1] = 0; wins[0] = 0; wins[1] = 0;
+    play_sound(s_ok, 70, 100, 0);
     start_round();
   END
   RETURN 0;
@@ -1107,7 +1271,7 @@ BEGIN
     IF (gar[0] > 0) text(fx[0] + 180, 6, "+" + gar[0] + " !"); END
     IF (gar[1] > 0) text(fx[1] + 180, 6, "+" + gar[1] + " !"); END
   END
-  IF (key_pressed(_esc)) go_title(); END
+  IF (key_pressed(_esc)) play_sound(s_menu, 55, 80, 0); go_title(); END
   RETURN 0;
 END
 
@@ -1133,6 +1297,8 @@ BEGIN
   pnames[4] = "BOWL"; pnames[5] = "LACE";
   FOR i = 0 TO 5 pnl[i] = 4; END pnl[1] = 6; pnl[2] = 7; pnl[3] = 7;
   make_graphics();
+  make_sounds();
+  make_songs();
   FRAME;                                            // spread the drawing over two frames
   paint_title();
   FOR i = 0 TO 1 player(i); END                     // first: the sprites read what they set
@@ -1149,24 +1315,25 @@ BEGIN
     SWITCH (state)
       CASE 0 title_frame();
       CASE 1                                        // round intro, then GO
-        IF (st_t > 1.6) state = 2; msg_on = 0; float_text(fx[0] + 116, 250, "GO!"); click = 0; END
+        IF (st_t > 1.6) state = 2; msg_on = 0; float_text(fx[0] + 116, 250, "GO!"); click = 0; play_sound(s_go, 55, 100, 0); END
       CASE 2 play_frame();
       CASE 5 build_step();
       CASE 3                                        // round clear
-        IF (st_t > 0.8 AND go) level++; start_round(); END
+        IF (st_t > 0.8 AND go) level++; play_sound(s_ok, 60, 100, 0); start_round(); END
       CASE 4                                        // game over: continue keeps the round
         IF (st_t > 0.8)
-          IF (key_pressed(_space) OR click) sc[0] = 0; start_round(); END
-          IF (key_pressed(_r)) level = 1; sc[0] = 0; start_round(); END
-          IF (key_pressed(_esc)) go_title(); END
+          IF (key_pressed(_space) OR click) sc[0] = 0; play_sound(s_ok, 60, 100, 0); start_round(); END
+          IF (key_pressed(_r)) level = 1; sc[0] = 0; play_sound(s_ok, 60, 90, 0); start_round(); END
+          IF (key_pressed(_esc)) play_sound(s_menu, 55, 80, 0); go_title(); END
         END
       CASE 6                                        // VS round over
         IF (st_t > 0.8)
-          IF (go) vs_round++; start_round(); END
-          IF (key_pressed(_esc)) go_title(); END
+          IF (go) vs_round++; play_sound(s_ok, 60, 100, 0); start_round(); END
+          IF (key_pressed(_esc)) play_sound(s_menu, 55, 80, 0); go_title(); END
         END
     END
     score = sc[0]; fps_now = get_fps();
+    update_music();
     FRAME;
   END
 END

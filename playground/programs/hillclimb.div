@@ -20,6 +20,13 @@ PROGRAM hillclimb;
 // Fuel runs out (grab the red cans), coins buy upgrades between runs, and
 // a second vehicle can be bought. A run ends when the driver's head hits
 // the ground, the car falls into a gap or it stops without fuel.
+//
+// Sound is made by the engine (sfx, sfx_tone, song_*: no files): an
+// engine that revs with the throttle and the speed (lower for the truck),
+// suspension knocks and landing thumps, coins and gems, fuel cans and a
+// low-fuel beep, flips, air time, 100 m marks, the crash, the fall and
+// the last sputter, and the garage's upgrades; a tune in the garage and
+// another on the road. It starts with the first key press.
 
 GLOBAL
   CW = 512;                 // chunk width in pixels (32 terrain segments)
@@ -74,6 +81,15 @@ GLOBAL
   msg_k = -1; msg_t = 0; msg_sub = "";
   panel_dirty = 1;
   bodies = 0; max_bodies = 0; fps_now = 0;
+
+  // ---- sound (made by the engine) and music
+  s_eng = 0; s_eng_lo = 0; s_knock = 0; s_land = 0; s_coin = 0; s_gem = 0;
+  s_fuel = 0; s_glug = 0; s_low = 0; s_flip = 0; s_air = 0; s_mark = 0;
+  s_crash = 0; s_ouch = 0; s_fall = 0; s_sputter = 0; s_go = 0; s_biome = 0;
+  s_buy = 0; s_nope = 0; s_switch = 0; s_truck = 0;
+  song_garage = 0; song_road = 0; song_now = 0;
+  snd_rnd = 3; snd_f = 0; eng_acc_s = 0.0; knock_t = 0; coin_t = 0; coin_n = 0;
+  low_t = 0; last_mark = 0;
 
 // =====================================================================
 // Small helpers
@@ -371,6 +387,107 @@ BEGIN
 END
 
 // =====================================================================
+// Sound and music (all made by the engine: sfx, sfx_tone, song_*)
+// =====================================================================
+
+// Pseudo-random numbers for sound variety only: rand() stays the game's
+FUNCTION snd_rand(a, b);
+BEGIN
+  snd_rnd = (snd_rnd * 75 + 74) % 65537;
+  RETURN a + snd_rnd % (b - a + 1);
+END
+
+FUNCTION make_sounds();
+BEGIN
+  s_eng = sfx_tone(wave_saw, 100, 88, 100, 32);          // one engine firing
+  s_eng_lo = sfx_tone(wave_square, 50, 44, 100, 24);     // the truck's extra rumble
+  s_knock = sfx_tone(wave_triangle, 140, 70, 110, 55);   // suspension
+  s_land = sfx(sfx_hit, 19);                             // a hard landing
+  s_coin = sfx(sfx_coin, 1);
+  s_gem = sfx(sfx_coin, 9);
+  s_fuel = sfx(sfx_powerup, 8);
+  s_glug = sfx_tone(wave_sine, 180, 420, 200, 50);
+  s_low = sfx_tone(wave_square, 990, 990, 90, 30);       // low fuel beep
+  s_flip = sfx(sfx_powerup, 15);
+  s_air = sfx(sfx_coin, 20);
+  s_mark = sfx(sfx_blip, 12);
+  s_crash = sfx(sfx_explosion, 5);
+  s_ouch = sfx_tone(wave_square, 600, 250, 260, 34);
+  s_fall = sfx_tone(wave_sine, 1500, 200, 1100, 46);     // falling whistle
+  s_sputter = sfx_tone(wave_saw, 80, 40, 300, 46);
+  s_go = sfx_tone(wave_square, 880, 880, 350, 40);
+  s_biome = sfx(sfx_powerup, 19);
+  s_buy = sfx(sfx_coin, 14);
+  s_nope = sfx_tone(wave_square, 160, 130, 220, 40);
+  s_switch = sfx(sfx_blip, 4);
+  s_truck = sfx(sfx_powerup, 1);
+
+  // Garage: a laid-back shuffle in G
+  song_garage = song_new(104);
+  song_track(song_garage, inst_pluck,
+    "G4 . B4 . D5 . B4 . E5 . D5 . B4 . A4 . | G4 . B4 . D5 . G5 . F#5 . E5 . D5 - - . |" +
+    "C5 . E5 . G5 . E5 . D5 . B4 . G4 . A4 . | B4 . A4 . G4 . E4 . G4 - - - . . . . ", 36);
+  song_track(song_garage, inst_bass,
+    "G2 . . . D3 . . . G2 . . . D3 . . . | G2 . . . D3 . . . D3 . . . F#2 . . . |" +
+    "C3 . . . G2 . . . G2 . . . D3 . . . | D3 . . . D2 . . . G2 . . . . . . . ", 60);
+  song_track(song_garage, inst_drums, "k . h . s . h . | k . h h s . h . ", 32);
+
+  // On the road: a bouncy country chiptune in D
+  song_road = song_new(138);
+  song_track(song_road, inst_square,
+    "D5 . F#5 . A5 . F#5 . D5 . . . A4 . . . | B4 . D5 . G5 . D5 . B4 . . . G4 . . . |" +
+    "A4 . C#5 . E5 . A5 . G5 . E5 . C#5 . A4 . | D5 . A4 . F#4 . A4 . D5 - - - . . . . ", 28);
+  song_track(song_road, inst_bass,
+    "D3 . A2 . D3 . A2 . D3 . A2 . D3 . A2 . | G2 . D3 . G2 . D3 . G2 . D3 . G2 . D3 . |" +
+    "A2 . E3 . A2 . E3 . A2 . E3 . A2 . E3 . | D3 . A2 . D3 . A2 . D3 . . . D3 . . . ", 55);
+  song_track(song_road, inst_drums, "k . h . s . h . | k . h . s . h h ", 34);
+  music_volume(36);
+  RETURN 0;
+END
+
+// Plays song s unless it is already on
+FUNCTION music(s);
+BEGIN
+  IF (song_now != s) song_now = s; song_play(s); END
+  RETURN 0;
+END
+
+// The engine: short firings, faster and higher with the throttle and the
+// speed; with the wheels in the air and the gas down it revs freely.
+FUNCTION engine_sound(v, air);
+PRIVATE rpm, pitch, vol;
+BEGIN
+  rpm = 0.12 + clamp(abs(car_vx) / (v_top[v] + 0.0), 0, 1) * 0.6;
+  IF (gas) rpm += 0.22; IF (air > 4) rpm += 0.25; END END
+  IF (brake AND abs(car_vx) > 40) rpm += 0.08; END
+  pitch = 70 + rpm * 120;
+  IF (v == 1) pitch = pitch * 0.8; END
+  vol = 16; IF (gas) vol = 28; END
+  eng_acc_s += 0.01667 * (13 + rpm * 28);
+  IF (eng_acc_s >= 1)
+    eng_acc_s = clamp(eng_acc_s - 1, 0, 0.99);
+    play_sound(s_eng, vol, pitch, 0);
+    IF (v == 1) play_sound(s_eng_lo, vol, pitch, 0); END
+  END
+  RETURN 0;
+END
+
+// A pickup: coins in a row climb in pitch
+FUNCTION coin_sound(val);
+BEGIN
+  IF (snd_f - coin_t > 25) coin_n = 0; END
+  coin_t = snd_f;
+  IF (val > 5)
+    play_sound(s_gem, 70, 100, 0);
+    play_sound(s_coin, 40, 150, 0);
+  ELSE
+    play_sound(s_coin, 50, 100 + clamp(coin_n, 0, 6) * 8, 0);
+  END
+  coin_n++;
+  RETURN 0;
+END
+
+// =====================================================================
 // World processes
 // =====================================================================
 
@@ -514,6 +631,7 @@ BEGIN
     IF (my_run != run_id OR x < car_x - 1700) BREAK; END
     IF (run_over == 0 AND abs(x - car_x) < 46 AND abs(y - car_y) < 54)
       coins += val; run_coins += val; coins_taken++;
+      coin_sound(val);
       BREAK;
     END
     FRAME;
@@ -529,6 +647,8 @@ BEGIN
     IF (my_run != run_id OR x < car_x - 1700) BREAK; END
     IF (run_over == 0 AND abs(x - car_x) < 46 AND abs(y - car_y) < 54)
       fuel = fuel_max; cans++;
+      play_sound(s_glug, 60, 100, 0);
+      play_sound(s_fuel, 55, 100, 0);
       BREAK;
     END
     FRAME;
@@ -558,7 +678,7 @@ END
 // brake move its angular speed a limited step towards the target speed
 // every frame (a motor with limited torque); otherwise it rolls freely.
 PROCESS wheel(x, y, v, side);
-PRIVATE prev, w, target, t;
+PRIVATE prev, w, target, t, imp;
 BEGIN
   ctype = c_scroll; z = -2; graph = g_wheel[v];
   phys_circle(v_wr[v], phys_dynamic);
@@ -569,6 +689,12 @@ BEGIN
     t = 0;
     IF (phys_contact(TYPE chunk) > 0) t = 1; END
     IF (side == 0) touch_l = t; ELSE touch_r = t; END
+    // suspension knocks on bumps: only real hits, one every 6 frames
+    imp = phys_impact();
+    IF (imp > 110 AND snd_f - knock_t >= 6 AND run_over == 0)
+      knock_t = snd_f;
+      play_sound(s_knock, clamp(imp * 0.12, 15, 70), snd_rand(85, 115) - v * 15, side * 40 - 20);
+    END
     w = adiff(angle - prev) * 60;          // DIV units per second
     prev = angle;
     IF (run_over == 0 AND (gas OR brake))
@@ -600,13 +726,16 @@ BEGIN
     dang = adiff(angle - prev); prev = angle;
     IF (run_over == 0 AND int((x - START_PX) * 0.03125) > dist_m) dist_m = int((x - START_PX) * 0.03125); END
 
+    IF (run_over == 0) engine_sound(v, air); END
     IF (touch_l OR touch_r)
+      IF (air > 30 AND run_over == 0) play_sound(s_land, clamp(air, 30, 90), snd_rand(80, 100) - v * 10, 0); END
       // landing: pay for a long jump
       IF (air > 72 AND run_over == 0)
         secs = air * 0.01667;
         IF (secs > air_s) air_s = secs; END
         coins += int(secs * 5); run_coins += int(secs * 5);
         msg_k = 5; msg_t = 70; msg_sub = "" + int(secs) + "." + int(secs * 10) % 10 + " s   +" + int(secs * 5);
+        play_sound(s_air, 65, 100, 0);
       END
       air = 0; rot = 0;
     ELSE
@@ -625,6 +754,7 @@ BEGIN
         flips++; coins += 25; run_coins += 25;
         rot -= sign(rot) * 360000;
         msg_k = 3; msg_t = 70; msg_sub = "+25   (" + flips + " this run)";
+        play_sound(s_flip, 70, 95 + clamp(flips, 1, 6) * 5, 0);
       END
     END
 
@@ -634,11 +764,27 @@ BEGIN
     hy = y - sin(angle) * v_hx[v] + cos(angle) * v_hy[v];
     IF (run_over == 0 AND in_gap(hx) == 0 AND ground_y(hx) - hy < 12)
       run_over = 1; msg_k = 0; msg_t = 170; msg_sub = "";
+      play_sound(s_crash, 85, 100, 0);
+      play_sound(s_ouch, 55, 100, 0);
     END
     IF (run_over == 0 AND y > ground_y(x) + 320)
       run_over = 3; msg_k = 2; msg_t = 170; msg_sub = "";
+      play_sound(s_fall, 60, 100, 0);
     END
 
+    // low fuel beeps (faster when nearly empty), a blip every 100 m
+    IF (run_over == 0 AND fuel > 0 AND fuel < fuel_max * 0.25)
+      low_t++;
+      IF (low_t >= 30 + int(fuel / fuel_max * 240))
+        low_t = 0;
+        play_sound(s_low, 40, 100, 0);
+      END
+    END
+    IF (run_over == 0 AND dist_m / 100 > last_mark)
+      last_mark = dist_m / 100;
+      play_sound(s_mark, 55, 100 + (last_mark % 5) * 12, 0);
+      IF (last_mark % 5 == 0) play_sound(s_biome, 55, 100, 0); END
+    END
     // fuel: burns faster with the throttle open
     IF (run_over == 0)
       IF (gas) fuel -= 0.01667; ELSE fuel -= 0.004; END
@@ -647,7 +793,10 @@ BEGIN
         // it ends once the car stops, or after 5 s of rolling back and forth
         empty++;
         IF (abs(car_vx) < 25 AND air == 0) stall++; ELSE stall = 0; END
-        IF (stall > 100 OR empty > 300) run_over = 2; msg_k = 1; msg_t = 170; msg_sub = ""; END
+        IF (stall > 100 OR empty > 300)
+          run_over = 2; msg_k = 1; msg_t = 170; msg_sub = "";
+          play_sound(s_sputter, 70, 100, 0);
+        END
       END
     END
     FRAME;
@@ -785,6 +934,7 @@ BEGIN
   fuel_max = 30 + 8 * up_fuel[veh];
   fuel = fuel_max;
   run_over = 0; dist_m = 0; run_coins = 0; flips = 0; air_s = 0;
+  last_mark = 0; low_t = 0;
   next_chunk = 0; cans = 0;
   next_fuel_px = START_PX + 32 * 110;
   cur_biome = 0;
@@ -805,6 +955,7 @@ BEGIN
   phys_gravity(0, 470);
   init_tables();
   make_small();
+  make_sounds();
   FOR i = 0 TO 1
     g_body[i] = make_body(i);
     g_wheel[i] = make_wheel(v_wr[i]);
@@ -828,7 +979,9 @@ BEGIN
     garage_part(400, 205, g_panel, -10, 0);
     garage_part(400, 480 - 55, g_stage, 5, 0);
     garage_car(veh);
+    music(song_garage);
     LOOP
+      snd_f++;
       k = -1;
       IF (key_pressed(_1)) k = 0; END
       IF (key_pressed(_2)) k = 1; END
@@ -838,18 +991,25 @@ BEGIN
         IF (k == 1) lvl = up_grip[veh]; END
         IF (k == 2) lvl = up_fuel[veh]; END
         IF (lvl < 5 AND coins >= up_cost(lvl))
+          play_sound(s_buy, 70, 100 + lvl * 8, 0);
+          play_sound(s_fuel, 40, 110 + lvl * 8, 0);
           coins -= up_cost(lvl);
           IF (k == 0) up_eng[veh]++; END
           IF (k == 1) up_grip[veh]++; END
           IF (k == 2) up_fuel[veh]++; END
+        ELSE
+          play_sound(s_nope, 50, 100, 0);
         END
         panel_dirty = 1;
       END
       IF (key_pressed(_v))
         IF (owned[1 - veh] == 0 AND coins >= v_price[1 - veh])
           coins -= v_price[1 - veh]; owned[1 - veh] = 1;
+          play_sound(s_truck, 75, 100, 0);
+          play_sound(s_buy, 60, 90, 0);
         END
-        IF (owned[1 - veh]) veh = 1 - veh; garage_car(veh); END
+        IF (owned[1 - veh]) veh = 1 - veh; garage_car(veh); play_sound(s_switch, 55, 90 + veh * 20, 0);
+        ELSE play_sound(s_nope, 50, 100, 0); END
         panel_dirty = 1;
       END
       IF (panel_dirty) draw_panel(); panel_dirty = 0; END
@@ -868,8 +1028,11 @@ BEGIN
     car(START_PX, ground_y(START_PX) - v_wy[veh] - v_wr[veh] - 4, veh);
     hud();
     msg_k = 4; msg_t = 50; msg_sub = "";
+    play_sound(s_go, 60, 100, 0);
+    music(song_road);
     over_t = 0;
     LOOP
+      snd_f++;
       gas = 0; brake = 0; tilt = 0;
       IF (run_over == 0)
         IF (key(_right) OR key(_up)) tilt = 1; IF (fuel > 0) gas = 1; END END

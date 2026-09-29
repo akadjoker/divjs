@@ -20,9 +20,19 @@ PROGRAM strike;
 //   Hovering slowly over a crate or a pilot lowers the winch.
 // * Shots and particles live in fixed pools drawn by manager processes;
 //   wrecks and scorch marks are painted into the map for good.
+// * Sound, made by the engine (sfx, sfx_tone, song_*), no files: the
+//   rotor's chop, chain gun, Hydra rockets, Hellfire launches with a
+//   lock-on (or no-lock) tone, explosions by size, fading with distance
+//   from the screen and panned, enemy guns, flak, tank shells and SAM
+//   launches, a missile warning while a SAM is in the air, hits on the
+//   armour, the winch, pickups and rescues, low fuel and low armour
+//   alarms. Music: a desert march on the title, a tense briefing theme,
+//   battle music (faster for the command bunker), jingles for a mission
+//   complete, game over and a won campaign.
 //
 // Controls: LEFT/RIGHT turn, UP thrust, DOWN brake/reverse, A/D (or
-// SHIFT+LEFT/RIGHT) strafe, SPACE guns, Z Hydra rockets, X Hellfire, M map/briefing (pause).
+// SHIFT+LEFT/RIGHT) strafe, SPACE guns, Z Hydra rockets, X Hellfire, M map/briefing (pause),
+// N music on/off.
 
 GLOBAL
   MW = 128; MH = 96; WW = 2048; WH = 1536;   // map size in 16 px tiles / pixels
@@ -79,6 +89,18 @@ GLOBAL
   g_map = 0; g_mini = 0; g_heli = 0; g_rotor = 0; g_shadow = 0; g_tur = 0;
   g_title = 0; g_over = 0; g_win = 0; g_dim = 0;
 
+  // ---- sound: ids made once, a private random generator for the pitch
+  // variations (the campaign's seeded rand() sequence stays untouched),
+  // times of the last sounds of each kind (rate limits), the music wanted
+  sn_gun[1]; sn_hydra = 0; sn_pop = 0; sn_hf = 0; sn_lock = 0; sn_nolock = 0; sn_boom[2];
+  sn_ting = 0; sn_thud = 0; sn_emg = 0; sn_flak = 0; sn_tank = 0; sn_sam = 0; sn_warn = 0;
+  sn_clang = 0; sn_chop = 0; sn_winch = 0; sn_pilot = 0; sn_fuel = 0; sn_ammo = 0; sn_armor = 0;
+  sn_freed = 0; sn_down = 0; sn_sputter = 0; sn_alarm = 0; sn_alarm2 = 0; sn_menu = 0; sn_takeoff = 0;
+  sn_r = 777; sn_tick = 0; sn_gi = 0; sn_t = 0; sn_sams = 0; sn_prev = -1;
+  sn_gun_t = -99; sn_hit_t = -99; sn_clang_t = -99; sn_boom_t[2]; sn_ef_t[3];
+  sn_music = 1; sn_want = 0; sn_cur = -1; sn_loop = 1;
+  song_title = 0; song_brief = 0; song_war = 0; song_final = 0; song_done = 0; song_over = 0; song_won = 0;
+
 // ==== Small helpers (there are no min/max natives) ====
 FUNCTION fmin(a, b); BEGIN IF (a < b) RETURN a; END RETURN b; END
 FUNCTION fmax(a, b); BEGIN IF (a > b) RETURN a; END RETURN b; END
@@ -106,6 +128,203 @@ BEGIN
   FOR k = 9 TO 12 k_rad[k] = 7; END
   k_pts[0] = 300; k_pts[1] = 250; k_pts[2] = 200; k_pts[3] = 150; k_pts[4] = 100;
   k_pts[5] = 200; k_pts[6] = 2000; k_pts[7] = 100; k_pts[8] = 100; k_pts[13] = 25;
+END
+
+// ==== Sound ====
+
+// A random number for sound variations only (a small LCG of our own).
+FUNCTION srnd(a, b);
+BEGIN
+  sn_r = (sn_r * 1103 + 4271) % 65521;
+  RETURN a + sn_r % (b - a + 1);
+END
+
+// Plays snd for something at map point (px, py): full volume on the
+// screen, fading out 250 px beyond it, panned by where it is.
+FUNCTION sn_at(snd, vol, pitch, px, py);
+PRIVATE dx, dy, d;
+BEGIN
+  dx = px - cam_x - 320; dy = py - cam_y - 240;
+  d = fmax(abs(dx) - 320, abs(dy) - 240);
+  IF (d > 250) RETURN 0; END
+  IF (d > 0) vol = vol * (250 - d) / 250; END
+  play_sound(snd, vol, pitch, clamp(int(dx) / 4, -80, 80));
+  RETURN 1;
+END
+
+FUNCTION make_sounds();
+PRIVATE k;
+BEGIN
+  sn_gun[0] = sfx_tone(wave_noise, 3200, 700, 70, 44);
+  sn_gun[1] = sfx_tone(wave_noise, 2600, 500, 80, 44);
+  sn_hydra = sfx_tone(wave_noise, 500, 2400, 300, 42);
+  sn_pop = sfx_tone(wave_square, 320, 120, 60, 30);
+  sn_hf = sfx_tone(wave_noise, 240, 1500, 650, 46);
+  sn_lock = sfx_tone(wave_square, 1760, 1760, 55, 24);
+  sn_nolock = sfx_tone(wave_square, 330, 300, 120, 26);
+  sn_boom[0] = sfx(sfx_explosion, 4);            // rocket, vehicle, building
+  sn_boom[1] = sfx(sfx_explosion, 15);
+  sn_boom[2] = sfx(sfx_explosion, 29);
+  sn_ting = sfx_tone(wave_triangle, 2400, 1900, 60, 30);
+  sn_thud = sfx(sfx_hit, 3);
+  sn_emg = sfx_tone(wave_noise, 2400, 900, 60, 34);
+  sn_flak = sfx(sfx_hit, 23);
+  sn_tank = sfx_tone(wave_noise, 900, 80, 280, 60);
+  sn_sam = sfx_tone(wave_noise, 300, 1900, 750, 44);
+  sn_warn = sfx_tone(wave_square, 1320, 1320, 70, 22);
+  sn_clang = sfx(sfx_hit, 17);
+  sn_chop = sfx_tone(wave_noise, 260, 110, 75, 48);
+  sn_winch = sfx_tone(wave_square, 220, 240, 45, 18);
+  sn_pilot = sfx(sfx_coin, 11);
+  sn_fuel = sfx_tone(wave_sine, 180, 520, 360, 55);
+  sn_ammo = sfx(sfx_blip, 7);
+  sn_armor = sfx(sfx_powerup, 3);
+  sn_freed = sfx(sfx_powerup, 12);
+  sn_down = sfx_tone(wave_saw, 900, 60, 1200, 28);
+  sn_sputter = sfx_tone(wave_square, 180, 40, 1400, 36);
+  sn_alarm = sfx_tone(wave_square, 880, 880, 110, 24);
+  sn_alarm2 = sfx_tone(wave_square, 660, 660, 110, 24);
+  sn_menu = sfx(sfx_blip, 2);
+  sn_takeoff = sfx_tone(wave_noise, 200, 1400, 900, 40);
+  FOR k = 0 TO 2 sn_boom_t[k] = -99; END
+  FOR k = 0 TO 3 sn_ef_t[k] = -99; END
+END
+
+// The battle tune; the command bunker gets it faster, with a saw lead.
+FUNCTION war_song(bpm, lead);
+PRIVATE s;
+BEGIN
+  s = song_new(bpm);
+  song_track(s, lead,
+    "E5 . E5 . G5 . E5 . A5 . G5 . E5 . D5 . | E5 . E5 . G5 . B5 . A5 - G5 - E5 - - - |" +
+    "C5 . C5 . E5 . C5 . D5 . D5 . F#5 . A5 . | B5 - - - A5 - G5 - F#5 - - - D#5 - - - ", 22);
+  song_track(s, inst_bass,
+    "E4 . E4 E5 . E4 E4 E5 E4 . E4 E5 . E4 E5 . | E4 . E4 E5 . E4 E4 E5 E4 . E4 E5 . E4 E5 . |" +
+    "C4 . C4 C5 . C4 C4 C5 D4 . D4 D5 . D4 D5 . | B3 . B3 B4 . B3 B3 B4 B3 . B3 B4 . B3 B4 . ", 46);
+  song_track(s, inst_drums, "k . h k s . h . k k h . s . h h ", 36);
+  RETURN s;
+END
+
+FUNCTION make_songs();
+BEGIN
+  // Title: a desert march in E (harmonic minor)
+  song_title = song_new(108);
+  song_track(song_title, inst_square,
+    "E5 - - F5 E5 - D#5 - E5 - - - B4 - - - | C5 - B4 - A4 - G#4 - A4 - B4 - E4 - - - |" +
+    "E5 - - F5 E5 - D#5 - E5 - G5 - F5 - E5 - | D5 - C5 - B4 - A4 - G#4 - - - E4 - - - ", 30);
+  song_track(song_title, inst_bass,
+    "E4 . . E4 . . E4 . E4 . . E4 . . B3 . | A3 . . A3 . . A3 . E4 . . E4 . . E4 . |" +
+    "E4 . . E4 . . E4 . E4 . . E4 . . B3 . | D4 . . D4 . . C4 . B3 . . B3 . . E4 . ", 50);
+  song_track(song_title, inst_pad,
+    "E4 - - - - - - - - - - - - - - - | A3 - - - - - - - - - - - - - - - |" +
+    "E4 - - - - - - - - - - - - - - - | B3 - - - - - - - - - - - - - - - ", 18);
+  song_track(song_title, inst_drums, "k . . k s . . . k . k . s . s s ", 38);
+  // Briefing: tense, a radar ping every two bars
+  song_brief = song_new(90);
+  song_track(song_brief, inst_pad,
+    "E4 - - - - - - - - - - - - - - - | C4 - - - - - - - - - - - - - - - |" +
+    "D4 - - - - - - - - - - - - - - - | B3 - - - - - - - - - - - - - - - ", 24);
+  song_track(song_brief, inst_bass,
+    "E4 . . . . . . . E4 . . . . . . . | C4 . . . . . . . C4 . . . . . . . |" +
+    "D4 . . . . . . . D4 . . . . . . . | B3 . . . . . . . B3 . . . . . . . ", 45);
+  song_track(song_brief, inst_sine, "E6 . . . . . . . . . . . . . . . | . . . . . . . . . . . . . . . . ", 14);
+  song_track(song_brief, inst_drums, "k . h . h . h . k . h . h . h h ", 24);
+  song_war = war_song(138, inst_square);
+  song_final = war_song(152, inst_saw);
+  // Jingles, played once
+  song_done = song_new(132);
+  song_track(song_done, inst_square, "E5 . G5 . B5 . E6 - - - B5 . E6 - - - - - - - . . . . ", 40);
+  song_track(song_done, inst_bass, "E4 - - - - - - - B3 - - - E4 - - - - - - - . . . . ", 55);
+  song_track(song_done, inst_drums, "k . . . s . . . k . k . s . . . k . . . . . . . ", 40);
+  song_over = song_new(88);
+  song_track(song_over, inst_square, "B4 - A4 - G4 - F#4 - E4 - - - D#4 - - - E4 - - - - - - - . . . . ", 38);
+  song_track(song_over, inst_bass, "E4 - - - C4 - - - B3 - - - B3 - - - E3 - - - - - - - . . . . ", 55);
+  song_track(song_over, inst_drums, "k . . . . . . . k . . . s . . . k . . . . . . . . . . . ", 36);
+  song_won = song_new(120);
+  song_track(song_won, inst_square,
+    "E5 . E5 . E5 . B4 . E5 - - - G5 - - - | F#5 . F#5 . F#5 . D5 . F#5 - - - A5 - - - |" +
+    "G5 - - - F#5 - - - E5 - - - D#5 - - - | E5 - - - - - - - . . . . . . . . ", 38);
+  song_track(song_won, inst_bass,
+    "E4 - - - E4 - - - E4 - - - E4 - - - | D4 - - - D4 - - - D4 - - - D4 - - - |" +
+    "C4 - - - C4 - - - B3 - - - B3 - - - | E4 - - - - - - - . . . . . . . . ", 50);
+  song_track(song_won, inst_drums,
+    "k . s . k . s . k . s . k k s s | k . s . k . s . k . s . k k s s |" +
+    "k . s . k . s . k . s . k k s s | k . . . . . . . . . . . . . . . ", 40);
+  music_volume(38);
+END
+
+FUNCTION want_song(sng, lp); BEGIN sn_want = sng; sn_loop = lp; END
+
+// Picks the music for the screen, plays the screen changes, the rotor,
+// the winch and the alarms, and toggles the music with N. A jingle
+// (loop 0) plays even with the music off.
+PROCESS snd_director();
+BEGIN
+  LOOP
+    sn_tick++;
+    IF (state <= 1) want_song(song_title, 1); END
+    IF (state == 2) want_song(song_brief, 1); END
+    IF (state == 3 OR state == 4)
+      IF (done_t > 0 AND state == 3) want_song(song_done, 0);
+      ELSE IF (cur_m == nm - 1) want_song(song_final, 1); ELSE want_song(song_war, 1); END END
+    END
+    IF (state == 5) want_song(song_over, 0); END
+    IF (state == 6) want_song(song_won, 0); END
+    IF (key_pressed(_n)) sn_music = 1 - sn_music; sn_cur = -1; END
+    IF (sn_want != sn_cur)
+      IF (sn_want AND (sn_music OR sn_loop == 0)) song_play(sn_want, sn_loop); ELSE song_stop(); END
+      sn_cur = sn_want;
+    END
+    // screen changes
+    IF (state != sn_prev)
+      IF (sn_prev == 0 AND state == 2) play_sound(sn_menu, 60, 100, 0); END
+      IF (sn_prev == 2 AND state == 3) play_sound(sn_takeoff, 55, 100, 0); END
+      IF (sn_prev == 3 AND state == 2 AND paused) play_sound(sn_menu, 50, 120, 0); END
+      IF (sn_prev >= 5 AND state == 1) play_sound(sn_menu, 60, 100, 0); END
+      sn_prev = state;
+    END
+    IF (state == 3 AND heli_on AND paused == 0)
+      // the rotor's chop, a little faster and higher with speed
+      IF (sn_tick % 5 == 0) play_sound(sn_chop, 20 + hspd / 12, 90 + hspd / 8 + srnd(-4, 4), 0); END
+      IF (winch >= 0 AND sn_tick % 7 == 0) play_sound(sn_winch, 35, 90 + e_lift[winch] * 3, 0); END
+      IF (sn_sams > 0 AND sn_tick % 18 == 0) play_sound(sn_warn, 45, 100, 0); END   // missile warning
+      IF (fuel < 25 AND sn_tick % 80 == 0) sn_beeps(sn_alarm, 45); END
+      IF (armor <= 35 AND sn_tick % 100 == 40) sn_beeps(sn_alarm2, 40); END
+    END
+    FRAME;
+  END
+END
+
+// Two short beeps of snd, eight frames apart.
+PROCESS sn_beeps(snd, vol);
+BEGIN
+  play_sound(snd, vol, 100, 0);
+  FRAME(800);
+  play_sound(snd, vol, 100, 0);
+END
+
+// The sound of a message's event
+FUNCTION msg_sound(id);
+BEGIN
+  IF (id == 1) play_sound(sn_down, 60, 100, 0); END
+  IF (id == 2) play_sound(sn_sputter, 70, 100, 0); END
+  IF (id == 4) play_sound(sn_freed, 60, 100, 0); END
+  IF (id == 5) play_sound(sn_pilot, 60, 100, 0); END
+  IF (id == 6) play_sound(sn_fuel, 70, 100, 0); END
+  IF (id == 7) play_sound(sn_ammo, 60, 100, 0); play_sound(sn_thud, 60, 70, 0); END
+  IF (id == 8) play_sound(sn_armor, 65, 100, 0); END
+  IF (id == 9) play_sound(sn_pilot, 60, 130, 0); END
+END
+
+// An enemy shot of kind k fired at (px, py): each kind a few frames apart at most
+FUNCTION efire_sound(k, px, py);
+BEGIN
+  IF (sn_tick - sn_ef_t[k] < 4) RETURN 0; END
+  sn_ef_t[k] = sn_tick;
+  IF (k == 0) sn_at(sn_emg, 40, srnd(85, 115), px, py); END
+  IF (k == 1) sn_at(sn_flak, 50, srnd(60, 75), px, py); END
+  IF (k == 2) sn_at(sn_tank, 60, srnd(90, 110), px, py); END
+  IF (k == 3) sn_at(sn_sam, 70, 100, px, py); END
 END
 
 // ==== Generated sprites. Everything faces right (angle 0). ====
@@ -600,6 +819,7 @@ BEGIN
     IF (eb_on[i] == 0)
       eb_on[i] = 1; eb_k[i] = k; eb_x[i] = px; eb_y[i] = py; eb_a[i] = a;
       eb_spd[i] = spd; eb_t[i] = 0; eb_h[i] = 4; eb_dmg[i] = dmg * dfac;
+      efire_sound(k, px, py);
       eb_cur = i + 1; RETURN i;
     END
   END
@@ -725,6 +945,7 @@ PRIVATE j, n;
 BEGIN
   score += k_pts[k]; kills++;
   IF (k == 13)
+    sn_at(sn_thud, 45, srnd(70, 90), px, py);
     gfx_circle(g_map, px, py, 3, 110, 40, 30);
     FOR j = 0 TO 5 fx_add(0, px, py, 3, rand(-40, 40), rand(-40, 40), rand(40, 90), 30, 2); END RETURN 0; END
   IF (k >= 1 AND k <= 4)                            // burnt-out vehicle or gun pit
@@ -777,6 +998,10 @@ BEGIN
   END
   FOR j = 1 TO sz fx_add(2, px + rand(-6, 6), py + rand(-6, 6), 6, 4, 0, 14, rand(70, 110), rand(6, 9) + sz * 2); END
   IF (sz >= 2) fx_add(3, px, py, h0 + 4, 0, 0, 0, 10, 10 + sz * 10); END
+  IF (sn_tick - sn_boom_t[sz - 1] >= 3)            // one of each size every few frames
+    sn_boom_t[sz - 1] = sn_tick;
+    sn_at(sn_boom[sz - 1], 40 + sz * 20, 165 - sz * 35 + srnd(-10, 10), px, py);
+  END
 END
 
 FUNCTION fire_add(px, py, t);
@@ -926,6 +1151,11 @@ BEGIN
             SWITCH (pb_k[i])
               CASE 0
                 IF (hs >= 0) hit(hs, 3); fx_add(0, pb_x[i], pb_y[i], 4, rand(-30, 30), rand(-30, 30), 50, 12, 2);
+                  IF (sn_tick - sn_hit_t >= 5)       // armour pings, soft targets thud
+                    sn_hit_t = sn_tick;
+                    IF (e_kind[hs] == 3 OR e_kind[hs] == 5 OR e_kind[hs] == 6) sn_at(sn_ting, 30, srnd(90, 115), pb_x[i], pb_y[i]);
+                    ELSE sn_at(sn_thud, 30, srnd(100, 130), pb_x[i], pb_y[i]); END
+                  END
                 ELSE fx_add(4, pb_x[i], pb_y[i], 0, 0, 0, 8, 14, 3); END
               CASE 1 explode(pb_x[i], pb_y[i], 1, 0); splash(pb_x[i], pb_y[i], 22, 20);
               CASE 2 explode(pb_x[i], pb_y[i], 2, 0); splash(pb_x[i], pb_y[i], 30, 90);
@@ -952,6 +1182,7 @@ FUNCTION hurt(d);
 BEGIN
   IF (inv_t > 0 OR heli_on == 0) RETURN 0; END
   armor -= d; hurt_t = 0.15;
+  IF (sn_tick - sn_clang_t >= 6) sn_clang_t = sn_tick; play_sound(sn_clang, 80, srnd(70, 85), 0); END
   IF (armor <= 0) armor = 0; heli_down(1); END
 END
 
@@ -960,13 +1191,14 @@ PRIVATE i, dt, sx, sy, life;
 BEGIN
   ctype = c_scroll;
   LOOP
+    sn_sams = 0;
     IF ((state == 3 OR state == 4) AND paused == 0)
       dt = get_delta();
       FOR i = 0 TO 79
         IF (eb_on[i])
           eb_t[i] += dt; life = 1.3;
           IF (eb_k[i] == 3)                          // SAM: slow turn, smoke trail
-            life = 4.5;
+            life = 4.5; sn_sams++;
             IF (heli_on) eb_a[i] = lerp_angle(eb_a[i], fget_angle(eb_x[i], eb_y[i], hx, hy), 0.035); END
             IF (rand(0, 1) == 0) fx_add(2, eb_x[i], eb_y[i], eb_h[i], 0, 0, 5, 40, 3); END
           END
@@ -1015,6 +1247,7 @@ BEGIN
   IF (heli_on == 0) RETURN 0; END
   heli_on = 0; lives--; hurt_t = 0;
   explode(hx, hy, 3, ALT); explode(hx, hy, 2, 0); scorch(hx, hy, 14); fire_add(hx, hy, 12);
+  play_sound(sn_boom[2], 100, 60, 0);
   IF (winch >= 0) e_lift[winch] = 0; winch = -1; END
   // pilots on board survive the crash and wait where they were found
   FOR i = 0 TO carry - 1 tx = land_near(st_x[cg[i]], st_y[cg[i]], 50); spawn(9, tx, ln_y, cg[i], 0); END
@@ -1095,9 +1328,22 @@ BEGIN
 
       // weapons
       gun_rl -= dt; hyd_rl -= dt; hf_rl -= dt;
-      IF (key(_space) AND gun_rl <= 0 AND n_gun > 0) gun_rl = 0.07; n_gun--; pshot(0, hang + rand(-1500, 1500), -1); END
-      IF ((key(_z) OR key_pressed(_z)) AND hyd_rl <= 0 AND n_hyd > 0) hyd_rl = 0.25; n_hyd--; pshot(1, hang, -1); END
-      IF ((key(_x) OR key_pressed(_x)) AND hf_rl <= 0 AND n_hf > 0) hf_rl = 0.9; n_hf--; pshot(2, hang, pick_target()); END
+      IF (key(_space) AND gun_rl <= 0 AND n_gun > 0)
+        gun_rl = 0.07; n_gun--; pshot(0, hang + rand(-1500, 1500), -1);
+        IF (sn_tick - sn_gun_t >= 4)                 // the chain gun: two sounds in turn, pitch varied
+          sn_gun_t = sn_tick; sn_gi = 1 - sn_gi;
+          play_sound(sn_gun[sn_gi], 36, srnd(88, 116), 0);
+        END
+      END
+      IF ((key(_z) OR key_pressed(_z)) AND hyd_rl <= 0 AND n_hyd > 0)
+        hyd_rl = 0.25; n_hyd--; pshot(1, hang, -1);
+        play_sound(sn_hydra, 50, srnd(92, 110), 0); play_sound(sn_pop, 40, srnd(90, 110), 0);
+      END
+      IF ((key(_x) OR key_pressed(_x)) AND hf_rl <= 0 AND n_hf > 0)
+        hf_rl = 0.9; n_hf--; sn_t = pick_target(); pshot(2, hang, sn_t);
+        play_sound(sn_hf, 60, 100, 0);
+        IF (sn_t >= 0) sn_beeps(sn_lock, 35); ELSE play_sound(sn_nolock, 35, 100, 0); END   // lock-on tone
+      END
 
       // winch: hover slowly over a crate or a pilot to lift it aboard
       IF (winch < 0)
@@ -1167,7 +1413,7 @@ BEGIN
   RETURN "fortified bunker. Hellfires work.";
 END
 
-FUNCTION msg(id); BEGIN msg_id = id; msg_t = 2.5; END
+FUNCTION msg(id); BEGIN msg_id = id; msg_t = 2.5; msg_sound(id); END
 
 FUNCTION msg_text(id);
 BEGIN
@@ -1253,7 +1499,7 @@ BEGIN
   draw_rect(0, 462, 500, 18, 'rgba(20,14,6,0.75)');
   set_color('#ffe070');
   text(6, 467, "MISSION " + (cur_m + 1) + "/" + nm + ": " + m_name(m_type[cur_m]) + "  LEFT " + fmax(m_left, 0));
-  set_color('#a09070'); text(372, 467, "M: MAP");
+  set_color('#a09070'); text(372, 467, "M: MAP  N: MUSIC");
   // radar: the painted mini map plus live dots
   FOR s = 0 TO E
     IF (e_on[s] AND e_kind[s] != 13)                 // soldiers are too small
@@ -1314,6 +1560,7 @@ BEGIN
   text(16, 366, "SPACE  guns (fast, weak)   Z  Hydra rockets   X  Hellfire (homing)");
   text(16, 380, "Hover slowly over crates (Fuel, Ammo, +Armour) and pilots to winch");
   text(16, 394, "them up. Land pilots at the LZ. Watch the fuel: empty means a crash.");
+  text(16, 408, "M  map (pause)      N  music on/off");
   set_color('#60ff60');
   IF (paused) text(16, 420, "M / SPACE: back to the fight"); ELSE text(16, 420, "SPACE: take off"); END
 END
@@ -1339,10 +1586,10 @@ END
 PRIVATE dt, tx, ty;
 BEGIN
   set_mode(640, 480); set_fps(60, 0); screen_color('#000000');
-  init_tables(); make_graphics();
+  init_tables(); make_graphics(); make_sounds(); make_songs();
   define_region(1, 0, 0, 640, 480);
   start_scroll(0, 0, g_map, 0, 1, 0);         // the painted map, moved by scroll.x0 / y0
-  heli(); pshots(); eshots(); fxman();
+  heli(); pshots(); eshots(); fxman(); snd_director();
   panel(g_mini, 568, 424, -50, 100, 1);
   panel(g_mini, 208, 192, -60, 300, 2);
   panel(g_dim, 320, 240, -55, 100, 2);

@@ -17,6 +17,13 @@ PROGRAM match3;
 // offset that falls or slides back to zero, so moving a candy only means
 // copying numbers and setting an offset. Candy sprites are rendered pixel
 // by pixel at start-up; particles, beams and score popups live in pools.
+//
+// Sound is made by the engine (sfx, sfx_tone, song_*): picks, swaps and
+// bounces, pops that climb in pitch with every cascade, cheers, specials
+// made and fired, combos, ice, chocolate, shuffles and sugar crush. Music:
+// a sweet tune on the map, a bouncy one while playing, a faster one when
+// only a few moves are left, and a jingle for a win or a loss. M turns
+// the music on and off.
 
 GLOBAL
   CS = 48; BX = 16; BY = 24;          // cell size and board corner
@@ -62,6 +69,14 @@ GLOBAL
   bm_t[7]; bm_d[7]; bm_p[7];
   rg_t[7]; rg_x[7]; rg_y[7]; rg_r[7];
   pp_t[9]; pp_x[9]; pp_y[9];
+  // ---- sound: effects, songs, and frame stamps that keep a big blast
+  // from firing the same effect dozens of times in one frame
+  s_sel = 0; s_swap = 0; s_bad = 0; s_pop[2]; s_click = 0; s_cheer = 0; s_make = 0;
+  s_beam = 0; s_blast = 0; s_zap = 0; s_combo = 0; s_ice = 0; s_choc = 0; s_spread = 0;
+  s_shuffle = 0; s_sugar = 0; s_start = 0; s_tick = 0; s_menu = 0;
+  m_map = 0; m_play = 0; m_tense = 0; m_win = 0; m_lose = 0;
+  music_on = 1; cur_song = 0; snd_fr = 0; snd_n = 0; snd_beam_t = -1; snd_blast_t = -1;
+  snd_zap_t = -1; snd_blk_t = -1;
 
 // =====================================================================
 // Small helpers
@@ -282,6 +297,112 @@ BEGIN
 END
 
 // =====================================================================
+// Sound: effects and songs made by the engine
+// =====================================================================
+
+FUNCTION make_sounds();
+PRIVATE i;
+BEGIN
+  s_sel = sfx_tone(wave_sine, 900, 1150, 50, 35);
+  s_swap = sfx_tone(wave_triangle, 300, 620, 110, 40);
+  s_bad = sfx_tone(wave_square, 320, 170, 170, 28);
+  FOR i = 0 TO 2 s_pop[i] = sfx_tone(wave_sine, 650 + i * 90, 1350 + i * 120, 90, 48); END
+  s_click = sfx_tone(wave_noise, 3200, 1500, 40, 28);
+  s_cheer = sfx(sfx_coin, 6);
+  s_make = sfx_tone(wave_sine, 1200, 2400, 220, 34);
+  s_beam = sfx(sfx_laser, 4);
+  s_blast = sfx(sfx_explosion, 8);
+  s_zap = sfx_tone(wave_saw, 2000, 220, 500, 28);
+  s_combo = sfx(sfx_powerup, 6);
+  s_ice = sfx_tone(wave_noise, 5200, 2600, 120, 40);
+  s_choc = sfx_tone(wave_noise, 700, 180, 160, 45);
+  s_spread = sfx_tone(wave_sine, 210, 120, 280, 50);
+  s_shuffle = sfx_tone(wave_noise, 700, 3200, 420, 30);
+  s_sugar = sfx(sfx_powerup, 12);
+  s_start = sfx(sfx_coin, 11);
+  s_tick = sfx_tone(wave_sine, 1400, 1400, 50, 35);
+  s_menu = sfx_tone(wave_square, 520, 640, 45, 28);
+  RETURN 0;
+END
+
+FUNCTION make_songs();
+BEGIN
+  // Level map: sweet, in F
+  m_map = song_new(112);
+  song_track(m_map, inst_pluck,
+    "F5 . A5 . C6 . A5 . | G5 . Bb5 . D6 . Bb5 . | A5 . C6 . F6 . C6 . | G5 - - . E5 - - . |" +
+    "F5 . A5 . C6 . A5 . | Bb5 . A5 . G5 . F5 . | E5 . G5 . C6 . Bb5 . | A5 - - - F5 - - . ", 34);
+  song_track(m_map, inst_bass,
+    "F3 . . . C4 . . . | G3 . . . D4 . . . | F3 . . . C4 . . . | C3 . . . G3 . . . |" +
+    "F3 . . . C4 . . . | Bb2 . . . F3 . . . | C3 . . . G3 . . . | F3 . . . C4 . . . ", 50);
+  song_track(m_map, inst_pad,
+    "A4 - - - - - - - | Bb4 - - - - - - - | A4 - - - - - - - | G4 - - - - - - - |" +
+    "A4 - - - - - - - | Bb4 - - - - - - - | G4 - - - - - - - | A4 - - - - - - - ", 12);
+  song_track(m_map, inst_drums, "k . . . h . . . s . . . h . . . ", 24);
+
+  // Playing: bouncy, in C
+  m_play = song_new(126);
+  song_track(m_play, inst_square,
+    "E5 . G5 . C6 . G5 . | A5 . G5 . E5 . C5 . | D5 . F5 . A5 . F5 . | G5 . F5 . D5 . B4 . |" +
+    "E5 . G5 . C6 . G5 . | A5 . C6 . A5 . F5 . | G5 . E5 . D5 . G4 . | C5 - - - . . . . ", 24);
+  song_track(m_play, inst_bass,
+    "C4 . G3 . C4 . G3 . | A3 . E3 . A3 . E3 . | D4 . A3 . D4 . A3 . | G3 . D4 . G3 . D4 . |" +
+    "C4 . G3 . C4 . G3 . | F3 . C4 . F3 . C4 . | G3 . D4 . G3 . B3 . | C4 . G3 . C4 . . . ", 48);
+  song_track(m_play, inst_pluck,
+    "C5 E5 G5 E5 C5 E5 G5 E5 | A4 C5 E5 C5 A4 C5 E5 C5 | D5 F5 A5 F5 D5 F5 A5 F5 | G4 B4 D5 B4 G4 B4 D5 B4 |" +
+    "C5 E5 G5 E5 C5 E5 G5 E5 | F4 A4 C5 A4 F4 A4 C5 A4 | G4 B4 D5 B4 G4 B4 D5 B4 | C5 E5 G5 E5 C5 . . . ", 10);
+  song_track(m_play, inst_drums, "k . h . s . h . k . h k s . h . ", 28);
+
+  // A few moves left: faster and edgier
+  m_tense = song_new(152);
+  song_track(m_tense, inst_square,
+    "A5 . E5 . A5 . E5 . | G5 . E5 . G5 . E5 . | F5 . D5 . F5 . D5 . | E5 . G#5 . B5 . E5 . ", 24);
+  song_track(m_tense, inst_bass,
+    "A3 A4 A3 A4 A3 A4 A3 A4 | G3 G4 G3 G4 G3 G4 G3 G4 | F3 F4 F3 F4 F3 F4 F3 F4 | E3 E4 E3 E4 E3 E4 E3 E4 ", 52);
+  song_track(m_tense, inst_drums, "k h s h k h s h | k h s h k k s h ", 34);
+
+  // Jingles (played once)
+  m_win = song_new(140);
+  song_track(m_win, inst_square, "C5 E5 G5 C6 . G5 C6 E6 - - - . . . . . ", 32);
+  song_track(m_win, inst_pluck, "E5 G5 C6 E6 . C6 E6 G6 - - - . . . . . ", 16);
+  song_track(m_win, inst_bass, "C4 . . . G3 . . . C4 - - - . . . . ", 50);
+  song_track(m_win, inst_drums, "k . h . s . h . k . . . . . . . ", 34);
+  m_lose = song_new(96);
+  song_track(m_lose, inst_triangle, "G4 - F4 - E4 - D4 - C4 - - - - - . . ", 42);
+  song_track(m_lose, inst_bass, "C4 - - - - - - - G3 - - - C3 - . . ", 48);
+  RETURN 0;
+END
+
+// Pan for the candy in cell i
+FUNCTION span(i); BEGIN RETURN (cx_of(i) - 232) / 2; END
+
+// M toggles the music; the song follows the screen
+FUNCTION update_music();
+PRIVATE want = 0; lp = 1;
+BEGIN
+  snd_fr++;
+  IF (key_pressed(_m))
+    music_on = 1 - music_on;
+    IF (music_on == 0) song_stop(); END
+    cur_song = -1;
+  END
+  IF (music_on == 0) RETURN 0; END
+  want = cur_song;
+  IF (state == 1) want = m_map; END
+  IF (state == 2)
+    want = m_play;
+    IF (moves <= 5 AND bonus == 0) want = m_tense; END
+    IF (phase == 7) lp = 0; want = m_lose; IF (won) want = m_win; END END
+  END
+  IF (want < 0) want = 0; END
+  IF (want != cur_song)
+    cur_song = want;
+    IF (want) song_play(want, lp); ELSE song_stop(); END
+  END
+  RETURN 0;
+END
+
+// =====================================================================
 // Effects: particles, beams, rings and popups, all pooled
 // =====================================================================
 
@@ -492,6 +613,10 @@ FUNCTION hit_blk(i);
 BEGIN
   IF (hit[i] OR blk[i] == 0) RETURN 0; END
   hit[i] = 1; score += 20;
+  IF (snd_blk_t != snd_fr)
+    snd_blk_t = snd_fr;
+    IF (blk[i] == 3) play_sound(s_choc, 55, 100, span(i)); ELSE play_sound(s_ice, 45, 90 + blk[i] * 15, span(i)); END
+  END
   IF (blk[i] == 3)
     blk[i] = 0; n_choc--; choc_hit = 1; burst(i, 7, 6);
   ELSE
@@ -562,6 +687,10 @@ BEGIN
   IF (s == 1 OR s == 2) fired_s++; END
   IF (s == 3) fired_w++; END
   IF (s == 4) fired_b++; END
+  // one sound of each kind a frame, however many specials go off together
+  IF ((s == 1 OR s == 2) AND snd_beam_t != snd_fr) snd_beam_t = snd_fr; play_sound(s_beam, 55, 90 + s * 10, span(i)); END
+  IF ((s == 3 OR s == 5) AND snd_blast_t != snd_fr) snd_blast_t = snd_fr; play_sound(s_blast, 60, 110 + (s == 5) * 20, span(i)); END
+  IF (s == 4 AND snd_zap_t != snd_fr) snd_zap_t = snd_fr; play_sound(s_zap, 60, 100, span(i)); END
   SWITCH (s)
     CASE 1 FOR k = 0 TO 8 mark((i / 9) * 9 + k); END beam(0, i / 9);
     CASE 2 FOR k = 0 TO 8 mark(k * 9 + i % 9); END beam(1, i % 9);
@@ -670,6 +799,7 @@ FUNCTION do_combo(a, b);
 PRIVATE sa, sb, bo, ot, k, so, j, r, c;
 BEGIN
   pass_reset();
+  play_sound(s_combo, 70, 100, span(b));
   sa = spc[a]; sb = spc[b];
   IF (sa == 5) sa = 3; END
   IF (sb == 5) sb = 3; END
@@ -894,6 +1024,7 @@ BEGIN
       shuffling = 1; shuf_n = 0; n_shuffles++;
       FOR i = 0 TO 80 sv_col[i] = col[i]; sv_spc[i] = spc[i]; END
       popup(232, 230, "NO MOVES - SHUFFLE!", 19, 255, 220, 120, 24);
+      play_sound(s_shuffle, 55, 100, 0);
     END
     phase = 6;
   END
@@ -942,6 +1073,7 @@ END
 FUNCTION try_swap(a, b);
 BEGIN
   sw_a = a; sw_b = b; swap_cells(a, b); phase = 1; idle_t = 0; sel = -1; drag = -1;
+  play_sound(s_swap, 50, 100, span(a));
   max_pop = 0; last_combo = 0;
   RETURN 0;
 END
@@ -954,16 +1086,19 @@ BEGIN
   sa = spc[sw_a]; sb = spc[sw_b];
   IF (sa == 4 OR sb == 4 OR (sa > 0 AND sb > 0))
     moves--; mult = 1; choc_hit = 0;
+    IF (moves > 0 AND moves <= 3) play_sound(s_tick, 40, 100 + (3 - moves) * 15, 0); END
     do_combo(sw_a, sw_b); begin_pop();
     RETURN 0;
   END
   IF (find_runs() > 0)
     moves--; mult = 1; choc_hit = 0;
+    IF (moves > 0 AND moves <= 3) play_sound(s_tick, 40, 100 + (3 - moves) * 15, 0); END
     resolve(sw_a, sw_b); begin_pop();
     RETURN 0;
   END
   swap_cells(sw_a, sw_b);                          // no match: back it goes
   phase = 2; n_bounce++;
+  play_sound(s_bad, 50, 100, span(sw_a));
   RETURN 0;
 END
 
@@ -994,6 +1129,13 @@ BEGIN
     IF (ns_spc[i] == 3) made_w++; END
     IF (ns_spc[i] == 4) made_b++; END
   END
+  // the pop: higher with every cascade, louder for a big one
+  IF (n > 0)
+    snd_n++;
+    play_sound(s_pop[snd_n % 3], 45 + imin(n, 12) * 3, imin(88 + mult * 12, 220), 0);
+    play_sound(s_click, 35, 90 + (snd_n % 5) * 5, 0);
+  END
+  IF (n_ns > 0) play_sound(s_make, 50, 90 + ns_spc[0] * 10, span(ns_at[0])); END
   max_pop = imax(max_pop, n); max_mult = imax(max_mult, mult);
   IF (gtype == 1) gleft = n_jelly; END
   gravity();
@@ -1003,6 +1145,7 @@ END
 
 FUNCTION cheer(m);
 BEGIN
+  IF (m >= 2) play_sound(s_cheer, 55, imin(100 + (m - 2) * 12, 200), 0); END
   SWITCH (m)
     CASE 2 popup(232, 200, "COMBO x2", 8, 255, 255, 255, 26);
     CASE 3 popup(232, 200, "SWEET! x3", 9, 255, 150, 220, 28);
@@ -1028,6 +1171,7 @@ BEGIN
           IF (movable(j) AND spc[j] == 0 AND col[j] < 6)
             burst(j, 7, 5);
             col[j] = -1; blk[j] = 3; n_choc++; paint_cell(j); n = 1;
+            play_sound(s_spread, 60, 100, span(j));
           END
         END
       END
@@ -1095,6 +1239,7 @@ BEGIN
     IF (moves > 0)
       bonus = 1;
       popup(232, 180, "SUGAR CRUSH!", 12, 255, 120, 220, 34);
+      play_sound(s_sugar, 65, 100, 0);
       sugar_round(); begin_pop();
     ELSE
       finish(1);
@@ -1220,6 +1365,7 @@ BEGIN
     CASE 2 s = "COLLECT " + gleft + " CANDIES"; k = ndig(gleft) + 16;
   END
   popup(232, 200, "LEVEL " + level, ndig(level) + 6, 255, 240, 140, 34);
+  play_sound(s_start, 60, 100, 0);
   popup(232, 250, s, k, 255, 255, 255, 18);
   RETURN 0;
 END
@@ -1360,10 +1506,10 @@ BEGIN
     END
   END
   IF (click AND fget_distance(mouse.x, mouse.y, 40, 440) < 22 AND map_page > 0)
-    map_page--; draw_map();
+    map_page--; draw_map(); play_sound(s_menu, 55, 90, -60);
   END
   IF (click AND fget_distance(mouse.x, mouse.y, 600, 440) < 22 AND max_level > map_page * 15 + 15)
-    map_page++; draw_map();
+    map_page++; draw_map(); play_sound(s_menu, 55, 110, 60);
   END
   IF (key_pressed(_enter) OR key_pressed(_space)) start_level(max_level); END
   RETURN 0;
@@ -1407,7 +1553,7 @@ BEGIN
   IF (in_box(285, 320, 70, 40)) draw_rect(285, 320, 70, 3, '#ffffff'); END
   IF (won AND in_box(370, 320, 100, 40)) draw_rect(370, 320, 100, 3, '#ffffff'); END
   IF ((click AND in_box(170, 320, 100, 40)) OR key_pressed(_r)) start_level(level); RETURN 0; END
-  IF ((click AND in_box(285, 320, 70, 40)) OR key_pressed(_esc)) go_map(); RETURN 0; END
+  IF ((click AND in_box(285, 320, 70, 40)) OR key_pressed(_esc)) play_sound(s_menu, 55, 90, 0); go_map(); RETURN 0; END
   IF (won AND ((click AND in_box(370, 320, 100, 40)) OR key_pressed(_enter))) start_level(level + 1); END
   RETURN 0;
 END
@@ -1426,7 +1572,7 @@ BEGIN
   IF (click)
     IF (c >= 0 AND movable(c))
       IF (sel >= 0 AND adjacent(sel, c)) try_swap(sel, c); RETURN 0; END
-      IF (sel == c) sel = -1; drag = -1; ELSE sel = c; drag = c; dx0 = mx; dy0 = my; END
+      IF (sel == c) sel = -1; drag = -1; ELSE sel = c; drag = c; dx0 = mx; dy0 = my; play_sound(s_sel, 40, 95 + (c % 9) * 2, span(c)); END
     ELSE
       sel = -1;
     END
@@ -1459,7 +1605,7 @@ END
 
 FUNCTION play_frame(click);
 BEGIN
-  IF (key_pressed(_esc)) go_map(); RETURN 0; END
+  IF (key_pressed(_esc)) play_sound(s_menu, 55, 90, 0); go_map(); RETURN 0; END
   SWITCH (phase)
     CASE 0 idle_input(click);
     CASE 1 IF (at_rest()) after_swap(); END
@@ -1496,6 +1642,8 @@ BEGIN
   FOR i = 0 TO 80 slot(i); END
   fxman(); hud(); goal_icon(); overlay();
   FOR i = 0 TO 24 baker(i); END
+  make_sounds();
+  make_songs();
   LOOP
     ml = mouse.left;
     click = (ml AND lprev == 0); lprev = ml;
@@ -1509,6 +1657,7 @@ BEGIN
       CASE 2 play_frame(click);
       CASE 3 result_frame(click);
     END
+    update_music();
     FRAME;
   END
 END

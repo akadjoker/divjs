@@ -12,6 +12,16 @@ PROGRAM net_tanks;
 // the seed the host picked. Anything that differs between the two sides on
 // purpose (the menu choice, which tank is "you") lives in PRIVATE
 // variables: GLOBALs are part of the state the two sides compare.
+//
+// Sound (made by the engine: sfx, sfx_tone, song_*): shots, bounces that
+// ring higher each time, engines, explosions, a round start beep, a menu
+// tune, a battle tune (faster at match point) and a win / lose jingle.
+// Sound never changes the game's state, so it is safe in lockstep, but it
+// keeps to the same rules: no GLOBAL is used for it (the sound ids are
+// asked of sfx() when needed - the same recipe always gives the same id -
+// and the songs live in the main program's PRIVATE variables), no extra
+// process is created, and variations come from counters, never rand()
+// (the seeded generator both sides share). M turns the music on and off.
 
 GLOBAL
   SW = 640; SH = 480;
@@ -88,6 +98,71 @@ BEGIN
   gfx_circle(g_bullet, 3, 3, 2, 255, 250, 200);
   g_arena = new_graphic(SW, SH);
   RETURN 0;
+END
+
+// ---------------------------------------------------------------------
+// Sound: effects made from a recipe (the same recipe gives back the same
+// sound id, so asking for it every time costs nothing and needs no
+// GLOBAL), and the songs.
+// ---------------------------------------------------------------------
+
+FUNCTION snd_shot(); BEGIN RETURN sfx_tone(wave_square, 1100, 260, 120, 34); END
+FUNCTION snd_bounce(); BEGIN RETURN sfx_tone(wave_triangle, 1500, 1100, 45, 36); END
+FUNCTION snd_boom(); BEGIN RETURN sfx(sfx_explosion, 6); END
+FUNCTION snd_hit(); BEGIN RETURN sfx(sfx_hit, 3); END
+FUNCTION snd_engine(); BEGIN RETURN sfx_tone(wave_noise, 260, 120, 110, 30); END
+FUNCTION snd_beep(); BEGIN RETURN sfx_tone(wave_sine, 880, 880, 120, 45); END
+FUNCTION snd_menu(); BEGIN RETURN sfx(sfx_coin, 1); END
+FUNCTION snd_back(); BEGIN RETURN sfx_tone(wave_square, 600, 380, 70, 28); END
+
+// Makes every effect once at start-up, so none is made mid-match
+FUNCTION warm_sounds();
+BEGIN
+  snd_shot(); snd_bounce(); snd_boom(); snd_hit(); snd_engine(); snd_beep(); snd_menu(); snd_back();
+  RETURN 0;
+END
+
+// Songs: 0 menu, 1 battle, 2 match point, 3 win, 4 lose. The ids are kept
+// by the caller (the main program's PRIVATE variables).
+FUNCTION make_song(k);
+PRIVATE s = 0;
+BEGIN
+  IF (k == 0)
+    s = song_new(104);
+    song_track(s, inst_pad,
+      "E4 - - - - - - - - - - - - - - - | C4 - - - - - - - - - - - - - - - |" +
+      "D4 - - - - - - - - - - - - - - - | B3 - - - - - - - - - - - - - - - ", 22);
+    song_track(s, inst_pluck,
+      "E5 . B4 . G4 . B4 . E5 . B4 . G4 . B4 . | E5 . C5 . G4 . C5 . E5 . C5 . G4 . C5 . |" +
+      "F#5 . D5 . A4 . D5 . F#5 . D5 . A4 . D5 . | D#5 . B4 . F#4 . B4 . D#5 . B4 . F#4 . B4 . ", 22);
+    song_track(s, inst_bass,
+      "E3 - - - . . . . E3 - - - . . . . | C3 - - - . . . . C3 - - - . . . . |" +
+      "D3 - - - . . . . D3 - - - . . . . | B2 - - - . . . . B2 - - - . . . . ", 50);
+    song_track(s, inst_drums, "k . . . h . . . s . . . h . h . ", 22);
+  END
+  IF (k == 1 OR k == 2)
+    IF (k == 1) s = song_new(132); ELSE s = song_new(164); END
+    song_track(s, inst_square,
+      "E5 . . E5 . . G5 . | . E5 . D5 . C5 B4 . | E5 . . E5 . . G5 . | . A5 . G5 . E5 . . |" +
+      "C6 . . B5 . . G5 . | . A5 . G5 . E5 D5 . | E5 . . G5 . . A5 . | B5 - - - . . . . ", 24);
+    song_track(s, inst_bass,
+      "E3 . E3 E4 . E3 . E3 | E3 . E3 E4 . D3 . D3 | E3 . E3 E4 . E3 . E3 | A3 . A3 A4 . A3 . A3 |" +
+      "C3 . C3 C4 . C3 . C3 | D3 . D3 D4 . D3 . D3 | E3 . E3 E4 . E3 . E3 | B2 . B2 B3 . B2 . B2 ", 55);
+    IF (k == 1) song_track(s, inst_drums, "k . h . s . h . | k . h k s . h . ", 34); END
+    IF (k == 2) song_track(s, inst_drums, "k h s h k h s h | k h s h k k s s ", 40); END
+  END
+  IF (k == 3)
+    s = song_new(144);
+    song_track(s, inst_square, "E5 G5 B5 E6 - . B5 E6 - - - - . . . . ", 34);
+    song_track(s, inst_bass, "E3 . . . B3 . . . E3 - - - . . . . ", 55);
+    song_track(s, inst_drums, "k . h . s . h . k . . . . . . . ", 36);
+  END
+  IF (k == 4)
+    s = song_new(100);
+    song_track(s, inst_triangle, "B4 - A4 - G4 - F#4 - | E4 - - - - - - - . . . . . . . . ", 42);
+    song_track(s, inst_bass, "E3 - - - - - - - | E2 - - - - - - - . . . . . . . . ", 50);
+  END
+  RETURN s;
 END
 
 // ---------------------------------------------------------------------
@@ -174,6 +249,7 @@ END
 
 PROCESS tank(p);
 PRIVATE my_round = -1; spd = 0.0; nx = 0.0; ny = 0.0; reload = 0;
+  snd_shots = 0; snd_move = 0;     // sound only: shot counter (pitch), engine timer
 BEGIN
   z = -5;
   LOOP
@@ -196,11 +272,17 @@ BEGIN
         ny = y - sin(angle) * spd;
         IF (NOT blocked(nx, y)) x = nx; END
         IF (NOT blocked(x, ny)) y = ny; END
+        snd_move++;                  // a soft engine rumble while driving
+        IF (snd_move % 14 == 1) play_sound(snd_engine(), 18, 80 + p * 12 + (snd_move % 28) / 2, (x - 320) / 3); END
+      ELSE
+        snd_move = 0;
       END
       IF (reload > 0) reload = reload - 1; END
       IF (ctl(p, 4) AND reload == 0 AND shots[p] < MAX_SHOTS)
         bullet(p, x + cos(angle) * 18, y - sin(angle) * 18, angle);
         reload = 12;
+        snd_shots++;
+        play_sound(snd_shot(), 55, 92 + (snd_shots % 3) * 6 + p * 8, (x - 320) / 3);
       END
     END
     IF (NOT alive[p])
@@ -216,6 +298,7 @@ END
 
 PROCESS bullet(owner, bx, by, dir);
 PRIVATE vx = 0.0; vy = 0.0; bounces = 0; life = 240; q = 0; nx = 0.0; ny = 0.0;
+  snd_b = 0;                         // sound only: bounces already heard
 BEGIN
   x = bx; y = by; graph = g_bullet; z = -6;
   vx = cos(dir) * 5.0;
@@ -228,6 +311,11 @@ BEGIN
     IF (solid(nx, y)) vx = -vx; bounces = bounces + 1; ELSE x = nx; END
     ny = y + vy;
     IF (solid(x, ny)) vy = -vy; bounces = bounces + 1; ELSE y = ny; END
+    // sound only: a ping for each bounce this frame, higher every time
+    IF (bounces > snd_b AND bounces <= 2)
+      play_sound(snd_bounce(), 40, 100 + bounces * 15, (x - 320) / 3);
+    END
+    snd_b = bounces;
     FOR q = 0 TO 1
       // Its own tank only after the first bounce.
       IF (alive[q] AND round_timer == 0 AND (q != owner OR bounces > 0))
@@ -236,6 +324,8 @@ BEGIN
           score[1 - q] = score[1 - q] + 1;
           round_timer = 90;
           life = 0;
+          play_sound(snd_boom(), 90, 100, (x - 320) / 3);
+          play_sound(snd_hit(), 70, 80, (x - 320) / 3);
         END
       END
     END
@@ -260,10 +350,16 @@ BEGIN
 END
 
 PRIVATE choice = 0; st = 0; msg = ''; wait = 0; me = 0;
+  // sound only, local to this side: the songs, the one playing, music on
+  m_menu = 0; m_battle = 0; m_point = 0; m_win = 0; m_lose = 0; cur = 0; music = 1;
+  want = 0; lp = 1; last_round = 0; k = 0;
 BEGIN
   set_mode(SW, SH);
   set_fps(60, 0);
   make_graphics();
+  warm_sounds();
+  m_menu = make_song(0); m_battle = make_song(1); m_point = make_song(2);
+  m_win = make_song(3); m_lose = make_song(4);
 
   LOOP
     // ── Menu ─────────────────────────────────────────────────────────
@@ -271,7 +367,12 @@ BEGIN
     choice = 0;
     put_screen(0, 0);
     screen_color('#10161c');
+    IF (music AND cur != m_menu) cur = m_menu; song_play(m_menu); END
     WHILE (choice == 0)
+      IF (key_pressed(_m))
+        music = 1 - music; cur = 0;
+        IF (music) cur = m_menu; song_play(m_menu); ELSE song_stop(); END
+      END
       set_color('#ffe070');
       text(250, 90, 'N E T   T A N K S');
       set_color('#dfe8f0');
@@ -283,7 +384,7 @@ BEGIN
       set_color('#8fa4b8');
       text(150, 330, 'Online: arrows or WASD to drive, SPACE to fire');
       text(150, 350, 'One keyboard: blue WASD + SPACE, red arrows + ENTER');
-      text(150, 370, 'Bullets bounce twice. First to ' + WIN_SCORE + ' wins.');
+      text(150, 370, 'Bullets bounce twice. First to ' + WIN_SCORE + ' wins.  M music');
       IF (msg != '') set_color('#ff9080'); text(150, 410, msg); END
       IF (key_pressed(_1)) choice = 1; END
       IF (key_pressed(_2)) choice = 2; END
@@ -292,6 +393,7 @@ BEGIN
       IF (key_pressed(_5)) choice = 5; END
       FRAME;
     END
+    play_sound(snd_menu(), 70, 100, 0);
     msg = '';
 
     // ── Connecting ───────────────────────────────────────────────────
@@ -307,7 +409,7 @@ BEGIN
         ELSE text(240, 220, 'Connecting to the host...'); END
         set_color('#8fa4b8');
         text(250, 250, 'ESC to go back');
-        IF (key_pressed(_esc)) net_close(); END
+        IF (key_pressed(_esc)) net_close(); play_sound(snd_back(), 60, 100, 0); END
         FRAME;
         st = net_status();
       END
@@ -336,12 +438,15 @@ BEGIN
     new_match();
     tank(0);
     tank(1);
+    last_round = round_no;
+    play_sound(snd_beep(), 55, 100, 0);
     LOOP
       IF (online AND net_status() == 3)
         msg = 'The other player left.';
         BREAK;
       END
       IF (key_pressed(_esc))
+        play_sound(snd_back(), 60, 100, 0);
         BREAK;
       END
       wipe = 0;
@@ -362,6 +467,27 @@ BEGIN
         IF (wait <= 0)
           new_match();
         END
+      END
+
+      // Sound, this side only: a beep for every new round, and the song
+      // for the moment (read from the game's state, never written to it)
+      IF (round_no != last_round)
+        last_round = round_no;
+        play_sound(snd_beep(), 55, 100 + (score[0] + score[1]) * 4, 0);
+      END
+      IF (key_pressed(_m))
+        music = 1 - music; cur = 0;
+        IF (music == 0) song_stop(); END
+      END
+      IF (music)
+        want = m_battle; lp = 1;
+        IF (score[0] == WIN_SCORE - 1 OR score[1] == WIN_SCORE - 1) want = m_point; END
+        IF (match_over)
+          lp = 0; want = m_win;
+          // online: the jingle of whoever this side is; one keyboard: a win
+          IF (online AND match_over - 1 != me) want = m_lose; END
+        END
+        IF (want != cur) cur = want; song_play(want, lp); END
       END
 
       // HUD (this side only: drawing is not part of the simulation).
@@ -386,6 +512,7 @@ BEGIN
     END
 
     // Back to the menu.
+    cur = 0;
     wipe = 1;
     signal(TYPE tank, s_kill);
     FRAME;

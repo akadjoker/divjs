@@ -9,6 +9,11 @@ PROGRAM invaders;
 // the formation walks as it marches.
 // The shields are bitmaps too: one graphic per shield, redrawn from a
 // grid of 4x4 cells whenever a shot, bomb or alien eats a hole in it.
+// Sound: every effect and tune is made by the engine (sfx, sfx_tone,
+// song_*), no files: the classic four-note march that speeds up as the
+// formation thins out, the saucer's siren, shots, hits, explosions, a
+// chiptune on the title and a quieter one under the battle, jingles for
+// a cleared wave and game over. M switches the music on and off.
 // ---------------------------------------------------------------------
 
 GLOBAL bits[39];          // one species' half-grid: 8 rows x 5 columns
@@ -35,6 +40,16 @@ GLOBAL bomb_t = 60; max_bombs = 2; bomb_spd = 3;
 GLOBAL nbombs = 0; nshots = 0;
 GLOBAL ufo_t = 900; ufo_on = 0;
 GLOBAL player_hit = 0; inv = 0; pause_t = 0;
+
+// Sound: ids made once at the start, a private random generator for the
+// pitch variations (the game's own rand() sequence stays untouched) and
+// the music the game wants now (snd_update starts it when it changes)
+GLOBAL sn_shot = 0; sn_kill[2]; sn_crunch = 0; sn_march[3]; sn_mi = 0;
+GLOBAL sn_ufo[1]; sn_ufo_boom = 0; sn_chip = 0; sn_clash = 0;
+GLOBAL sn_die = 0; sn_die2 = 0; sn_ding = 0; sn_start = 0; sn_spawn = 0;
+GLOBAL sn_r = 4711; sn_tick = 0; sn_chip_t = -99; sn_kill_t = -99;
+GLOBAL sn_music = 1; sn_want = 0; sn_cur = -1; sn_loop = 1;
+GLOBAL song_title = 0; song_battle = 0; song_over = 0;
 
 GLOBAL SY = 364;          // top of the shields
 GLOBAL GROUND = 458;      // the ground line
@@ -155,6 +170,114 @@ BEGIN
   RETURN 0;
 END
 
+// --- Sound ---------------------------------------------------------------
+
+// A random number for sound variations only (a small LCG of our own).
+FUNCTION srnd(a, b);
+BEGIN
+  sn_r = (sn_r * 1103 + 4271) % 65521;
+  RETURN a + sn_r % (b - a + 1);
+END
+
+FUNCTION make_sounds();
+BEGIN
+  sn_shot = sfx_tone(wave_square, 1500, 260, 120, 34);
+  sn_kill[0] = sfx(sfx_hit, 3);                // one crunch per row type
+  sn_kill[1] = sfx(sfx_hit, 8);
+  sn_kill[2] = sfx(sfx_hit, 14);
+  sn_crunch = sfx_tone(wave_noise, 5000, 900, 160, 30);
+  // The march: four falling bass notes, one per step
+  sn_march[0] = sfx_tone(wave_square, 98, 92, 110, 62);
+  sn_march[1] = sfx_tone(wave_square, 87, 82, 110, 62);
+  sn_march[2] = sfx_tone(wave_square, 78, 73, 110, 62);
+  sn_march[3] = sfx_tone(wave_square, 73, 69, 110, 62);
+  sn_ufo[0] = sfx_tone(wave_square, 620, 1150, 170, 20);   // the saucer's siren
+  sn_ufo[1] = sfx_tone(wave_square, 1150, 620, 170, 20);
+  sn_ufo_boom = sfx(sfx_explosion, 21);
+  sn_chip = sfx_tone(wave_noise, 1800, 300, 70, 34);
+  sn_clash = sfx(sfx_blip, 4);
+  sn_die = sfx(sfx_explosion, 7);
+  sn_die2 = sfx_tone(wave_saw, 700, 55, 900, 30);
+  sn_ding = sfx_tone(wave_triangle, 880, 880, 170, 45);
+  sn_start = sfx(sfx_coin, 3);
+  sn_spawn = sfx(sfx_powerup, 2);
+  RETURN 0;
+END
+
+FUNCTION make_songs();
+BEGIN
+  // Title: an eerie minor theme over a pulsing bass
+  song_title = song_new(112);
+  song_track(song_title, inst_square,
+    "A4 - - - C5 - - - E5 - - - D5 - C5 - | B4 - - - G4 - - - A4 - - - - - . . |" +
+    "A4 - - - C5 - - - E5 - - - G5 - F5 - | E5 - - - D5 - B4 - C5 - B4 - A4 - . . ", 34);
+  song_track(song_title, inst_bass,
+    "A3 . . A3 . . A3 . F3 . . F3 . . F3 . | G3 . . G3 . . G3 . E3 . . E3 . E3 . ", 55);
+  song_track(song_title, inst_pad,
+    "A4 - - - - - - - - - - - - - - - | F4 - - - - - - - - - - - - - - - |" +
+    "G4 - - - - - - - - - - - - - - - | E4 - - - - - - - - - - - - - - - ", 22);
+  song_track(song_title, inst_drums, "k . . . h . . . s . . . h . h . ", 34);
+  // Battle: soft arpeggios and hi-hats, the march is the heartbeat
+  song_battle = song_new(120);
+  song_track(song_battle, inst_pluck,
+    "A3 C4 E4 A4 E4 C4 A3 C4 E4 A4 E4 C4 A3 C4 E4 C4 | F3 A3 C4 F4 C4 A3 F3 A3 C4 F4 C4 A3 F3 A3 C4 A3 |" +
+    "G3 B3 D4 G4 D4 B3 G3 B3 D4 G4 D4 B3 G3 B3 D4 B3 | E3 G#3 B3 E4 B3 G#3 E3 G#3 B3 E4 B3 G#3 E3 G#3 B3 G#3 ", 20);
+  song_track(song_battle, inst_pad,
+    "A4 - - - - - - - - - - - - - - - | F4 - - - - - - - - - - - - - - - |" +
+    "G4 - - - - - - - - - - - - - - - | E4 - - - - - - - - - - - - - - - ", 14);
+  song_track(song_battle, inst_drums, "h . . h . . h . h . . h . . h h ", 16);
+  // Game over: a falling phrase, played once
+  song_over = song_new(96);
+  song_track(song_over, inst_square,
+    "E5 - D5 - C5 - B4 - A4 - - - G#4 - - - A4 - - - - - - - . . . . ", 40);
+  song_track(song_over, inst_bass,
+    "A3 - - - - - - - F3 - - - E3 - - - A2 - - - - - - - . . . . ", 60);
+  song_track(song_over, inst_drums, "k . . . . . . . k . . . s . . . k . . . . . . . ", 40);
+  music_volume(40);
+  RETURN 0;
+END
+
+// Called once a frame by the main loops: M toggles the music, and the
+// song the game wants is started when it changes (a jingle, loop 0,
+// plays even with the music off).
+FUNCTION snd_update();
+BEGIN
+  sn_tick = sn_tick + 1;
+  IF (key_pressed(_m)) sn_music = 1 - sn_music; sn_cur = -1; END
+  IF (sn_want != sn_cur)
+    IF (sn_want AND (sn_music OR sn_loop == 0)) song_play(sn_want, sn_loop); ELSE song_stop(); END
+    sn_cur = sn_want;
+  END
+  RETURN 0;
+END
+
+FUNCTION want_song(sng, lp);
+BEGIN
+  sn_want = sng; sn_loop = lp;
+  RETURN 0;
+END
+
+// Pan for a screen x: -70 at the left edge, 70 at the right.
+FUNCTION sn_pan(px);
+BEGIN
+  RETURN clamp((px - 280) / 4, -70, 70);
+END
+
+// A little tune of up to four notes of sound snd (pitches in percent,
+// 0 = none), gap frames apart.
+PROCESS sn_arp(snd, vol, gap, a, b, c, d);
+PRIVATE k; p;
+BEGIN
+  FOR k = 0 TO 3
+    p = a;
+    IF (k == 1) p = b; END
+    IF (k == 2) p = c; END
+    IF (k == 3) p = d; END
+    IF (p > 0) play_sound(snd, vol, p, 0); END
+    FRAME(gap * 100);
+  END
+END
+
 // --- Shields ------------------------------------------------------------
 
 // Redraws shield k from its cells.
@@ -242,6 +365,16 @@ BEGIN
   RETURN 0;
 END
 
+// A shot or bomb eating into a shield (or the ground): quiet, at most one
+// every few frames.
+FUNCTION chip_sound(px);
+BEGIN
+  IF (sn_tick - sn_chip_t < 4) RETURN 0; END
+  sn_chip_t = sn_tick;
+  play_sound(sn_chip, 40, srnd(80, 120), sn_pan(px));
+  RETURN 1;
+END
+
 // --- Processes ------------------------------------------------------------
 
 PROCESS shield(k);
@@ -300,6 +433,11 @@ BEGIN
       IF (i < 10) t = 0; END
       score = score + (3 - t) * 10;
       burst(fx + (i % 10) * 40, fy + (i / 10) * 30, gX[t], 18);
+      IF (sn_tick - sn_kill_t >= 2)                 // two in one frame sound as one
+        sn_kill_t = sn_tick;
+        play_sound(sn_kill[t], 70, 90 + t * 12 + srnd(-6, 6), sn_pan(fx + (i % 10) * 40));
+        play_sound(sn_crunch, 30, srnd(85, 115), sn_pan(fx + (i % 10) * 40));
+      END
       signal(a, s_kill);
       RETURN 1;
     END
@@ -315,7 +453,7 @@ BEGIN
   LOOP
     y = y - 8;
     IF (y < 26) burst(x, 30, g_spark, 10); BREAK; END
-    IF (shield_point(x, y - 5)) BREAK; END
+    IF (shield_point(x, y - 5)) chip_sound(x); BREAK; END
     a = collision(TYPE alien);
     IF (a) kill_alien(a); BREAK; END
     a = collision(TYPE ufo);
@@ -325,11 +463,13 @@ BEGIN
       score = score + a;
       burst(x, y, g_boom, 24);
       popup(x, y, a);
+      play_sound(sn_ufo_boom, 90, 90, sn_pan(x));
+      sn_arp(sn_ding, 40, 5, 150, 189, 225, 300);
       signal(TYPE ufo, s_kill);
       BREAK;
     END
     a = collision(TYPE bomb);
-    IF (a) a.y = 999; burst(x, y, g_spark, 10); BREAK; END  // shot meets bomb
+    IF (a) a.y = 999; burst(x, y, g_spark, 10); play_sound(sn_clash, 45, srnd(90, 115), sn_pan(x)); BREAK; END  // shot meets bomb
     FRAME;
   END
   nshots = nshots - 1;
@@ -345,8 +485,8 @@ BEGIN
     t = t + 1;
     IF (t % 12 < 6) graph = g_bomb1; ELSE graph = g_bomb2; END
     IF (y > 900) BREAK; END                     // removed by a shot
-    IF (y > GROUND - 6) burst(x, GROUND - 3, g_spark, 12); BREAK; END
-    IF (shield_point(x, y + 6)) BREAK; END
+    IF (y > GROUND - 6) burst(x, GROUND - 3, g_spark, 12); chip_sound(x); BREAK; END
+    IF (shield_point(x, y + 6)) chip_sound(x); BREAK; END
     IF (inv == 0 AND player_hit == 0 AND collision(TYPE cannon))
       player_hit = 1;
       BREAK;
@@ -369,6 +509,7 @@ BEGIN
     cool = cool - 1;
     IF (key(_space) AND cool <= 0 AND nshots < 2)
       shot(x, y - 12);
+      play_sound(sn_shot, 55, srnd(92, 110), sn_pan(x));
       cool = 14;
     END
     // blink while invulnerable after a respawn
@@ -376,15 +517,20 @@ BEGIN
     FRAME;
   END
   burst(x, y - 2, g_boom, 60);
+  play_sound(sn_die, 100, 75, sn_pan(x));
+  play_sound(sn_die2, 60, 100, sn_pan(x));
 END
 
 PROCESS ufo(d);
+PRIVATE t;
 BEGIN
   graph = g_ufo; y = 44;
   IF (d > 0) x = -20; ELSE x = 580; END
   ufo_on = 1;
   LOOP
     x = x + d * 2;
+    IF (t % 9 == 0) play_sound(sn_ufo[(t / 9) % 2], 45, 100, sn_pan(x)); END  // the siren loop
+    t = t + 1;
     IF (x < -30 OR x > 590) BREAK; END
     FRAME;
   END
@@ -491,6 +637,8 @@ BEGIN
   set_mode(560, 480);
   set_fps(60, 0);
   make_static();
+  make_sounds();
+  make_songs();
   put_screen(0, g_bg);
   hiscore = 0;
   LOOP
@@ -502,6 +650,7 @@ BEGIN
       showcase(3, 244, 310);
       state = 0;
       t = 0;
+      want_song(song_title, 1);
       REPEAT
         t = t + 1;
         IF (t % 40 == 0) anim = 1 - anim; END
@@ -519,8 +668,12 @@ BEGIN
         IF ((t / 30) % 3) text(220, 390, "PRESS SPACE TO START"); END
         set_color('#aaa');
         text(8, 6, "HI " + hiscore);
+        set_color('#888');
+        IF (sn_music) text(222, 420, "M  music on/off (on)"); ELSE text(222, 420, "M  music on/off (off)"); END
+        snd_update();
         FRAME;
       UNTIL (key_pressed(_space) OR key_pressed(_enter))
+      play_sound(sn_start, 70, 100, 0);
       let_me_alone();
       show_title = 0;        // later games restart straight from GAME OVER
     END
@@ -533,12 +686,16 @@ BEGIN
     cannon();
     state = 1;
     pause_t = 0;
+    want_song(song_battle, 1);
     WHILE (state != 3)
       IF (inv > 0) inv = inv - 1; END
       IF (state == 1 AND player_hit == 0)
         step_t = step_t - 1;
         IF (step_t <= 0)
           IF (march()) lives = 0; player_hit = 1; END
+          // the march: louder as the formation comes down
+          play_sound(sn_march[sn_mi], 60 + clamp((fy - 86) / 6, 0, 30), 100, 0);
+          sn_mi = (sn_mi + 1) % 4;
         END
         bomb_t = bomb_t - 1;
         IF (bomb_t <= 0)
@@ -550,7 +707,10 @@ BEGIN
           IF (ufo_on == 0 AND left >= 8) ufo(rand(0, 1) * 2 - 1); END
           ufo_t = rand(900, 1500);
         END
-        IF (left <= 0) state = 2; pause_t = 120; END
+        IF (left <= 0)
+          state = 2; pause_t = 120;
+          sn_arp(sn_ding, 50, 7, 100, 126, 150, 200);   // wave cleared
+        END
       END
       // Cannon destroyed: pause, then respawn or game over
       IF (player_hit AND state == 1)
@@ -563,10 +723,12 @@ BEGIN
           pause_t = 0;
           IF (lives <= 0)
             state = 3;
+            want_song(song_over, 0);
           ELSE
             signal(TYPE bomb, s_kill); nbombs = 0;
             player_hit = 0; inv = 90;
             cannon();
+            play_sound(sn_spawn, 45, 100, 0);
           END
         END
       END
@@ -575,7 +737,7 @@ BEGIN
         set_color('#8f8');
         text(238, 290, "WAVE " + wave + " CLEARED");
         pause_t = pause_t - 1;
-        IF (pause_t <= 0) pause_t = 0; start_wave(); state = 1; END
+        IF (pause_t <= 0) pause_t = 0; start_wave(); state = 1; sn_mi = 0; END
       END
       IF (score > hiscore) hiscore = score; END
       // HUD
@@ -589,6 +751,7 @@ BEGIN
       END
       set_color('#3e5');
       text(90, 466, "LIVES " + lives);
+      snd_update();
       FRAME;
     END
 
@@ -608,6 +771,7 @@ BEGIN
         set_color('#ff8');
         text(214, 312, "PRESS SPACE TO RESTART");
       END
+      snd_update();
       FRAME;
     UNTIL (t > 60 AND (key_pressed(_space) OR key_pressed(_enter)))
   END

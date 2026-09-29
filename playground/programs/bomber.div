@@ -26,6 +26,11 @@ PROGRAM bomber;
 // * Rounds last 90 seconds, then walls fall in a spiral (sudden death).
 //   First to N round wins takes the match. The title screen runs a CPU
 //   battle behind the menu. Every graphic is drawn in code.
+// * Sound, made by the engine (sfx, sfx_tone, song_*): fuses, booms whose
+//   pitch climbs along a chain reaction, crumbling blocks, power-ups,
+//   curses, kicks, warps, falling walls, deaths; a title tune, two battle
+//   tunes (one per round, in turn), a faster one for the last seconds and
+//   sudden death, and win / lose jingles. M turns the music on and off.
 // ---------------------------------------------------------------------
 
 GLOBAL
@@ -113,6 +118,14 @@ GLOBAL
   st_sdkill = 0; st_kicks = 0; st_warps = 0; st_remote = 0; st_curses = 0;
   st_rounds = 0; st_draws = 0;
 
+  // --- Sound (effects made once at start-up, songs, and a little memory
+  // of what was played so a chain reaction climbs instead of stacking up)
+  s_place = 0; s_boom[2]; s_chain = 0; s_block = 0; s_pick = 0; s_skull = 0; s_die = 0;
+  s_kick = 0; s_warp = 0; s_wall = 0; s_hurry = 0; s_tick = 0; s_remote = 0; s_menu = 0;
+  s_ok = 0; s_ready = 0; s_go = 0; s_ouch = 0;
+  m_title = 0; m_battle[1]; m_hurry = 0; m_win = 0; m_champ = 0; m_lose = 0;
+  music_on = 1; cur_song = 0; snd_n = 0; snd_boom_t = -99; snd_chain = 0; snd_block_t = -99;
+
 // ======================================================================
 // Small helpers
 // ======================================================================
@@ -154,6 +167,144 @@ BEGIN
   IF (d == 0) RETURN 'EASY'; END
   IF (d == 2) RETURN 'HARD'; END
   RETURN 'NORMAL';
+END
+
+// ======================================================================
+// Sound: effects and songs, all made by the engine
+// ======================================================================
+
+FUNCTION make_sounds();
+PRIVATE i;
+BEGIN
+  s_place = sfx_tone(wave_triangle, 330, 150, 90, 55);      // a bomb set down
+  FOR i = 0 TO 2 s_boom[i] = sfx(sfx_explosion, 3 + i); END
+  s_chain = sfx_tone(wave_square, 500, 1000, 110, 26);      // the chain "zing"
+  s_block = sfx_tone(wave_noise, 2400, 260, 200, 42);       // bricks crumbling
+  s_pick = sfx(sfx_coin, 3);
+  s_skull = sfx_tone(wave_saw, 420, 70, 520, 34);
+  s_die = sfx_tone(wave_square, 950, 60, 760, 40);
+  s_ouch = sfx(sfx_hit, 4);
+  s_kick = sfx_tone(wave_noise, 900, 120, 90, 60);
+  s_warp = sfx_tone(wave_sine, 260, 1700, 280, 45);
+  s_wall = sfx_tone(wave_noise, 500, 50, 240, 60);
+  s_hurry = sfx_tone(wave_saw, 520, 1040, 650, 34);
+  s_tick = sfx_tone(wave_sine, 1500, 1500, 45, 40);
+  s_remote = sfx(sfx_blip, 2);
+  s_menu = sfx_tone(wave_square, 520, 640, 45, 28);
+  s_ok = sfx(sfx_coin, 1);
+  s_ready = sfx_tone(wave_triangle, 440, 440, 160, 50);
+  s_go = sfx_tone(wave_triangle, 880, 880, 320, 50);
+  RETURN 0;
+END
+
+FUNCTION make_songs();
+BEGIN
+  // Title: a bouncy tune in C
+  m_title = song_new(132);
+  song_track(m_title, inst_square,
+    "C5 . G4 . C5 . E5 . | G5 - E5 . C5 . D5 . | E5 . D5 . C5 . A4 . | G4 - - . . . . . |" +
+    "C5 . G4 . C5 . E5 . | G5 - A5 . G5 . E5 . | F5 . E5 . D5 . B4 . | C5 - - . . . . . ", 34);
+  song_track(m_title, inst_bass,
+    "C4 . . C4 G3 . . . | C4 . . C4 G3 . . . | A3 . . A3 E3 . . . | G3 . . G3 D4 . . . |" +
+    "C4 . . C4 G3 . . . | C4 . . C4 G3 . . . | G3 . . G3 D4 . . . | C4 . G3 . C4 . . . ", 55);
+  song_track(m_title, inst_drums, "k . h . s . h . | k . h k s . h h ", 36);
+
+  // Battle A: driving, in A minor
+  m_battle[0] = song_new(150);
+  song_track(m_battle[0], inst_square,
+    "A4 . C5 . E5 . A5 . | G5 . E5 . C5 . D5 - | E5 . . E5 D5 . C5 . | B4 - G#4 - B4 . . . |" +
+    "A4 . C5 . E5 . A5 . | C6 . B5 . A5 . G5 - | F5 . E5 . D5 . E5 . | A4 - - - . . . . ", 28);
+  song_track(m_battle[0], inst_bass,
+    "A3 A3 . A3 A4 . A3 . | C4 C4 . C4 C5 . C4 . | A3 A3 . A3 A4 . A3 . | E3 E3 . E3 E4 . E3 . |" +
+    "A3 A3 . A3 A4 . A3 . | F3 F3 . F3 F4 . F3 . | D3 D3 . D3 E3 E3 . E3 | A3 . A3 . A4 . . . ", 55);
+  song_track(m_battle[0], inst_drums, "k . h . s . h k | k . h . s . h h ", 42);
+
+  // Battle B: a plucked riff in D
+  m_battle[1] = song_new(144);
+  song_track(m_battle[1], inst_pluck,
+    "D5 . . F5 . G5 . A5 | . C6 . A5 G5 . F5 . | D5 . . F5 . G5 . A5 | . G5 . F5 E5 - - . |" +
+    "D5 . . F5 . G5 . A5 | . C6 . D6 C6 . A5 . | G5 . F5 . E5 . C5 . | D5 - - - . . . . ", 34);
+  song_track(m_battle[1], inst_bass,
+    "D3 . D4 . D3 . D4 . | C3 . C4 . C3 . C4 . | D3 . D4 . D3 . D4 . | A2 . A3 . C3 . C4 . |" +
+    "D3 . D4 . D3 . D4 . | F3 . F4 . F3 . F4 . | C3 . C4 . C3 . C4 . | D3 . D4 . A2 . A3 . ", 58);
+  song_track(m_battle[1], inst_pad,
+    "F4 - - - - - - - | E4 - - - - - - - | F4 - - - - - - - | E4 - - - - - - - |" +
+    "F4 - - - - - - - | A4 - - - - - - - | G4 - - - - - - - | F4 - - - - - - - ", 14);
+  song_track(m_battle[1], inst_drums, "k . h . s . h . | k k h . s . h s ", 40);
+
+  // Hurry: the last seconds and sudden death, fast and anxious
+  m_hurry = song_new(184);
+  song_track(m_hurry, inst_square,
+    "E5 F5 E5 . E5 F5 E5 . | G5 F5 E5 . D5 . E5 . | E5 F5 E5 . E5 F5 E5 . | B5 A5 G5 . F5 . E5 . ", 28);
+  song_track(m_hurry, inst_bass, "E3 . E4 . E3 . E4 . | E3 . E4 . F3 . F4 . ", 60);
+  song_track(m_hurry, inst_drums, "k h s h k h s h | k h s h k k s s ", 44);
+
+  // Jingles (played once)
+  m_win = song_new(150);
+  song_track(m_win, inst_square, "C5 E5 G5 C6 - . G5 - C6 - - - . . . . ", 36);
+  song_track(m_win, inst_bass, "C4 . . . . . G3 - C4 - - - . . . . ", 55);
+  song_track(m_win, inst_drums, "k . . . s . . . k . . . . . . . ", 40);
+  m_champ = song_new(140);
+  song_track(m_champ, inst_square,
+    "G4 . C5 . E5 . G5 - - . E5 . G5 - - - | A5 - G5 - F5 - E5 - D5 - B4 - G4 - - - |" +
+    "C5 . E5 . G5 . C6 - - - - - - - . . ", 36);
+  song_track(m_champ, inst_bass,
+    "C4 - - - - - - - C4 - - - - - - - | F3 - - - - - - - G3 - - - - - - - |" +
+    "C4 - - - - - - - C4 - - - - - . . ", 55);
+  song_track(m_champ, inst_drums,
+    "k . . . s . . . k . . . s . . . | k . . . s . . . k . s . s s s s |" +
+    "k . . . . . . . k . . . . . . . ", 40);
+  m_lose = song_new(110);
+  song_track(m_lose, inst_triangle, "E5 - D5 - C5 - B4 - | A4 - - - G#4 - - - | A4 - - - - - - - ", 42);
+  song_track(m_lose, inst_bass, "A3 - - - - - - - | E3 - - - - - - - | A2 - - - - - - - ", 50);
+  RETURN 0;
+END
+
+// An effect from the arena: panned to cell c (-1 centre), and much softer
+// while the title screen's CPU battle plays behind the menu
+FUNCTION sfxp(id, vol, pitch, c);
+PRIVATE pan = 0;
+BEGIN
+  IF (attract) vol = vol * 25 / 100; END
+  IF (c >= 0) pan = (cxp(c) - 320) / 3; END
+  play_sound(id, vol, pitch, pan);
+  RETURN 0;
+END
+
+// A little pitch wobble so repeated effects do not sound identical
+FUNCTION wobble(w);
+BEGIN
+  snd_n++;
+  RETURN 100 - w + (snd_n * 7) % (w * 2 + 1);
+END
+
+// The song for the moment: title, battle, hurry, or a jingle once
+FUNCTION update_music();
+PRIVATE want = 0; lp = 1;
+BEGIN
+  IF (key_pressed(_m))
+    music_on = 1 - music_on;
+    IF (music_on == 0) song_stop(); END
+    cur_song = 0;
+  END
+  IF (music_on == 0) RETURN 0; END
+  want = cur_song;
+  IF (attract)
+    want = m_title;
+  ELSE
+    IF (state == 1 OR state == 2)
+      IF (sd_on OR tleft < 600) want = m_hurry; ELSE want = m_battle[round % 2]; END
+    END
+    IF (state == 3 OR state == 4)
+      lp = 0; want = m_lose;
+      IF (winner >= 0) IF (p_ctl[winner] != 3) want = m_win; IF (state == 4) want = m_champ; END END END
+    END
+  END
+  IF (want != cur_song)
+    cur_song = want;
+    IF (want) song_play(want, lp); END
+  END
+  RETURN 0;
 END
 
 // ======================================================================
@@ -542,6 +693,7 @@ BEGIN
   FOR k = 0 TO 3 IF (p_on[k]) bomber(k); END END
   IF (attract) logo(); END
   banner(g_ready, 60, 0);
+  sfxp(s_ready, 50, 100, -1);
   state = 1; state_t = 0;
 END
 
@@ -972,27 +1124,39 @@ END
 // Bomb slot k goes off: a cross of flames, each arm stopped by a wall, by
 // the first soft block (destroyed), by a bomb (set off) or by an item
 FUNCTION explode(k);
-PRIVATE c; o; f; d; r; n; sl;
+PRIVATE c; o; f; d; r; n; sl; nb = 0; nch = 0;
 BEGIN
   c = b_cell[k]; o = b_own[k]; f = b_fire[k];
   b_on[k] = 0; bombc[c] = 0;
   IF (p_bout[o] > 0) p_bout[o]--; END
   st_expl++;
+  // sound: one boom a frame; booms following each other closely are a
+  // chain reaction, and every link of it sounds a little higher
+  IF (tick - snd_boom_t <= CHAIN + 4) snd_chain++; ELSE snd_chain = 0; END
+  IF (snd_boom_t != tick)
+    snd_boom_t = tick;
+    sfxp(s_boom[st_expl % 3], 85, mn(90 + snd_chain * 9, 170) + (st_expl % 5) * 2, c);
+    IF (snd_chain > 0) sfxp(s_chain, 45, mn(100 + snd_chain * 14, 240), c); END
+  END
   add_flame(c, 0, 0, o);
   FOR d = 0 TO 3
     n = c;
     FOR r = 1 TO f
       n = n + doff[d];
       IF (cell[n] == 1 OR cell[n] == 4) BREAK; END
-      IF (cell[n] == 2) cell[n] = 4; st_blocks++; burn(n); BREAK; END
+      IF (cell[n] == 2) cell[n] = 4; st_blocks++; burn(n); nb++; BREAK; END
       IF (bombc[n])
         sl = bombc[n] - 1;
-        IF (b_time[sl] > tick + CHAIN) b_time[sl] = tick + CHAIN; st_chain++; END
+        IF (b_time[sl] > tick + CHAIN) b_time[sl] = tick + CHAIN; st_chain++; nch++; END
         BREAK;
       END
       IF (itm[n] > 0) itm[n] = 0; add_flame(n, 2, d, o); puff(n, 1, 4); BREAK; END
       IF (r == f) add_flame(n, 2, d, o); ELSE add_flame(n, 1, d, o); END
     END
+  END
+  IF (nb > 0 AND snd_block_t != tick)
+    snd_block_t = tick;
+    sfxp(s_block, 40 + mn(nb, 4) * 8, wobble(8), c);
   END
   dirty = 1;
   RETURN 0;
@@ -1012,6 +1176,7 @@ BEGIN
       bombc[c] = k + 1; p_bout[pi]++;
       b_pid[k] = bomb(k);
       dirty = 1; st_bombs++;
+      sfxp(s_place, 60, wobble(6), c);
       RETURN 1;
     END
   END
@@ -1024,7 +1189,7 @@ BEGIN
   FOR k = 0 TO 39
     IF (b_on[k] AND b_own[k] == pi AND b_rem[k] AND b_time[k] > tick + 1) b_time[k] = tick; n++; END
   END
-  IF (n) st_remote++; END
+  IF (n) st_remote++; sfxp(s_remote, 60, 120, -1); END
   RETURN 0;
 END
 
@@ -1032,6 +1197,8 @@ END
 FUNCTION kill_player(k, by);
 BEGIN
   p_alive[k] = 0; st_deaths++;
+  sfxp(s_die, 70, 100 - k * 6, pcell(p_x[k], p_y[k]));
+  IF (p_ctl[k] != 3) sfxp(s_ouch, 80, 80, pcell(p_x[k], p_y[k])); END
   IF (by == -2) st_sdkill++; END
   IF (p_ctl[k] == 3)
     st_cpudeath++;
@@ -1054,6 +1221,11 @@ BEGIN
     CASE 6 p_curse[pi] = rand(1, 6); p_ctime[pi] = 600; st_curses++;
   END
   st_pick[t - 1]++;
+  IF (t == 6)
+    sfxp(s_skull, 70, 100, pcell(p_x[pi], p_y[pi]));
+  ELSE
+    sfxp(s_pick, 65, 90 + t * 8, pcell(p_x[pi], p_y[pi]));
+  END
   RETURN 0;
 END
 
@@ -1094,6 +1266,7 @@ BEGIN
   sl = bombc[n] - 1;
   IF (b_kick[sl] == 0 AND walkable(nn) AND itm[nn] == 0 AND player_at(nn) == 0)
     b_kick[sl] = d + 1; st_kicks++;
+    sfxp(s_kick, 70, wobble(8), n);
   END
   RETURN 0;
 END
@@ -1123,6 +1296,7 @@ BEGIN
             p_x[pi] = cxp(n); p_y[pi] = cyp(n); c = n;
             ai_len[pi] = 0; ai_wcool[pi] = tick + 240; st_warps++;   // CPUs: no warping back at once
             puff(c, 0, 6);
+            sfxp(s_warp, 55, wobble(5), c);
           END
         END
         lc = c;
@@ -1168,6 +1342,7 @@ BEGIN
         FOR k = 0 TO 3
           IF (k != pi AND p_alive[k] AND p_curse[k] == 0 AND abs(p_x[k] - p_x[pi]) < 20 AND abs(p_y[k] - p_y[pi]) < 20)
             p_curse[k] = p_curse[pi]; p_ctime[k] = p_ctime[pi];
+            sfxp(s_skull, 45, 130, pcell(p_x[k], p_y[k]));
           END
         END
       END
@@ -1287,6 +1462,7 @@ BEGIN
     FRAME;
   END
   cell[c] = 1; itm[c] = 0; hid[c] = 0;
+  sfxp(s_wall, 45, 80 + (sd_i * 5) % 40, c);
   IF (bombc[c])
     sl = bombc[c] - 1;
     b_on[sl] = 0; bombc[c] = 0;
@@ -1394,6 +1570,7 @@ BEGIN
   END
   sd_n = k; sd_i = 0; sd_next = tick + 40; sd_on = 1; dirty = 1;
   banner(g_hurry, 90, -60);
+  sfxp(s_hurry, 60, 100, -1);
   RETURN 0;
 END
 
@@ -1468,17 +1645,18 @@ END
 FUNCTION menu_input();
 PRIVATE ch = 0;
 BEGIN
-  IF (key_pressed(_up)) menu = (menu + 5) % 6; END
-  IF (key_pressed(_down)) menu = (menu + 1) % 6; END
+  IF (key_pressed(_up)) menu = (menu + 5) % 6; play_sound(s_menu, 60, 100, 0); END
+  IF (key_pressed(_down)) menu = (menu + 1) % 6; play_sound(s_menu, 60, 90, 0); END
   ch = key_pressed(_right) - key_pressed(_left);
   IF (ch != 0)
+    play_sound(s_menu, 60, 120 + ch * 10, ch * 40);
     IF (menu == 0) opt_cpu = clamp(opt_cpu + ch, 0, 3); END
     IF (menu == 1) opt_p2 = 1 - opt_p2; END
     IF (menu == 2) opt_diff = clamp(opt_diff + ch, 0, 2); END
     IF (menu == 3) opt_arena = (opt_arena + ch + 5) % 5; END
     IF (menu == 4) opt_wins = clamp(opt_wins + ch, 1, 5); END
   END
-  IF (key_pressed(_space) OR key_pressed(_enter)) start_match(0); END
+  IF (key_pressed(_space) OR key_pressed(_enter)) play_sound(s_ok, 70, 100, 0); start_match(0); END
   RETURN 0;
 END
 
@@ -1526,6 +1704,8 @@ BEGIN
   make_players();
   FRAME;
   make_graphics();
+  make_sounds();
+  make_songs();
   g_bg = new_graphic(640, 480);
   put_screen(0, g_bg);
   FRAME;
@@ -1535,12 +1715,13 @@ BEGIN
     SWITCH (state)
       CASE 1                                   // READY? / GO!
         state_t++;
-        IF (state_t == 60) banner(g_go, 40, 0); END
+        IF (state_t == 60) banner(g_go, 40, 0); sfxp(s_go, 55, 100, -1); END
         IF (state_t >= 70) state = 2; END
       CASE 2                                   // playing
         tick++;
         IF (dirty) rebuild(); END
         tleft--;
+        IF (tleft > 0 AND tleft < 600 AND tleft % 60 == 0) sfxp(s_tick, 45, 100 + (tleft < 240) * 30, -1); END
         IF (tleft == 0) start_sudden_death(); END
         IF (sd_on AND sd_i < sd_n AND tick >= sd_next AND end_t == 0)   // stops for the last one
           dropwall(sd_list[sd_i]);
@@ -1559,6 +1740,7 @@ BEGIN
         state_t++;
         IF (attract == 0) draw_results(0); END
         IF ((attract AND state_t > 90) OR (state_t > 30 AND (key_pressed(_space) OR key_pressed(_enter))))
+          IF (attract == 0) play_sound(s_ok, 60, 100, 0); END
           IF (winner >= 0 AND p_wins[winner] >= opt_wins) state = 4; state_t = 0; ELSE new_round(); END
         END
       CASE 4                                   // match over
@@ -1567,16 +1749,17 @@ BEGIN
           IF (state_t > 60) start_match(1); END
         ELSE
           draw_results(1);
-          IF (state_t > 30 AND key_pressed(_enter)) start_match(0);
-          ELSE IF (state_t > 30 AND key_pressed(_space)) start_match(1); END END
+          IF (state_t > 30 AND key_pressed(_enter)) play_sound(s_ok, 70, 100, 0); start_match(0);
+          ELSE IF (state_t > 30 AND key_pressed(_space)) play_sound(s_menu, 60, 80, 0); start_match(1); END END
         END
     END
     IF (state > 0) draw_hud(); END
     IF (attract)
       draw_menu(); menu_input();
     ELSE
-      IF (key_pressed(_esc)) start_match(1); END
+      IF (key_pressed(_esc)) play_sound(s_menu, 60, 80, 0); start_match(1); END
     END
+    update_music();
     FRAME;
   END
 END

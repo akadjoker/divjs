@@ -18,6 +18,13 @@ PROGRAM slingshot;
 // on click, YELLOW speeds up on click, BLACK is heavy and dives on click.
 // The world is wider than the screen: a scroll window follows the bird
 // and a sky plane behind it moves slower (parallax).
+//
+// Sound is made by the engine (sfx, sfx_tone, song_*: no files): the
+// band creaks as it stretches, a whoosh and a call for every launch,
+// each bird's power, wood, stone and ice knocks as loud as the impact
+// (phys_impact) and their own sound when they break, grunting and
+// popping pigs, stars and a fanfare for a clear level; a tune for the
+// menus and a calmer one while playing. It starts with the first click.
 
 GLOBAL
   SW = 800; SH = 480;          // screen
@@ -59,6 +66,14 @@ GLOBAL
   g_world = 0; g_sky = 0; g_blk[44]; g_pig[3]; g_bird[3]; g_sling = 0;
   g_chip[2]; g_puff = 0; g_star = 0; g_star0 = 0; g_panel = 0;
   g_title = 0; g_clear = 0; g_fail = 0; g_select = 0; g_btn[4]; g_lv[11];
+
+  // ---- sound (made by the engine) and music
+  s_click = 0; s_hop = 0; s_creak = 0; s_whoosh = 0; s_call[3]; s_split = 0;
+  s_zoom = 0; s_dive = 0; s_thud = 0; s_knock[2]; s_break[2]; s_crumble = 0;
+  s_oink = 0; s_pop = 0; s_squeal = 0; s_star = 0; s_clear = 0; s_fail = 0;
+  s_laugh = 0; s_bonus = 0;
+  song_menu = 0; song_level = 0; song_win = 0; song_now = 0;
+  snd_rnd = 5; snd_f = 0; snd_n = 0;   // hit sounds this frame (at most 3)
 
 // =====================================================================
 // Graphics, all drawn in code
@@ -478,6 +493,109 @@ BEGIN
 END
 
 // =====================================================================
+// Sound and music (all made by the engine: sfx, sfx_tone, song_*)
+// =====================================================================
+
+// Pseudo-random numbers for sound variety only: rand() stays the game's
+FUNCTION snd_rand(a, b);
+BEGIN
+  snd_rnd = (snd_rnd * 75 + 74) % 65537;
+  RETURN a + snd_rnd % (b - a + 1);
+END
+
+// World x -> stereo pan, from where the camera is
+FUNCTION snd_pan(px);
+BEGIN
+  RETURN clamp((px - cam_ix - SW / 2) / 4, -80, 80);
+END
+
+// Physics contacts repeat: at most 3 impact sounds in one frame
+FUNCTION snd_slot();
+BEGIN
+  IF (snd_f != frame_no) snd_f = frame_no; snd_n = 0; END
+  IF (snd_n >= 3) RETURN 0; END
+  snd_n++;
+  RETURN 1;
+END
+
+FUNCTION make_sounds();
+BEGIN
+  s_click = sfx(sfx_blip, 2);
+  s_hop = sfx_tone(wave_square, 600, 900, 70, 30);
+  s_creak = sfx_tone(wave_saw, 150, 190, 90, 30);           // the band stretching
+  s_whoosh = sfx_tone(wave_noise, 2400, 500, 350, 45);
+  s_call[0] = sfx_tone(wave_square, 700, 1300, 220, 32);    // "weeee!"
+  s_call[1] = sfx_tone(wave_saw, 1100, 1500, 160, 26);      // a chirp
+  s_call[2] = sfx_tone(wave_square, 1400, 600, 260, 30);    // a squawk
+  s_call[3] = sfx_tone(wave_triangle, 300, 160, 300, 60);   // the black bird: "hmpf"
+  s_split = sfx(sfx_laser, 4);
+  s_zoom = sfx_tone(wave_saw, 400, 1800, 260, 36);
+  s_dive = sfx_tone(wave_sine, 1800, 300, 500, 46);         // falling whistle
+  s_thud = sfx_tone(wave_triangle, 150, 60, 140, 70);       // a bird landing
+  s_knock[0] = sfx_tone(wave_triangle, 320, 180, 90, 60);   // wood
+  s_knock[1] = sfx_tone(wave_noise, 500, 150, 120, 60);     // stone
+  s_knock[2] = sfx_tone(wave_sine, 2400, 2200, 120, 40);    // ice
+  s_break[0] = sfx(sfx_hit, 3);                             // wood splinters
+  s_break[1] = sfx(sfx_explosion, 9);                       // stone crumbles
+  s_break[2] = sfx_tone(wave_noise, 7000, 3000, 380, 40);   // glass shatter
+  s_crumble = sfx_tone(wave_sine, 3000, 1800, 300, 30);     // ... and its tinkle
+  s_oink = sfx_tone(wave_square, 260, 180, 140, 36);
+  s_pop = sfx(sfx_explosion, 14);
+  s_squeal = sfx_tone(wave_square, 500, 1200, 180, 28);
+  s_laugh = sfx_tone(wave_square, 330, 280, 110, 30);
+  s_star = sfx(sfx_coin, 6);
+  s_clear = sfx(sfx_powerup, 5);
+  s_fail = sfx_tone(wave_triangle, 440, 150, 900, 50);
+  s_bonus = sfx(sfx_coin, 12);
+
+  // Menus: a jaunty tune in F
+  song_menu = song_new(124);
+  song_track(song_menu, inst_pluck,
+    "F5 . A5 . C6 . A5 . F5 . . . C5 . . . | G5 . Bb5 . D6 . Bb5 . G5 . . . . . . . |" +
+    "A5 . C6 . A5 . F5 . G5 . E5 . C5 . . . | F5 . . . A4 . C5 . F5 - - - . . . . ", 40);
+  song_track(song_menu, inst_bass,
+    "F2 . . . C3 . . . F2 . . . C3 . . . | G2 . . . D3 . . . G2 . . . D3 . . . |" +
+    "C3 . . . G2 . . . C3 . . . E3 . . . | F2 . . . C3 . . . F2 . . . . . . . ", 60);
+  song_track(song_menu, inst_drums, "k . h . s . h h | k . h . s . h . ", 38);
+
+  // Playing: a sneaky, quieter walk in D minor
+  song_level = song_new(100);
+  song_track(song_level, inst_pluck,
+    "D5 . . F5 . . A5 . G5 . F5 . E5 . . . | D5 . . F5 . . A5 . C6 - - . A5 . . . |" +
+    "Bb4 . . D5 . . F5 . E5 . D5 . C#5 . . . | D5 . A4 . F4 . A4 . D5 - - - . . . . ", 30);
+  song_track(song_level, inst_bass,
+    "D3 . . . A2 . . . D3 . . . A2 . . . | D3 . . . A2 . . . F2 . . . A2 . . . |" +
+    "Bb2 . . . F2 . . . A2 . . . E2 . . . | D3 . . . A2 . . . D3 . . . . . . . ", 55);
+  song_track(song_level, inst_drums, "k . . h s . . h | k . k h s . . h ", 28);
+
+  // Level clear: a short fanfare, not looped
+  song_win = song_new(140);
+  song_track(song_win, inst_square,
+    "C5 . E5 . G5 . C6 - - . G5 . C6 - - - | . . . . . . . . . . . . . . . . ", 40);
+  song_track(song_win, inst_bass, "C3 . . . G2 . . . C3 . . . . . . . ", 60);
+  music_volume(40);
+  RETURN 0;
+END
+
+// Plays song s (looped unless once) unless it is already on
+FUNCTION music(s, once);
+BEGIN
+  IF (song_now != s)
+    song_now = s;
+    IF (once) song_play(s, 0); ELSE song_play(s); END
+  END
+  RETURN 0;
+END
+
+// A knock on a block of material mat, as loud as the impact
+FUNCTION knock(px, mat, imp);
+BEGIN
+  IF (NOT snd_slot()) RETURN 0; END
+  play_sound(s_knock[mat], clamp(imp * 0.18, 18, 90), snd_rand(85, 120), snd_pan(px));
+  RETURN 0;
+END
+
+// =====================================================================
 // The world
 // =====================================================================
 
@@ -520,7 +638,7 @@ BEGIN
 END
 
 PROCESS block(x, y, shp, mat, angle);
-PRIVATE hp, hp0, thr, thr0, imp, stg, sx, sy, sa, d, i, age;
+PRIVATE hp, hp0, thr, thr0, imp, stg, sx, sy, sa, d, i, age, snd_t;
 BEGIN
   ctype = c_scroll; z = 0;
   graph = g_blk[(shp * 3 + mat) * 3];
@@ -536,6 +654,9 @@ BEGIN
     imp = phys_impact();
     IF (armed)
       IF (imp > max_imp) max_imp = imp; END
+      // a knock for a new, real hit (not the steady push of a resting load)
+      IF (snd_t > 0) snd_t--; END
+      IF (imp > thr * 0.7 AND imp > 60 AND snd_t == 0) knock(x, mat, imp); snd_t = 10; END
       IF (imp > thr)
         hp -= imp - thr; hits++;
         IF (hp <= 0) BREAK; END
@@ -562,6 +683,10 @@ BEGIN
   END
   // broken: debris flies apart, points
   n_blocks--; blocks_broken++;
+  IF (armed AND snd_slot())
+    play_sound(s_break[mat], 70, snd_rand(85, 115), snd_pan(x));
+    IF (mat == 2) play_sound(s_crumble, 45, snd_rand(90, 130), snd_pan(x)); END
+  END
   FOR i = 0 TO 6
     IF (n_debris < 140) debris(x + rand(-shp_w[shp] / 3, shp_w[shp] / 3), y, phys_vx() * 0.3 + rand(-160, 160), phys_vy() * 0.3 - rand(40, 260), g_chip[mat]); END
   END
@@ -571,7 +696,7 @@ BEGIN
 END
 
 PROCESS pig(x, y, big);
-PRIVATE r, hp, hp0, imp, sx, sy, i, rolls, thr, age;
+PRIVATE r, hp, hp0, imp, sx, sy, i, rolls, thr, age, snd_t;
 BEGIN
   ctype = c_scroll; z = -1;
   r = 12 + big * 4;
@@ -589,10 +714,12 @@ BEGIN
     imp = phys_impact();
     IF (armed)
       IF (NOT rolls AND (imp > thr - 30 OR abs(phys_vx()) > 40)) rolls = 1; phys_fixed_rotation(0); END
+      IF (snd_t > 0) snd_t--; END
       IF (imp > thr)
         hp -= imp - thr; hits++;
         IF (hp <= 0) BREAK; END
         IF (hp < hp0 * 0.6) graph = g_pig[big * 2 + 1]; END
+        IF (snd_t == 0 AND snd_slot()) play_sound(s_oink, 60, 100 - big * 20 + snd_rand(-8, 8), snd_pan(x)); snd_t = 20; END
       END
     ELSE
       age++;
@@ -608,6 +735,10 @@ BEGIN
   END
   // pop!
   pigs_alive--; pigs_popped++;
+  IF (armed)
+    play_sound(s_pop, 70, snd_rand(110, 140), snd_pan(x));
+    play_sound(s_squeal, 45, snd_rand(90, 120) - big * 15, snd_pan(x));
+  END
   FOR i = 0 TO 5 puff(x + rand(-r, r), y + rand(-r, r), 60 + rand(0, 60)); END
   FOR i = 0 TO 5
     IF (n_debris < 140) debris(x, y, rand(-200, 200), rand(-300, -60), g_chip[0]); END
@@ -645,7 +776,8 @@ END
 // A bird: waits in the queue, hops onto the slingshot, is dragged and
 // released, flies as a physics body, uses its power on a click.
 PROCESS bird(idx, kind);
-PRIVATE r, st, t, px, py, dx, dy, d, vx, vy, grab, prevl, touched, used, still, life, k, qx, qy, qvx, qvy;
+PRIVATE r, st, t, px, py, dx, dy, d, vx, vy, grab, prevl, touched, used, still, life, k, qx, qy, qvx, qvy,
+        creak_d, imp, snd_t;
 BEGIN
   ctype = c_scroll; z = -5;
   graph = g_bird[kind]; r = bird_r[kind];
@@ -655,7 +787,10 @@ BEGIN
         x = SLX - 48 - (idx - load_idx - 1) * 32;
         y = 410 - r;
         IF ((frame_no + idx * 47) % 140 < 12) y -= sin(((frame_no + idx * 47) % 140) * 15000) * 10; END
-        IF (idx == load_idx AND phase == 0 AND state == 3) st = 1; t = 0; px = x; py = y; END
+        IF (idx == load_idx AND phase == 0 AND state == 3)
+          st = 1; t = 0; px = x; py = y;
+          play_sound(s_hop, 40, 100 + kind * 15, snd_pan(x));
+        END
       CASE 1                            // hop onto the slingshot
         t++;
         x = px + (SLX - px) * t * 0.05;
@@ -663,7 +798,7 @@ BEGIN
         IF (t >= 20) st = 2; x = SLX; y = SLY; END
       CASE 2                            // in the pouch: drag and release
         IF (mouse.left AND NOT prevl AND cam_ix < 30 AND fget_distance(mouse.x + cam_ix, mouse.y, x, y) < 55)
-          grab = 1; pan = 0;
+          grab = 1; pan = 0; creak_d = 0;
         END
         IF (grab)
           dx = mouse.x + cam_ix - SLX; dy = mouse.y - SLY;
@@ -672,6 +807,12 @@ BEGIN
           x = SLX + dx; y = SLY + dy;
           vx = -dx * KPULL; vy = -dy * KPULL;
           IF (d > 4) angle = fget_angle(0, 0, vx, vy); END
+          // the band creaks every 12 px it is stretched further
+          IF (d > creak_d + 12)
+            creak_d = d;
+            play_sound(s_creak, 20 + d * 0.3, 70 + d, snd_pan(x));
+          END
+          IF (d < creak_d - 12) creak_d = d; END
           // preview: the same semi-implicit Euler steps the physics takes
           qx = x; qy = y; qvx = vx; qvy = vy; pv_n = 0;
           FOR k = 1 TO 72
@@ -695,6 +836,8 @@ BEGIN
               phys_bullet(1);
               phys_velocity(vx, vy);
               st = 3; phase = 1; fl_n = 0; shots++; hint = 0;
+              play_sound(s_whoosh, 30 + d * 0.5, 80 + d * 0.4, snd_pan(x));
+              play_sound(s_call[kind], 70, snd_rand(92, 112), snd_pan(x));
             ELSE x = SLX; y = SLY; angle = 0; END
           END
         END
@@ -708,17 +851,28 @@ BEGIN
         fly_x = x; life++;
         IF (y < 0) set_color('#ffffff'); circle(x, 30, 4); circle(x, 40, 2); END   // above the screen
         IF (NOT touched AND phys_contact(0)) touched = 1; END
+        // bumps and landings, as loud as the hit
+        imp = phys_impact();
+        IF (snd_t > 0) snd_t--; END
+        IF (imp > 90 AND snd_t == 0 AND snd_slot())
+          play_sound(s_thud, clamp(imp * 0.12, 20, 90), snd_rand(90, 110) - kind * 8, snd_pan(x));
+          snd_t = 8;
+        END
         IF (mouse.left AND NOT prevl AND NOT used AND NOT touched AND kind > 0)
           used = 1; abilities++;
           vx = phys_vx(); vy = phys_vy();
           SWITCH (kind)
             CASE 1                      // split into three
+              play_sound(s_split, 60, 100, snd_pan(x));
+              play_sound(s_call[1], 50, 125, snd_pan(x));
               shard(x - get_distx(fget_angle(0, 0, vx, vy) + 90000, 14), y - get_disty(fget_angle(0, 0, vx, vy) + 90000, 14), vx * cos(12000) - vy * sin(12000), vx * sin(12000) + vy * cos(12000));
               shard(x + get_distx(fget_angle(0, 0, vx, vy) + 90000, 14), y + get_disty(fget_angle(0, 0, vx, vy) + 90000, 14), vx * cos(12000) + vy * sin(12000), -vx * sin(12000) + vy * cos(12000));
             CASE 2                      // a burst of speed
+              play_sound(s_zoom, 70, 100, snd_pan(x));
               phys_velocity(vx * 2.2, vy * 2.2);
               FOR k = 0 TO 4 puff(x - vx * 0.02 * k, y - vy * 0.02 * k, 40); END
             CASE 3                      // a dive straight down
+              play_sound(s_dive, 70, 100, snd_pan(x));
               phys_velocity(vx * 0.2, 1100);
               puff(x, y, 70);
           END
@@ -799,7 +953,7 @@ BEGIN
     size = 100;
     IF (abs(mouse.x - x) < 55 AND abs(mouse.y - y) < 17 + (code >= 10) * 15)
       size = 108;
-      IF (mouse.left AND NOT prevl) btn_hit = code; END
+      IF (mouse.left AND NOT prevl) btn_hit = code; play_sound(s_click, 50, 100, 0); END
     END
     prevl = mouse.left;
     FRAME;
@@ -819,6 +973,7 @@ BEGIN
   IF (lit) graph = g_star; END
   size = 0;
   FRAME(delay * 100);
+  IF (lit) play_sound(s_star, 70, 100 + delay * 5, (x - 400) / 2); END
   FOR t = 1 TO 12 size = t * 10; FRAME; END
   LOOP FRAME; END
 END
@@ -886,6 +1041,7 @@ BEGIN
   score = 0; blocks_broken = 0; pigs_popped = 0; fl_n = 0; pv_n = 0; max_imp = 0;
   load_idx = 0; phase = 0; pan = 0; wait_t = 0;
   armed = 1; state = 3;
+  music(song_level, 0);
   RETURN 0;
 END
 
@@ -896,12 +1052,17 @@ BEGIN
   sprite(400, 230, g_panel, -55);
   IF (won)
     state = 4;
+    play_sound(s_clear, 70, 100, 0);
+    music(song_win, 1);
     sprite(400, 140, g_clear, -57);
     FOR k = 0 TO 2 star_pop(330 + k * 70, 200 - (k == 1) * 10, stars_got > k, 3 + k * 3); END
     ui_button(530, 320, g_btn[1], 2);
   ELSE
     state = 5;
     sprite(400, 140, g_fail, -57);
+    play_sound(s_fail, 70, 100, 0);
+    play_sound(s_laugh, 50, 90, 0);
+    song_stop(); song_now = 0;
     FOR k = 0 TO 2 star_pop(330 + k * 70, 200 - (k == 1) * 10, 0, 1); END
   END
   ui_button(270, 320, g_btn[2], 3);
@@ -913,6 +1074,7 @@ FUNCTION show_title();
 BEGIN
   clear_ui(); clear_world();
   state = 0; cam_t = 0; cam_x = 0; camera_step();
+  music(song_menu, 0);
   gfx_fill_rgba(g_world, 0, 0, 0, 0);
   gfx_rect(g_world, 0, 410, WW, 70, 110, 80, 48);
   gfx_rect(g_world, 0, 406, WW, 6, 80, 175, 64);
@@ -930,6 +1092,7 @@ PRIVATE k;
 BEGIN
   clear_ui();
   state = 1;
+  music(song_menu, 0);
   draw_level_tiles();
   k = sprite(400, 262, g_panel, -55);
   k.size = 125;
@@ -948,6 +1111,7 @@ BEGIN
   set_fps(60, 0);
   phys_gravity(0, GRAV);
   make_graphics();
+  make_sounds();
   start_scroll(0, 0, g_world, g_sky, 0, 0);
   scroll.ratio = 300;                   // the sky moves at a third of the speed
   show_title();
@@ -978,7 +1142,7 @@ BEGIN
           calm = frame_no - last_motion > 40;
           IF (pigs_alive == 0 AND (calm OR wait_t > 180))
             // bonus for the birds not used
-            FOR k = load_idx + 1 TO nbirds - 1 score += 10000; END
+            FOR k = load_idx + 1 TO nbirds - 1 score += 10000; play_sound(s_bonus, 60, 100 + k * 10, 0); END
             stars_got = 1;
             IF (score >= star2) stars_got = 2; END
             IF (score >= star3) stars_got = 3; END
@@ -987,7 +1151,7 @@ BEGIN
             signal(TYPE bird, s_kill);
             show_result(1);
           ELSE IF (pigs_alive > 0 AND (calm OR wait_t > 300))
-            IF (load_idx + 1 < nbirds) load_idx++; phase = 0; pan = 0;
+            IF (load_idx + 1 < nbirds) load_idx++; phase = 0; pan = 0; play_sound(s_laugh, 45, snd_rand(95, 115), 60);
             ELSE show_result(0); END
           END END
         END

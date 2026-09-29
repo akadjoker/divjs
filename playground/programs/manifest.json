@@ -228,7 +228,7 @@
       "height": 480,
       "clearColor": "#000000",
       "description": "Asteroids with randomly generated jagged rocks that split into new random shapes.",
-      "controls": "Left/Right rotate, Up thrust, Space fire, Down hyperspace, Enter/Space start"
+      "controls": "Left/Right rotate, Up thrust, Space fire, Down hyperspace, Enter/Space start, M music on/off"
     },
     {
       "id": "invaders",
@@ -239,7 +239,7 @@
       "height": 480,
       "clearColor": "#000000",
       "description": "Space Invaders where every wave brings three newly generated symmetric alien species.",
-      "controls": "Left/Right or A/D move, Space fire, Space/Enter start and restart"
+      "controls": "Left/Right or A/D move, Space fire, Space/Enter start and restart, M music on/off"
     },
     {
       "id": "cave-flyer",
@@ -338,7 +338,7 @@
       "height": 600,
       "clearColor": "#000000",
       "description": "Raptor-style vertical shoot'em up: generated terrain and ground targets, wave formations from a small grammar, bosses built from parts, power-ups and a shop between sectors.",
-      "controls": "Arrows/WASD fly, Z/Space/Ctrl fire, X/B mega bomb, C switch special; shop: Up/Down choose, Z/Enter buy"
+      "controls": "Arrows/WASD fly, Z/Space/Ctrl fire, X/B mega bomb, C switch special, M music on/off; shop: Up/Down choose, Z/Enter buy"
     },
     {
       "id": "sandbox",
@@ -371,7 +371,7 @@
       "height": 480,
       "clearColor": "#000000",
       "description": "Guideline-style Tetris: SRS rotation and kicks, 7-bag, hold, ghost, T-spins, combos; Marathon and a Garbage mode where holed rows rise faster and faster.",
-      "controls": "Left/Right move, Up/X rotate, Z/Ctrl rotate back, Down soft drop, Space hard drop, C/Shift hold, P/Esc pause; title: Up/Down mode, Left/Right level"
+      "controls": "Left/Right move, Up/X rotate, Z/Ctrl rotate back, Down soft drop, Space hard drop, C/Shift hold, P/Esc pause; title: Up/Down mode, Left/Right level; M music on/off"
     },
     {
       "id": "aquarium",
@@ -393,7 +393,7 @@
       "height": 480,
       "clearColor": "#000000",
       "description": "Candy Crush style match-3: striped, wrapped and colour-bomb specials with their combos, cascades, and generated levels with holes, jelly, ice, spreading chocolate, goals and stars.",
-      "controls": "Mouse: click a candy then a neighbour, or drag it; map: click a level, Enter plays the newest; Esc back to the map; results: Retry / Map / Next"
+      "controls": "Mouse: click a candy then a neighbour, or drag it; map: click a level, Enter plays the newest; Esc back to the map; results: Retry / Map / Next; M music on/off"
     },
     {
       "id": "slingshot",
@@ -448,7 +448,7 @@
       "height": 480,
       "clearColor": "#000000",
       "description": "Puzzle Bobble style bubble shooter on a hex grid: rounds generated as symmetric patterns, stones, rainbow and bomb bubbles, a pressing ceiling, and a VS CPU mode with garbage.",
-      "controls": "Left/Right or mouse aim, Space/Up/click fire, Down/X/right click swap; menu Up/Down or 1/2 then Enter; game over: Space continue, R restart, Esc title"
+      "controls": "Left/Right or mouse aim, Space/Up/click fire, Down/X/right click swap; menu Up/Down or 1/2 then Enter; game over: Space continue, R restart, Esc title; M music on/off"
     },
     {
       "id": "karate",
@@ -481,7 +481,7 @@
       "height": 480,
       "clearColor": "#000000",
       "description": "Bomberman-style battles on generated, mirrored arenas with four themes (classic, pits, conveyor belts, warps) against up to three CPU bombers that plan with a danger map and only drop a bomb when they can escape it; chain reactions, kicks, remote bombs, skull curses and sudden death.",
-      "controls": "P1 arrows + Space bomb, Enter remote; P2 WASD + Q bomb, E remote. Menu: Up/Down choose, Left/Right change, Space/Enter start; Esc title; after a match Enter rematch, Space title"
+      "controls": "P1 arrows + Space bomb, Enter remote; P2 WASD + Q bomb, E remote. Menu: Up/Down choose, Left/Right change, Space/Enter start; Esc title; after a match Enter rematch, Space title; M music on/off"
     },
     {
       "id": "pinball",
@@ -514,7 +514,7 @@
       "height": 480,
       "clearColor": "#000000",
       "description": "Desert Strike style helicopter campaign: every campaign a new generated desert with bases, roads, oases and a coast, and five missions (radar, rescue, SAMs, convoy, command bunker); fuel, ammo, armour, winch.",
-      "controls": "Left/Right turn, Up thrust, Down brake, A/D (or Shift+Left/Right) strafe, Space guns, Z Hydra rockets, X Hellfire (homing), M map; Space/Enter on screens"
+      "controls": "Left/Right turn, Up thrust, Down brake, A/D (or Shift+Left/Right) strafe, Space guns, Z Hydra rockets, X Hellfire (homing), M map, N music on/off; Space/Enter on screens"
     },
     {
       "id": "net-tanks",
@@ -525,7 +525,7 @@
       "height": 480,
       "clearColor": "#10161c",
       "description": "Two tanks in a generated arena, played online peer to peer: the host sends an invitation code, the guest sends back an answer code, and both computers run the game in lockstep with net_key(). Also from two tabs, or two players on one keyboard.",
-      "controls": "1 host online, 2 join online, 3/4 host/join from another tab, 5 one keyboard. Online: arrows or WASD, Space fires. One keyboard: blue WASD + Space, red arrows + Enter. Esc back to the menu"
+      "controls": "1 host online, 2 join online, 3/4 host/join from another tab, 5 one keyboard. Online: arrows or WASD, Space fires. One keyboard: blue WASD + Space, red arrows + Enter. Esc back to the menu; M music on/off"
     },
     {
       "id": "bad-cat",

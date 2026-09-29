@@ -16,6 +16,13 @@ PROGRAM tetris;
 //   grey rows with random holes rise from the floor faster and faster.
 // * No asset files: blocks, well, panels, digits, labels and the logo
 //   are all drawn at start-up with new_graphic + gfx_*.
+// * Sound made by the engine too (sfx, sfx_tone, song_*): moves, turns,
+//   kicks, hold, soft locks and hard drops, line clears that climb with
+//   the number of lines, a fanfare for a TETRIS, T-spins, combos rising in
+//   pitch, back-to-back, perfect clears, level ups and rising garbage.
+//   Music: a title tune, the Korobeiniki folk melody while playing (faster
+//   and harder when the stack gets high) and a game over jingle. M turns
+//   the music on and off.
 // ---------------------------------------------------------------------
 
 GLOBAL
@@ -100,6 +107,13 @@ GLOBAL
   n_pieces = 0; n_kicks = 0; n_holds = 0; n_hard = 0; n_tspins = 0;
   n_b2b = 0; n_garbage = 0; n_single = 0; n_double = 0; n_triple = 0;
   n_tetris = 0; n_pc = 0; last_action = -1;
+
+  // --- Sound ---------------------------------------------------------------
+  s_move = 0; s_rot = 0; s_kick = 0; s_hard = 0; s_thump = 0; s_lock = 0; s_hold = 0;
+  s_clear = 0; s_tetris = 0; s_tspin = 0; s_combo = 0; s_b2b = 0; s_pc = 0; s_level = 0;
+  s_collapse = 0; s_garbage = 0; s_warn = 0; s_over = 0; s_menu = 0; s_ok = 0; s_pause = 0;
+  m_title = 0; m_game = 0; m_fast = 0; m_over = 0;
+  music_on = 1; cur_song = 0; tense = 0; snd_mv_t = -9; snd_gb_t = -9;
 
 // ======================================================================
 // Tables and graphics
@@ -413,6 +427,7 @@ END
 
 FUNCTION game_over();
 BEGIN
+  IF (state != 3) play_sound(s_over, 60, 100, 0); END
   state = 3;
   active = 0;
   RETURN 0;
@@ -455,6 +470,10 @@ BEGIN
   IF (fits(cur_t, cur_r, cur_x + dx, cur_y + dy) == 0) RETURN 0; END
   cur_x += dx; cur_y += dy;
   last_rot = 0;
+  IF (dx != 0 AND play_t - snd_mv_t >= 3)          // auto-repeat: not every step
+    snd_mv_t = play_t;
+    play_sound(s_move, 45, 100 + cur_x * 3, (cur_x - 4) * 12);
+  END
   IF (dy > 0)
     // reaching a new lowest row gives the lock delay back in full
     IF (cur_y > low_y) low_y = cur_y; lock_t = 0; lock_moves = 0; END
@@ -480,6 +499,8 @@ BEGIN
       cur_r = nr; cur_x += dx; cur_y += dy;
       last_rot = 1; last_kick = k;
       IF (k > 0) n_kicks++; END
+      IF (k > 0) play_sound(s_kick, 55, 95 + nr * 5, (cur_x - 4) * 12);
+      ELSE play_sound(s_rot, 50, 95 + nr * 5, (cur_x - 4) * 12); END
       moved();
       IF (cur_y > low_y) low_y = cur_y; lock_t = 0; lock_moves = 0; END
       RETURN 1;
@@ -527,7 +548,7 @@ BEGIN
   hard = 0;
   IF (n == 4 OR (ts > 0 AND n > 0)) hard = 1; END
   IF (n > 0)
-    IF (hard AND b2b) base = base * 3 / 2; n_b2b++; popup(g_lab[11], 178, 0); END
+    IF (hard AND b2b) base = base * 3 / 2; n_b2b++; popup(g_lab[11], 178, 0); play_sound(s_b2b, 50, 130, 0); END
     b2b = hard;
     combo++;
     IF (combo > 0)
@@ -549,12 +570,23 @@ BEGIN
     score += c * level; n_pc++;
     popup(g_lab[18], 290, 12);
   END
+  // Sound: the clear climbs with the lines, a TETRIS gets a fanfare
+  IF (n == 4) play_sound(s_tetris, 70, 100, 0); play_sound(s_clear, 55, 150, 0); END
+  IF (n > 0 AND n < 4) play_sound(s_clear, 55 + n * 5, 88 + n * 12, 0); END
+  IF (ts > 0) play_sound(s_tspin, 55, 90 + ts * 10 + n * 8, 0); END
+  IF (combo > 0 AND n > 0)                         // combos rise, up to an octave and a half
+    c = combo;
+    IF (c > 12) c = 12; END
+    play_sound(s_combo, 50, 100 + c * 12, 0);
+  END
+  IF (pc AND n > 0) play_sound(s_pc, 70, 100, 0); END
   // One level every 10 lines, and faster gravity with it
   lines += n;
   IF (start_level + lines / 10 > level)
     level = start_level + lines / 10;
     set_gravity();
     popup(g_lab[12], 325, 18);
+    play_sound(s_level, 60, 100 + (level % 4) * 6, 0);
   END
   RETURN 0;
 END
@@ -628,6 +660,7 @@ BEGIN
     FOR c = 0 TO 9 board[dst * 10 + c] = 0; END
     dst--;
   END
+  play_sound(s_collapse, 50, 90 + clr_n * 5, 0);
   dirty = 1;
   RETURN 0;
 END
@@ -648,6 +681,7 @@ BEGIN
     IF (c == gb_hole) board[(ROWS - 1) * 10 + c] = 0; ELSE board[(ROWS - 1) * 10 + c] = 8; END
   END
   n_garbage++;
+  IF (snd_gb_t != play_t) snd_gb_t = play_t; play_sound(s_garbage, 60, 100, 0); END
   dirty = 1;
   IF (active)
     IF (fits(cur_t, cur_r, cur_x, cur_y) == 0)
@@ -676,6 +710,7 @@ BEGIN
   END
   hold_used = 1;
   n_holds++;
+  play_sound(s_hold, 55, 100, -40);
   RETURN 0;
 END
 
@@ -702,6 +737,8 @@ BEGIN
   cur_y = ghost_y;
   n_hard++;
   shake = 3;
+  play_sound(s_hard, 40 + d * 2, 100 - d, (cur_x - 4) * 12);
+  play_sound(s_thump, 75, 100 + cur_t * 3, 0);
   lock_piece();
   RETURN 0;
 END
@@ -749,7 +786,7 @@ BEGIN
   // Lock delay: runs while the piece rests on something
   IF (fits(cur_t, cur_r, cur_x, cur_y + 1) == 0)
     lock_t++;
-    IF (lock_t >= LOCK_DELAY OR lock_moves >= MOVE_LIMIT) lock_piece(); RETURN 0; END
+    IF (lock_t >= LOCK_DELAY OR lock_moves >= MOVE_LIMIT) play_sound(s_lock, 55, 100, (cur_x - 4) * 12); lock_piece(); RETURN 0; END
   END
   update_ghost();
   RETURN 0;
@@ -758,12 +795,19 @@ END
 // One frame of the game: pause, garbage timer, clear animation, piece.
 FUNCTION game_step();
 BEGIN
-  IF (key_pressed(_p) OR key_pressed(_esc)) paused = 1 - paused; END
+  IF (key_pressed(_p) OR key_pressed(_esc))
+    paused = 1 - paused;
+    play_sound(s_pause, 50, 80 + paused * 40, 0);
+  END
   IF (paused) RETURN 0; END
   play_t++;
   IF (shake > 0) shake--; END
   IF (mode == 1)
     IF (gb_t < gb_int) gb_t++; END
+    // the garbage meter is nearly full: a warning beep, faster near the end
+    IF (gb_t * 400 / gb_int > 300 AND gb_t % (10 + (gb_t * 400 / gb_int < 360) * 10) == 0)
+      play_sound(s_warn, 35, 100 + (gb_t * 400 / gb_int > 360) * 20, 0);
+    END
     IF (gb_t >= gb_int AND state == 1)
       gb_t = 0;
       gb_int = gb_int * 92 / 100;        // every rise comes sooner
@@ -851,7 +895,7 @@ BEGIN
     text(WX + 100 - 51, WY + 220, "P / ESC  RESUME");
   END
   set_color('#6a78a8');
-  text(40, 462, "LEFT/RIGHT move  UP,X/Z rotate  DOWN soft  SPACE hard  C hold  P pause");
+  text(40, 462, "LEFT/RIGHT move  UP,X/Z rotate  DOWN soft  SPACE hard  C hold  P pause  M music");
   RETURN 0;
 END
 
@@ -1054,6 +1098,123 @@ BEGIN
 END
 
 // ======================================================================
+// Sound: effects and songs made by the engine
+// ======================================================================
+
+FUNCTION make_sounds();
+BEGIN
+  s_move = sfx_tone(wave_square, 270, 250, 28, 22);
+  s_rot = sfx_tone(wave_triangle, 520, 780, 55, 42);
+  s_kick = sfx_tone(wave_triangle, 700, 1150, 75, 42);
+  s_hard = sfx_tone(wave_noise, 1400, 90, 160, 50);
+  s_thump = sfx_tone(wave_sine, 190, 45, 150, 70);
+  s_lock = sfx_tone(wave_square, 190, 120, 45, 30);
+  s_hold = sfx_tone(wave_sine, 380, 920, 130, 40);
+  s_clear = sfx(sfx_coin, 5);
+  s_tetris = sfx(sfx_powerup, 3);
+  s_tspin = sfx_tone(wave_saw, 300, 1250, 300, 28);
+  s_combo = sfx_tone(wave_sine, 880, 1320, 110, 40);
+  s_b2b = sfx(sfx_coin, 9);
+  s_pc = sfx(sfx_powerup, 11);
+  s_level = sfx(sfx_powerup, 1);
+  s_collapse = sfx_tone(wave_noise, 700, 110, 130, 42);
+  s_garbage = sfx_tone(wave_saw, 95, 55, 280, 45);
+  s_warn = sfx_tone(wave_square, 880, 880, 70, 22);
+  s_over = sfx_tone(wave_square, 620, 55, 950, 38);
+  s_menu = sfx_tone(wave_square, 520, 640, 45, 28);
+  s_ok = sfx(sfx_coin, 1);
+  s_pause = sfx_tone(wave_sine, 700, 350, 120, 40);
+  RETURN 0;
+END
+
+FUNCTION make_songs();
+PRIVATE mel = ""; bass = "";
+BEGIN
+  // Title: calm, in E minor
+  m_title = song_new(116);
+  song_track(m_title, inst_pluck,
+    "E5 . B4 . G5 . B4 . | F#5 . B4 . E5 . D5 . | C5 . G4 . E5 . G4 . | D5 . A4 . B4 - - . |" +
+    "E5 . B4 . G5 . B4 . | A5 . G5 . F#5 . E5 . | C5 . E5 . D5 . F#5 . | E5 - - - . . . . ", 36);
+  song_track(m_title, inst_bass,
+    "E3 . . . E4 . . . | B2 . . . B3 . . . | C3 . . . C4 . . . | D3 . . . D4 . . . |" +
+    "E3 . . . E4 . . . | A2 . . . A3 . . . | C3 . . . D3 . . . | E3 . . . E4 . . . ", 52);
+  song_track(m_title, inst_pad, "G4 - - - - - - - - - - - - - - - | E4 - - - - - - - F#4 - - - - - - - ", 14);
+  song_track(m_title, inst_drums, "k . . . h . . . s . . . h . . h ", 26);
+
+  // In game: Korobeiniki, the Russian folk song
+  mel = "E5 - - - B4 - C5 - D5 - - - C5 - B4 - | A4 - - - A4 - C5 - E5 - - - D5 - C5 - |" +
+        "B4 - - - - - C5 - D5 - - - E5 - - - | C5 - - - A4 - - . A4 - - - - - - - |" +
+        ". . D5 - - - F5 - A5 - - - G5 - F5 - | E5 - - - - - C5 - E5 - - - D5 - C5 - |" +
+        "B4 - - - B4 - C5 - D5 - - - E5 - - - | C5 - - - A4 - - . A4 - - - . . . . ";
+  bass = "E3 . E4 . E3 . E4 . E3 . E4 . E3 . E4 . | A3 . A4 . A3 . A4 . A3 . A4 . A3 . A4 . |" +
+         "E3 . E4 . E3 . E4 . E3 . E4 . E3 . E4 . | A3 . A4 . A3 . A4 . A3 . A4 . A3 . A4 . |" +
+         "D3 . D4 . D3 . D4 . D3 . D4 . D3 . D4 . | C3 . C4 . C3 . C4 . C3 . C4 . C3 . C4 . |" +
+         "E3 . E4 . E3 . E4 . E3 . E4 . E3 . E4 . | A3 . A4 . A3 . A4 . A3 . . . A3 . . . ";
+  m_game = song_new(138);
+  song_track(m_game, inst_square, mel, 30);
+  song_track(m_game, inst_bass, bass, 52);
+  song_track(m_game, inst_drums, "k . h . s . h . k . h . s . h h ", 32);
+  // The stack is high: faster, with a busier beat and a pad underneath
+  m_fast = song_new(176);
+  song_track(m_fast, inst_square, mel, 30);
+  song_track(m_fast, inst_bass, bass, 56);
+  song_track(m_fast, inst_pad,
+    "G#4 - - - - - - - - - - - - - - - | A4 - - - - - - - - - - - - - - - |" +
+    "G#4 - - - - - - - - - - - - - - - | A4 - - - - - - - - - - - - - - - |" +
+    "F4 - - - - - - - - - - - - - - - | E4 - - - - - - - - - - - - - - - |" +
+    "G#4 - - - - - - - - - - - - - - - | A4 - - - - - - - - - - - - - - - ", 12);
+  song_track(m_fast, inst_drums, "k h s h k h s h k h s h k k s h ", 40);
+
+  // Game over: a slow chromatic fall (played once)
+  m_over = song_new(100);
+  song_track(m_over, inst_triangle, "A4 - - - G#4 - - - G4 - - - F#4 - - - | F4 - - - - - - - - - - - . . . . ", 44);
+  song_track(m_over, inst_bass, "A3 - - - - - - - - - - - - - - - | D3 - - - - - - - - - - - . . . . ", 50);
+  RETURN 0;
+END
+
+// Height of the stack in visible rows (0 empty, 20 up to the top)
+FUNCTION stack_rows();
+PRIVATE r; c;
+BEGIN
+  FOR r = HID TO ROWS - 1
+    FOR c = 0 TO 9
+      IF (board[r * 10 + c] > 0) RETURN ROWS - r; END
+    END
+  END
+  RETURN 0;
+END
+
+// M toggles the music; the song follows the screen: title, game (fast
+// when the stack is high, silent while paused), game over once
+FUNCTION update_music();
+PRIVATE want = 0; lp = 1; h;
+BEGIN
+  IF (key_pressed(_m))
+    music_on = 1 - music_on;
+    IF (music_on == 0) song_stop(); END
+    cur_song = -1;
+  END
+  IF (music_on == 0) RETURN 0; END
+  IF (state == 0) want = m_title; END
+  IF (state == 1 OR state == 2)
+    IF (play_t % 15 == 0)
+      h = stack_rows();
+      IF (h >= 14) tense = 1; END
+      IF (h <= 10) tense = 0; END
+    END
+    want = m_game;
+    IF (tense) want = m_fast; END
+    IF (paused) want = 0; END
+  END
+  IF (state == 3) want = m_over; lp = 0; tense = 0; END
+  IF (want != cur_song)
+    cur_song = want;
+    IF (want) song_play(want, lp); ELSE song_stop(); END
+  END
+  RETURN 0;
+END
+
+// ======================================================================
 // Main: title screen, games, game over
 // ======================================================================
 
@@ -1063,6 +1224,8 @@ BEGIN
   set_fps(60, 0);
   init_tables();
   make_graphics();
+  make_sounds();
+  make_songs();
   best[0] = 0; best[1] = 0;
   LOOP
     // ---------------- Title ----------------
@@ -1074,11 +1237,12 @@ BEGIN
     option(0); option(1);
     blinker(g_lab[19], 320, 396);
     REPEAT
-      IF (key_pressed(_up) OR key_pressed(_down)) mode = 1 - mode; END
-      IF (key_pressed(_1)) mode = 0; END
-      IF (key_pressed(_2)) mode = 1; END
-      IF (key_pressed(_left) AND start_level > 1) start_level--; END
-      IF (key_pressed(_right) AND start_level < 15) start_level++; END
+      IF (key_pressed(_up) OR key_pressed(_down)) mode = 1 - mode; play_sound(s_menu, 55, 100 - mode * 10, 0); END
+      IF (key_pressed(_1)) mode = 0; play_sound(s_menu, 55, 100, 0); END
+      IF (key_pressed(_2)) mode = 1; play_sound(s_menu, 55, 90, 0); END
+      IF (key_pressed(_left) AND start_level > 1) start_level--; play_sound(s_menu, 55, 100 + start_level * 5, -30); END
+      IF (key_pressed(_right) AND start_level < 15) start_level++; play_sound(s_menu, 55, 100 + start_level * 5, 30); END
+      update_music();
       set_color('#a8b8e8');
       text(227, 246, "endless - faster every 10 lines");
       text(224, 304, "rows with holes rise from below");
@@ -1089,9 +1253,10 @@ BEGIN
       set_color('#7080b0');
       text(170, 436, "UP/DOWN mode   LEFT/RIGHT level   ENTER start");
       text(119, 452, "in game: arrows move/rotate/drop  X,Z rotate  SPACE hard drop");
-      text(212, 464, "C hold   P or ESC pause");
+      text(185, 464, "C hold   P or ESC pause   M music");
       FRAME;
     UNTIL (key_pressed(_enter) OR key_pressed(_space))
+    play_sound(s_ok, 70, 100, 0);
 
     // ---------------- Games until ESC ----------------
     again = 1;
@@ -1104,6 +1269,7 @@ BEGIN
         game_step();
         IF (dirty) redraw_board(); dirty = 0; END
         hud();
+        update_music();
         FRAME;
       END
       // Game over: the stack turns grey from the bottom up
@@ -1115,6 +1281,7 @@ BEGIN
         go_row--;
         redraw_board();
         hud();
+        update_music();
         FRAME;
       END
       sprite(g_panel, WX + 100, 240, -30);
@@ -1131,9 +1298,10 @@ BEGIN
         text(WX + 100 - 60, 256, "ENTER  play again");
         text(WX + 100 - 60, 272, "ESC    title");
         IF (t > 40)
-          IF (key_pressed(_enter) OR key_pressed(_space)) again = 1; END
-          IF (key_pressed(_esc)) again = 0; END
+          IF (key_pressed(_enter) OR key_pressed(_space)) again = 1; play_sound(s_ok, 70, 100, 0); END
+          IF (key_pressed(_esc)) again = 0; play_sound(s_menu, 55, 80, 0); END
         END
+        update_music();
         FRAME;
       UNTIL (again >= 0)
       go_row = 99;

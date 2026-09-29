@@ -22,6 +22,13 @@ PROGRAM arkanoid;
 //   every 5th round a mothership with a weak core shoots at the Vaus.
 // * No asset files: bricks, Vaus, capsules, enemies, the boss, the metal
 //   frame and the patterned backgrounds are all drawn with gfx_*.
+// * Sound is made by the engine too (sfx, sfx_tone, song_*): bricks ring
+//   on a scale by colour and climb in pitch with every brick hit before
+//   the ball comes back to the Vaus; silver and gold clang, the Vaus
+//   bounces higher or lower by where the ball lands; capsules, lasers,
+//   enemies, the boss, lost balls and cleared rounds all have their own
+//   sounds, over a title tune, a round-start jingle and a quiet loop
+//   while playing. It starts with the first click or key press.
 // ---------------------------------------------------------------------
 
 GLOBAL
@@ -92,6 +99,133 @@ GLOBAL
   st_broken = 0; st_silver_hits = 0; st_silver_broken = 0; st_gold_hits = 0;
   st_paddle_hits = 0; st_catches = 0; st_laser_hits = 0; st_enemy_kills = 0;
   st_boss_hits = 0; st_lost_balls = 0; last_cap = 0; st_caps = 0;
+
+  // --- Sound (made by the engine) and music -------------------------------
+  s_wall = 0; s_pad = 0; s_catch = 0; s_brick = 0; s_silver = 0; s_gold = 0;
+  s_break8 = 0; s_cap[7]; s_laser = 0; s_enemy = 0; s_hatch = 0; s_boss_hit = 0;
+  s_boss_shot = 0; s_boss_die = 0; s_lost = 0; s_lost2 = 0; s_clear = 0;
+  s_warp = 0; s_serve = 0; s_start = 0; s_over = 0;
+  song_title = 0; song_round = 0; song_game = 0; song_now = 0;
+  scale[7] = 100, 100, 112, 126, 150, 168, 200, 224;   // brick colour -> pitch
+  combo = 0;                 // bricks hit since the ball last touched the Vaus
+  snd_rnd = 9; snd_frame = 0; snd_f = 0; snd_n = 0; wall_f = 0;
+
+// ======================================================================
+// Sound and music (all made by the engine: sfx, sfx_tone, song_*)
+// ======================================================================
+
+// Pseudo-random numbers for sound variety only: rand() stays the game's
+FUNCTION snd_rand(a, b);
+BEGIN
+  snd_rnd = (snd_rnd * 75 + 74) % 65537;
+  RETURN a + snd_rnd % (b - a + 1);
+END
+
+FUNCTION snd_pan(px);
+BEGIN
+  RETURN clamp((px - 240) / 3, -70, 70);
+END
+
+// Several balls and lasers can hit things in one frame: at most 3 hit
+// sounds a frame
+FUNCTION snd_slot();
+BEGIN
+  IF (snd_f != snd_frame) snd_f = snd_frame; snd_n = 0; END
+  IF (snd_n >= 3) RETURN 0; END
+  snd_n++;
+  RETURN 1;
+END
+
+FUNCTION make_sounds();
+BEGIN
+  s_wall = sfx_tone(wave_triangle, 520, 480, 45, 40);
+  s_pad = sfx_tone(wave_square, 330, 300, 80, 40);
+  s_catch = sfx_tone(wave_triangle, 220, 160, 110, 55);
+  s_brick = sfx_tone(wave_square, 523, 523, 110, 36);      // pitched by colour
+  s_silver = sfx_tone(wave_square, 1760, 1700, 160, 26);   // metal "ting"
+  s_gold = sfx_tone(wave_triangle, 900, 860, 260, 46);     // a dull clang
+  s_break8 = sfx(sfx_hit, 16);
+  s_cap[1] = sfx_tone(wave_square, 300, 600, 300, 36);     // E: stretch
+  s_cap[2] = sfx_tone(wave_triangle, 700, 500, 250, 50);   // C: sticky
+  s_cap[3] = sfx(sfx_powerup, 13);                         // L: charge up
+  s_cap[4] = sfx_tone(wave_square, 800, 300, 400, 34);     // S: slow down
+  s_cap[5] = sfx(sfx_coin, 11);                            // D: three balls
+  s_cap[6] = sfx_tone(wave_noise, 300, 4000, 600, 34);     // B: the gate opens
+  s_cap[7] = sfx(sfx_powerup, 9);                          // P: extra life
+  s_cap[0] = sfx(sfx_coin, 3);                             // any capsule
+  s_laser = sfx(sfx_laser, 7);
+  s_enemy = sfx(sfx_explosion, 11);
+  s_hatch = sfx_tone(wave_saw, 120, 240, 300, 30);
+  s_boss_hit = sfx(sfx_hit, 27);
+  s_boss_shot = sfx_tone(wave_saw, 900, 300, 180, 30);
+  s_boss_die = sfx(sfx_explosion, 1);
+  s_lost = sfx(sfx_explosion, 8);
+  s_lost2 = sfx_tone(wave_square, 700, 110, 900, 40);
+  s_clear = sfx(sfx_powerup, 6);
+  s_warp = sfx_tone(wave_saw, 200, 2000, 700, 34);
+  s_serve = sfx(sfx_jump, 4);
+  s_start = sfx(sfx_coin, 7);
+  s_over = sfx_tone(wave_triangle, 330, 110, 1400, 50);
+
+  // Title: a spacey arpeggio tune in A minor
+  song_title = song_new(120);
+  song_track(song_title, inst_square,
+    "A4 C5 E5 A5 E5 C5 A4 C5 E5 A5 E5 C5 B4 C5 D5 E5 | F4 A4 C5 F5 C5 A4 F4 A4 C5 F5 C5 A4 G4 A4 B4 C5 |" +
+    "D4 F4 A4 D5 A4 F4 D4 F4 A4 D5 A4 F4 E4 F4 G4 A4 | E4 G#4 B4 E5 B4 G#4 E4 G#4 B4 E5 - - - . . . ", 26);
+  song_track(song_title, inst_bass,
+    "A2 - - - - - - - A2 - - - E2 - - - | F2 - - - - - - - F2 - - - C3 - - - |" +
+    "D3 - - - - - - - D3 - - - A2 - - - | E2 - - - - - - - E2 - - - E3 - - - ", 60);
+  song_track(song_title, inst_pad,
+    "A4 - - - - - - - - - - - - - - - | F4 - - - - - - - - - - - - - - - |" +
+    "D4 - - - - - - - - - - - - - - - | E4 - - - - - - - - - - - - - - - ", 22);
+  song_track(song_title, inst_drums, "k . h . s . h . | k . h . s . h h ", 34);
+
+  // Round start: a short jingle, not looped
+  song_round = song_new(150);
+  song_track(song_round, inst_square,
+    "C5 . E5 . G5 . C6 - E5 . G5 . C6 - - - | E6 - - - . . . . . . . . . . . . ", 36);
+  song_track(song_round, inst_bass, "C3 . . . G2 . . . C3 . . . G2 . . . | C3 - - - . . . . ", 60);
+
+  // Playing: a quiet, driving loop that leaves room for the effects
+  song_game = song_new(126);
+  song_track(song_game, inst_bass,
+    "A2 . A3 . A2 . A3 . G2 . G3 . G2 . G3 . | F2 . F3 . F2 . F3 . E2 . E3 . E2 . G#2 . ", 50);
+  song_track(song_game, inst_pluck,
+    ". . E5 . . . C5 . . . D5 . . . B4 . | . . C5 . . . A4 . . . B4 . G#4 . . . ", 22);
+  song_track(song_game, inst_drums, "k . h . s . h . | k . h k s . h h ", 26);
+  music_volume(34);
+  RETURN 0;
+END
+
+// Plays song s (looped unless once) unless it is already on
+FUNCTION music(s, once);
+BEGIN
+  IF (song_now != s)
+    song_now = s;
+    IF (once) song_play(s, 0); ELSE song_play(s); END
+  END
+  RETURN 0;
+END
+
+// The sound of a hit on brick i of type t (before it changes)
+FUNCTION brick_sound(i, t, broke);
+PRIVATE px, p;
+BEGIN
+  IF (NOT snd_slot()) RETURN 0; END
+  px = GX + (i % COLS) * BW + 16;
+  IF (t == 9) play_sound(s_gold, 55, snd_rand(95, 105), snd_pan(px)); RETURN 0; END
+  IF (t == 8)
+    IF (broke) play_sound(s_break8, 70, snd_rand(90, 110), snd_pan(px));
+    ELSE play_sound(s_silver, 50, snd_rand(97, 103), snd_pan(px)); END
+    RETURN 0;
+  END
+  // colour bricks: a note of the scale, a little higher for every brick
+  // in a row before the ball returns to the Vaus
+  p = scale[t] * (1 + clamp(combo, 0, 12) * 0.06);
+  play_sound(s_brick, 55, p, snd_pan(px));
+  combo++;
+  RETURN 0;
+END
 
 // ======================================================================
 // Graphics
@@ -731,15 +865,16 @@ FUNCTION hit_brick(i);
 PRIVATE t;
 BEGIN
   t = cell[i];
-  IF (t == 9) flash[i] = 8; st_gold_hits = st_gold_hits + 1; RETURN 0; END
+  IF (t == 9) flash[i] = 8; st_gold_hits = st_gold_hits + 1; brick_sound(i, 9, 0); RETURN 0; END
   IF (t == 8)
     hp[i] = hp[i] - 1;
-    IF (hp[i] > 0) flash[i] = 6; st_silver_hits = st_silver_hits + 1; RETURN 0; END
+    IF (hp[i] > 0) flash[i] = 6; st_silver_hits = st_silver_hits + 1; brick_sound(i, 8, 0); RETURN 0; END
     score = score + 50 * level;
     st_silver_broken = st_silver_broken + 1;
   ELSE
     score = score + 40 + t * 10;
   END
+  brick_sound(i, t, 1);
   cell[i] = 0;
   bricks_left = bricks_left - 1;
   st_broken = st_broken + 1;
@@ -754,6 +889,8 @@ FUNCTION apply_cap(k);
 BEGIN
   score = score + 1000;
   last_cap = k; st_caps = st_caps + 1;
+  play_sound(s_cap[0], 45, 100, snd_pan(pad_x));
+  play_sound(s_cap[k], 70, 100, snd_pan(pad_x));
   IF (k <= 3) pad_mode = k; END           // enlarge / catch / laser replace each other
   IF (k == 4) spd = spd_base - 0.5; END   // slow
   IF (k == 5) split_req = 1; END          // disruption
@@ -786,6 +923,7 @@ FUNCTION kill_enemy(e);
 BEGIN
   burst(e.x, e.y, 10, 8);
   burst(e.x, e.y, 11, 4);
+  play_sound(s_enemy, 55, snd_rand(120, 150), snd_pan(e.x));
   score = score + 100;
   st_enemy_kills = st_enemy_kills + 1;
   n_enemies = n_enemies - 1;
@@ -832,6 +970,8 @@ BEGIN
   IF (boss_flash > 0) RETURN 0; END
   boss_hp = boss_hp - 1;
   boss_flash = 18;
+  play_sound(s_boss_hit, 80, snd_rand(70, 85), snd_pan(boss_x));
+  play_sound(s_gold, 50, 60, snd_pan(boss_x));
   score = score + 300;
   st_boss_hits = st_boss_hits + 1;
   burst(boss_x, boss_y + 30, 10, 6);
@@ -862,6 +1002,7 @@ BEGIN
         shoot_t = clamp(110 - level * 3, 50, 110) + rand(0, 40);
         a = fget_angle(boss_x - 60, boss_y + 20, pad_x, PY);
         bullet(boss_x - 60, boss_y + 20, a);
+        play_sound(s_boss_shot, 45, snd_rand(90, 110), snd_pan(boss_x));
         a = fget_angle(boss_x + 60, boss_y + 20, pad_x, PY);
         bullet(boss_x + 60, boss_y + 20, a);
         IF (boss_hp * 2 < boss_max)                  // wounded: an extra spread shot
@@ -875,9 +1016,11 @@ BEGIN
   boss_on = 0;
   signal(TYPE bullet, s_kill);
   score = score + 5000;
+  play_sound(s_boss_die, 90, 70, snd_pan(boss_x));
   FOR i = 0 TO 59
     x = boss_x + rand(-3, 3);
     IF (i % 3 == 0) burst(boss_x + rand(-60, 60), boss_y + rand(-30, 30), 11, 5); END
+    IF (i % 12 == 6) play_sound(s_enemy, 60, snd_rand(70, 110), snd_pan(boss_x)); END
     alpha = 100 - i * 100 / 60;
     FRAME;
   END
@@ -938,6 +1081,7 @@ BEGIN
     IF (pad_mode == 3 AND fire AND cool <= 0 AND n_lasers < 6 AND state == 3)
       laser(pad_x - 26, PY - 10);
       laser(pad_x + 26, PY - 10);
+      play_sound(s_laser, 40, snd_rand(95, 110), snd_pan(pad_x));
       cool = 12;
     END
     // Running into an enemy destroys it
@@ -953,7 +1097,7 @@ END
 PROCESS ball(bx, by, a, st);
 PRIVATE fx = 0.0; fy = 0.0; bang; stuck; serve; soff = 0.0; hold_t; rel;
         n; s; step = 0.0; nx = 0.0; ny = 0.0; dx = 0.0; dy = 0.0;
-        i; hx; hy; k; e; half = 0.0; off = 0.0;
+        i; hx; hy; k; e; half = 0.0; off = 0.0; wall;
 BEGIN
   fx = bx; fy = by; bang = a; stuck = st; serve = st;
   graph = g_ball; z = -3;
@@ -978,19 +1122,21 @@ BEGIN
       IF (rel)
         stuck = 0;
         IF (serve) bang = 60000; ELSE bang = pad_angle(soff / (pad_w * 0.5 + BALL_R)); END
+        play_sound(s_serve, 45, 100, snd_pan(fx));
         serve = 0;
       END
     ELSE
       // Move in sub-steps shorter than the ball's radius
       n = int(spd / 3.5) + 1;
       step = spd / (n + EPS);
+      wall = 0;
       FOR s = 1 TO n
         dx = get_distx(bang, step); dy = get_disty(bang, step);
         nx = fx + dx; ny = fy + dy;
         // Walls and ceiling
-        IF (nx < FL + BALL_R) nx = FL + BALL_R; bang = flip_x(bang); END
-        IF (nx > FR - BALL_R) nx = FR - BALL_R; bang = flip_x(bang); END
-        IF (ny < FT + BALL_R) ny = FT + BALL_R; bang = flip_y(bang); END
+        IF (nx < FL + BALL_R) nx = FL + BALL_R; bang = flip_x(bang); wall = 1; END
+        IF (nx > FR - BALL_R) nx = FR - BALL_R; bang = flip_x(bang); wall = 1; END
+        IF (ny < FT + BALL_R) ny = FT + BALL_R; bang = flip_y(bang); wall = 1; END
         // Bricks: find which axis caused the contact, bounce, stay put
         i = brick_at(nx, ny);
         IF (i >= 0)
@@ -1026,6 +1172,9 @@ BEGIN
             off = (nx - pad_x) / (half + EPS);
             bang = pad_angle(off);
             st_paddle_hits = st_paddle_hits + 1;
+            combo = 0;
+            IF (pad_mode == 2) play_sound(s_catch, 60, 100, snd_pan(nx));
+            ELSE play_sound(s_pad, 60, 100 - off * 18, snd_pan(nx)); END
             IF (pad_mode == 2)
               stuck = 1; soff = nx - pad_x; hold_t = 0;
               st_catches = st_catches + 1;
@@ -1037,6 +1186,8 @@ BEGIN
         fx = nx; fy = ny;
       END
     END
+    // one wall tick a frame for all the balls
+    IF (wall AND wall_f != snd_frame) wall_f = snd_frame; play_sound(s_wall, 35, snd_rand(95, 105), snd_pan(fx)); END
     x = fx; y = fy;
     // Enemies explode and knock the ball away
     IF (n_enemies > 0 AND stuck == 0)
@@ -1100,6 +1251,8 @@ BEGIN
   banner(g_ready, 240, 460, 110);
   IF (boss_level) banner(g_boss_lbl, 240, 380, 110); END
   state = 2; st_t = 110;
+  combo = 0;
+  music(song_round, 1);
   RETURN 0;
 END
 
@@ -1108,6 +1261,8 @@ BEGIN
   set_mode(480, 640);
   set_fps(60, 0);
   make_graphics();
+  make_sounds();
+  music(song_title, 0);
   FRAME;
   make_more_graphics();
   FRAME;
@@ -1128,6 +1283,7 @@ BEGIN
     IF (key_pressed(_space) OR click) fire = 1; END
     go = fire OR key_pressed(_enter);
     t = t + 1;
+    snd_frame++;
 
     IF (state == 0)                                  // ---- title
       set_color('#dde');
@@ -1146,7 +1302,7 @@ BEGIN
       IF ((t / 30) % 2) text(162, 560, "CLICK OR PRESS SPACE"); END
       set_color('#99a');
       text(114, 600, "every round is generated from its number");
-      IF (go) new_game(); END
+      IF (go) new_game(); play_sound(s_start, 70, 100, 0); END
     END
 
     IF (state == 1)                                  // ---- the wall builds up
@@ -1174,7 +1330,7 @@ BEGIN
 
     IF (state == 2)                                  // ---- round intro
       st_t = st_t - 1;
-      IF (st_t <= 0) state = 3; END
+      IF (st_t <= 0) state = 3; music(song_game, 0); END
     END
 
     IF (state == 3)                                  // ---- play
@@ -1187,6 +1343,7 @@ BEGIN
           en_t = clamp(700 - level * 25, 300, 700) + rand(0, 200);
           IF (n_enemies < clamp(1 + level / 3, 1, 3))
             hatch_x = 136 + rand(0, 1) * 208; hatch_t = 40;
+            play_sound(s_hatch, 45, 100, snd_pan(hatch_x));
             enemy(rand(0, 2), hatch_x);
           END
         END
@@ -1198,9 +1355,14 @@ BEGIN
         nballs = 0; n_caps = 0; n_lasers = 0; pad_alive = 0;
         burst(pad_x, PY, 5, 14); burst(pad_x, PY, 11, 10); burst(pad_x, PY, 8, 8);
         state = 4; st_t = 100;
+        play_sound(s_lost, 80, 100, snd_pan(pad_x));
+        play_sound(s_lost2, 50, 100, 0);
+        song_stop(); song_now = 0;
       ELSE
         IF (warped OR (boss_level AND boss_dead) OR (boss_level == 0 AND bricks_left <= 0))
-          IF (warped) score = score + 10000; END
+          IF (warped) score = score + 10000; play_sound(s_warp, 70, 100, 60); END
+          play_sound(s_clear, 75, 100, 0);
+          song_stop(); song_now = 0;
           signal(TYPE ball, s_kill); signal(TYPE capsule, s_kill);
           signal(TYPE laser, s_kill); signal(TYPE bullet, s_kill);
           signal(TYPE enemy, s_kill);
@@ -1218,6 +1380,7 @@ BEGIN
         IF (lives <= 0)
           banner(g_over, 240, 400, -1);
           state = 6; st_t = 0;
+          play_sound(s_over, 70, 100, 0);
         ELSE
           serve();
         END
@@ -1235,7 +1398,8 @@ BEGIN
         set_color('#ff8');
         text(150, 440, "CLICK OR PRESS SPACE TO RESTART");
       END
-      IF (st_t > 60 AND go) new_game(); END
+      IF (st_t == 90) music(song_title, 0); END            // after the game over tune
+      IF (st_t > 60 AND go) new_game(); play_sound(s_start, 70, 100, 0); END
     END
 
     // ---- HUD, hatches and the warp gate

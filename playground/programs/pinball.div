@@ -11,6 +11,13 @@ PROGRAM pinball;
 // crowd each other into pockets, and nothing is placed in front of the
 // flippers. Anything a ball could still rest on is caught by the ball's
 // stuck detector, which gives it a nudge.
+//
+// Sound is made by the engine (sfx, sfx_tone, song_*: no files):
+// flippers, pop bumpers (each on its own note), slingshots, rails, drop
+// targets, rollovers, spinner, ramp and orbit, kickbacks, the plunger,
+// drains, tilt warnings, multipliers and jackpots, over an attract-mode
+// tune and a quieter one while the ball is in play. It starts with the
+// first key press.
 
 GLOBAL
   // Table frame (pixels). The playfield runs from WL to WR; the plunger
@@ -66,6 +73,16 @@ GLOBAL
   st_bump = 0;  st_sling = 0;  st_target = 0;  st_roll = 0;  st_spin = 0;
   st_orbit = 0;  st_ramp = 0;  st_kick = 0;  st_save = 0;  st_stuck = 0;
   st_bank = 0;  st_escape = 0;  st_drain = 0;  st_launch = 0;
+
+  // Sound (made by the engine) and music
+  s_flip = 0;  s_flip_dn = 0;  s_bump = 0;  s_bump2 = 0;  s_sling = 0;
+  s_rail = 0;  s_drop = 0;  s_ting = 0;  s_roll = 0;  s_lane = 0;
+  s_spin = 0;  s_ramp = 0;  s_orbit = 0;  s_kick = 0;  s_plunge = 0;
+  s_pull = 0;  s_drain = 0;  s_save = 0;  s_warn = 0;  s_tilt = 0;
+  s_mult = 0;  s_jack = 0;  s_extra = 0;  s_nudge = 0;  s_start = 0;
+  s_over = 0;  s_bonus = 0;
+  song_attract = 0;  song_play_on = 0;  song_now = 0;
+  snd_rnd = 11;  snd_rail_t = 0;  snd_spin_t = 0;  snd_score_t = 0;
 
 LOCAL
   hit = 0;                    // flash timer (bumpers, slingshots)
@@ -147,6 +164,110 @@ BEGIN
 END
 
 // ---------------------------------------------------------------------
+// Sound and music (all made by the engine: sfx, sfx_tone, song_*)
+// ---------------------------------------------------------------------
+
+// Pseudo-random numbers for sound variety only: rand() (nudges, the
+// stuck detector, tables) stays exactly as without sound.
+FUNCTION snd_rand(a, b);
+BEGIN
+  snd_rnd = (snd_rnd * 75 + 74) % 65537;
+  RETURN a + snd_rnd % (b - a + 1);
+END
+
+// Left-right position on the table -> stereo pan
+FUNCTION snd_pan(px);
+BEGIN
+  RETURN clamp((px - 224) / 3, -70, 70);
+END
+
+FUNCTION make_sounds();
+BEGIN
+  s_flip = sfx_tone(wave_square, 180, 70, 60, 50);      // solenoid clack
+  s_flip_dn = sfx_tone(wave_noise, 900, 300, 45, 30);
+  s_bump = sfx_tone(wave_square, 520, 500, 120, 44);    // pop bumper "bong"
+  s_bump2 = sfx(sfx_hit, 21);                           // ... and its kick
+  s_sling = sfx_tone(wave_saw, 300, 120, 90, 46);
+  s_rail = sfx_tone(wave_triangle, 1200, 900, 40, 34);  // ball on a rail
+  s_drop = sfx(sfx_hit, 13);                            // drop target
+  s_ting = sfx_tone(wave_triangle, 1320, 1320, 260, 40);
+  s_roll = sfx_tone(wave_sine, 880, 880, 180, 50);      // rollover ding
+  s_lane = sfx(sfx_blip, 8);
+  s_spin = sfx_tone(wave_square, 1500, 1300, 25, 28);   // spinner click
+  s_ramp = sfx_tone(wave_saw, 200, 900, 420, 34);       // up the ramp
+  s_orbit = sfx_tone(wave_noise, 400, 3200, 500, 30);   // whoosh round the top
+  s_kick = sfx(sfx_explosion, 6);
+  s_plunge = sfx_tone(wave_noise, 1800, 200, 220, 50);
+  s_pull = sfx_tone(wave_triangle, 90, 140, 70, 30);    // spring creak
+  s_drain = sfx_tone(wave_triangle, 520, 90, 900, 55);
+  s_save = sfx(sfx_powerup, 4);
+  s_warn = sfx_tone(wave_square, 180, 180, 350, 46);    // tilt warning buzzer
+  s_tilt = sfx_tone(wave_saw, 110, 60, 1400, 55);
+  s_mult = sfx(sfx_powerup, 11);
+  s_jack = sfx(sfx_coin, 17);
+  s_extra = sfx(sfx_powerup, 23);
+  s_nudge = sfx_tone(wave_triangle, 90, 50, 150, 60);
+  s_start = sfx(sfx_coin, 2);
+  s_over = sfx_tone(wave_square, 392, 196, 1100, 40);
+  s_bonus = sfx(sfx_blip, 5);
+
+  // Attract mode: a bright, bouncy tune in G
+  song_attract = song_new(128);
+  song_track(song_attract, inst_square,
+    "G5 . D5 . B4 . D5 . G5 . B5 . A5 . G5 . | E5 . C5 . A4 . C5 . E5 . G5 . F#5 . E5 . |" +
+    "D5 . A4 . F#4 . A4 . D5 . F#5 . E5 . D5 . | G5 - - - D5 - - - G4 - - - . . . . ", 34);
+  song_track(song_attract, inst_bass,
+    "G2 . G3 . G2 . G3 . G2 . G3 . G2 . G3 . | C3 . C4 . C3 . C4 . C3 . C4 . C3 . C4 . |" +
+    "D3 . D4 . D3 . D4 . D3 . D4 . D3 . D4 . | G2 . G3 . D3 . D4 . G2 . G3 . G2 . . ", 60);
+  song_track(song_attract, inst_drums, "k . h . s . h . | k . h k s . h h ", 40);
+
+  // Ball in play: a steady, lighter groove under the table's own noise
+  song_play_on = song_new(112);
+  song_track(song_play_on, inst_pluck,
+    "A4 . C5 . E5 . . . D5 . C5 . A4 . . . | F4 . A4 . C5 . . . B4 . A4 . E4 . . . |" +
+    "A4 . C5 . E5 . . . G5 . E5 . C5 . . . | B4 . G#4 . E4 . . . B4 - - - . . . . ", 34);
+  song_track(song_play_on, inst_bass,
+    "A2 . . A2 . . A3 . A2 . . A2 . . A3 . | F2 . . F2 . . F3 . F2 . . F2 . . F3 . |" +
+    "A2 . . A2 . . A3 . A2 . . A2 . . A3 . | E2 . . E2 . . E3 . E2 . . E2 . . E3 . ", 55);
+  song_track(song_play_on, inst_drums, "k . h . s . h . | k . h . s . h k ", 32);
+  music_volume(32);
+  RETURN 0;
+END
+
+// Plays song s unless it is already on
+FUNCTION music(s);
+BEGIN
+  IF (song_now != s) song_now = s; song_play(s); END
+  RETURN 0;
+END
+
+// A pop bumper: each bumper on the table has its own note (a major chord
+// up the table), with a little random detune
+FUNCTION bumper_sound(bx);
+PRIVATE i, k, p;
+BEGIN
+  k = 0;
+  FOR i = 0 TO nbump - 1
+    IF (abs(bump_x[i] - bx) < 1) k = i; END
+  END
+  p = 100;
+  IF (k == 1) p = 126; END
+  IF (k == 2) p = 150; END
+  IF (k == 3) p = 200; END
+  play_sound(s_bump, 70, p + snd_rand(-3, 3), snd_pan(bx));
+  play_sound(s_bump2, 45, snd_rand(90, 120), snd_pan(bx));
+  RETURN 0;
+END
+
+// Score-event sounds that could come several in a frame: one every 4 frames
+FUNCTION event_ok();
+BEGIN
+  IF (tick - snd_score_t < 4) RETURN 0; END
+  snd_score_t = tick;
+  RETURN 1;
+END
+
+// ---------------------------------------------------------------------
 // Scoring and rules
 // ---------------------------------------------------------------------
 
@@ -158,6 +279,7 @@ BEGIN
     extra_balls++;
     next_extra = next_extra * 2;
     show_msg("EXTRA BALL!");
+    play_sound(s_extra, 85, 100, 0);
   END
   RETURN 1;
 END
@@ -179,6 +301,8 @@ BEGIN
     kick_lit[0] = 1;  kick_lit[1] = 1;
     bank_reset_t[b] = 100;
     show_msg("TARGETS COMPLETE  " + 10000 * bank_level * mult);
+    play_sound(s_jack, 80, 100, 0);
+    play_sound(s_mult, 55, 120, 0);
   END
   RETURN 0;
 END
@@ -194,23 +318,27 @@ BEGIN
     CASE 0                                   // top lanes
       top_lit[idx] = 1;
       add_score(500);
+      play_sound(s_roll, 60, 100 + idx * 25, snd_pan(ACX - top_n * 17 + idx * 34 + 17));
       all = 1;
       FOR i = 0 TO top_n - 1
         IF (top_lit[i] == 0) all = 0; END
       END
       IF (all)
         FOR i = 0 TO top_n - 1 top_lit[i] = 0; END
-        IF (mult < 5) mult++; show_msg("MULTIPLIER x" + mult);
-        ELSE add_score(25000); show_msg("TOP LANES 25000"); END
+        IF (mult < 5) mult++; show_msg("MULTIPLIER x" + mult); play_sound(s_mult, 80, 90 + mult * 10, 0);
+        ELSE add_score(25000); show_msg("TOP LANES 25000"); play_sound(s_jack, 85, 100, 0); END
       END
     CASE 1 add_score(1000);                  // inlanes
+      play_sound(s_lane, 50, 120, snd_pan(66 + idx * 316));
     CASE 2 add_score(2500);                  // outlanes (a consolation)
+      play_sound(s_lane, 50, 70, snd_pan(35 + idx * 378));
     CASE 3                                   // kickback in an outlane
       IF (kick_lit[idx])
         kick_lit[idx] = 0;
         kick_vx = 0;  kick_vy = -980;  kick_req = 1;
         st_kick++;
         show_msg("KICKBACK!");
+        play_sound(s_kick, 75, 110, snd_pan(35 + idx * 378));
       END
     CASE 4                                   // left orbit lane
       IF (tick - orbit_r_t < 180) orbit_shot(); ELSE orbit_l_t = tick; END
@@ -218,6 +346,7 @@ BEGIN
       IF (tick - orbit_l_t < 180) orbit_shot();
       ELSE IF (tick - launch_t > 150) orbit_r_t = tick; END END   // not a plunge
     CASE 6 ramp_in_t = tick;                 // ramp entrance
+      play_sound(s_ramp, 55, 100, snd_pan(ramp_x0));
     CASE 7                                   // ramp exit
       IF (tick - ramp_in_t < 150)
         ramp_in_t = -999;
@@ -226,6 +355,7 @@ BEGIN
         add_score(5000 + 2500 * ramp_count);
         IF (ramp_count % 2 == 0) kick_lit[ramp_count / 2 % 2] = 1; END
         show_msg("RAMP  " + (5000 + 2500 * ramp_count) * mult);
+        play_sound(s_jack, 65, 100 + (ramp_count % 4) * 12, snd_pan(ramp_x1));
       END
   END
   RETURN 1;
@@ -237,6 +367,8 @@ BEGIN
   st_orbit++;
   add_score(7500);
   show_msg("ORBIT  " + 7500 * mult);
+  play_sound(s_orbit, 60, 100, 0);
+  play_sound(s_mult, 50, 140, 0);
   RETURN 0;
 END
 
@@ -631,7 +763,7 @@ END
 // never tunnels through a flipper or a rail). It reacts to what it
 // touches - bumpers and slingshots kick it - and watches for drains.
 PROCESS ball(x, y);
-PRIVATE vx, vy, sp, b, s, a, vn, cd_b, cd_s, st_x, st_y, st_t;
+PRIVATE vx, vy, sp, b, s, a, vn, cd_b, cd_s, st_x, st_y, st_t, imp;
 BEGIN
   graph = g_ball;  z = -20;
   phys_circle(8, phys_dynamic);
@@ -658,6 +790,7 @@ BEGIN
       phys_velocity(vx, vy);
       b.hit = 14;  cd_b = 6;  st_bump++;
       add_score(100);
+      bumper_sound(b.x);
     END
     // Slingshots: a kick along the face's normal, keeping some slide.
     IF (cd_s > 0) cd_s--; END
@@ -669,6 +802,7 @@ BEGIN
       phys_velocity(vx, vy);
       s.hit = 10;  cd_s = 8;  st_sling++;
       add_score(30);
+      play_sound(s_sling, 70, snd_rand(90, 115), snd_pan(x));
     END
     // One-way gate at the top of the plunger lane: a ball coming down
     // the outer wall is turned back into the playfield.
@@ -683,11 +817,18 @@ BEGIN
       END
       st_x = x;  st_y = y;  st_t = 0;
     END
+    // Clicks on rails and posts: only real knocks, at most one every 5 frames
+    imp = phys_impact();
+    IF (imp > 140 AND tick - snd_rail_t >= 5)
+      snd_rail_t = tick;
+      play_sound(s_rail, clamp(imp * 0.05, 12, 55), snd_rand(80, 125), snd_pan(x));
+    END
     ball_x = x;  ball_y = y;  ball_vx = vx;  ball_vy = vy;  ball_speed = sp;
     in_lane = x > WR AND y > 400;
     IF (x < WL - 4 OR x > LO + 4 OR y < 36) st_escape++; END
     IF (y > 815)                      // drained
       drain_x = x;  st_drain++;
+      IF (state == 1 AND (tilted OR save_t <= 0 OR save_used)) play_sound(s_drain, 75, 100, snd_pan(x)); END
       ball_live = 0;  drained = 1;
       BREAK;
     END
@@ -703,7 +844,7 @@ END
 // step); the ball being a bullet, Box2D's time-of-impact pass still stops
 // the blade from jumping over it.
 PROCESS flipper(x, y, side);
-PRIVATE a_down, a_up, held, want, spd, diff, w;
+PRIVATE a_down, a_up, held, want, spd, diff, w, was;
 BEGIN
   z = -10;
   IF (side == 1) graph = g_flip_l; ELSE graph = g_flip_r; END
@@ -719,6 +860,9 @@ BEGIN
       IF (side == 1) held = key(_left) OR key(_z); ELSE held = key(_right) OR key(_m); END
     END
     IF (side == 1) flip_l = held; ELSE flip_r = held; END
+    IF (held AND was == 0) play_sound(s_flip, 70, snd_rand(95, 108), -40 * side); END
+    IF (held == 0 AND was) play_sound(s_flip_dn, 30, snd_rand(90, 110), -40 * side); END
+    was = held;
     IF (held) want = a_up; spd = FLIP_UP; ELSE want = a_down; spd = FLIP_DOWN; END
     // Past a stop (a frame of a different length): back onto it.
     IF (side * angle > side * a_up + 200) angle = a_up; END
@@ -752,11 +896,16 @@ BEGIN
       END
     ELSE
       IF (state == 1 AND (key(_space) OR key(_down)))
-        IF (pull < 44) pull += 0.8; END
+        IF (pull < 44)
+          pull += 0.8;
+          IF (int(pull) % 8 == 0 AND int(pull - 0.8) % 8 != 0) play_sound(s_pull, 30, 80 + pull * 2, 60); END
+        END
         y = rest + pull;  phys_velocity(0, 0);
       ELSE
         IF (pull > 1)
-          firing = 1;  fire_v = 300 + pull * 34;  pull = 0;  launch_t = tick;
+          firing = 1;  fire_v = 300 + pull * 34;  launch_t = tick;
+          play_sound(s_plunge, 30 + pull, 80 + pull, 60);
+          pull = 0;
           IF (in_lane) st_launch++; END
         END
       END
@@ -823,6 +972,8 @@ BEGIN
       IF (phys_contact(TYPE ball))
         phys_remove();  up = 0;  alpha = 20;
         targ_down[idx] = 1;  st_target++;
+        play_sound(s_drop, 70, snd_rand(95, 110), snd_pan(x));
+        IF (tilted == 0) play_sound(s_ting, 40, 100 + (idx - bank_first[targ_bank[idx]]) * 12, snd_pan(x)); END
         bonus += 200;
         add_score(500);
         check_bank(targ_bank[idx]);
@@ -870,7 +1021,13 @@ BEGIN
       old = spin_ph;
       spin_ph += spin_v;
       spin_v = spin_v * 0.975;
-      IF (floor(spin_ph / 180.5) != floor(old / 180.5)) st_spin++; add_score(100); END
+      IF (floor(spin_ph / 180.5) != floor(old / 180.5))
+        st_spin++; add_score(100);
+        IF (tick - snd_spin_t >= 3)
+          snd_spin_t = tick;
+          play_sound(s_spin, clamp(spin_v * 3, 15, 50), 80 + spin_v * 2, snd_pan(x));
+        END
+      END
     ELSE
       spin_v = 0;
     END
@@ -969,6 +1126,8 @@ BEGIN
   FOR i = 0 TO 7 targ_down[i] = 0; END
   state = 1;  new_ball_t = 30;
   show_msg("BALL 1 - HOLD SPACE, RELEASE TO LAUNCH");
+  play_sound(s_start, 70, 100, 0);
+  music(song_play_on);
   RETURN 0;
 END
 
@@ -977,17 +1136,21 @@ BEGIN
   IF (tilted == 0 AND save_used == 0 AND save_t > 0)
     save_used = 1;  st_save++;
     show_msg("BALL SAVED");
+    play_sound(s_save, 75, 100, 0);
     new_ball_t = 40;
     RETURN 0;
   END
   IF (tilted == 0 AND bonus > 0)
     score += bonus * mult;
     show_msg("BONUS " + bonus + " x" + mult);
+    play_sound(s_bonus, 60, 100, 0);
+    play_sound(s_bonus, 50, 150, 0);
   END
   bonus = 0;  mult = 1;  tilted = 0;  tilt_meter = 0;  save_used = 0;
   IF (extra_balls > 0)
     extra_balls--;
     show_msg("SHOOT AGAIN");
+    play_sound(s_extra, 70, 110, 0);
     new_ball_t = 90;
   ELSE
     ball_no++;
@@ -995,6 +1158,8 @@ BEGIN
       ball_no = 3;  state = 2;
       IF (score > hiscore) hiscore = score; END
       show_msg("GAME OVER");
+      play_sound(s_over, 70, 100, 0);
+      music(song_attract);
     ELSE
       new_ball_t = 90;
     END
@@ -1008,6 +1173,8 @@ BEGIN
   set_fps(60, 0);
   phys_gravity(0, 620);
   make_graphics();
+  make_sounds();
+  music(song_attract);
   seed = rand(1, 99999);
 
   set_color('#a0a8c0');
@@ -1049,10 +1216,12 @@ BEGIN
       IF ((key_pressed(_up) OR key_pressed(_t)) AND ball_live AND in_lane == 0 AND tilted == 0)
         kick_vx = ball_vx + rand(-140, 140);  kick_vy = ball_vy - 220;  kick_req = 1;
         tilt_meter += 42;
+        play_sound(s_nudge, 70, snd_rand(90, 110), 0);
         IF (tilt_meter > 100)
           tilted = 1;  show_msg("TILT");
+          play_sound(s_tilt, 80, 100, 0);
         ELSE
-          IF (tilt_meter > 55) show_msg("DANGER - TILT WARNING"); END
+          IF (tilt_meter > 55) show_msg("DANGER - TILT WARNING"); play_sound(s_warn, 65, 100, 0); END
         END
       END
       IF (tilt_meter > 0) tilt_meter -= 0.3; END

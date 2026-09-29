@@ -21,6 +21,12 @@ PROGRAM raptor;
 // * Bullets, player shots and particles live in fixed pools drawn by one
 //   manager process each; everything that can be shot registers in a
 //   target table, so hit tests are plain box checks against a short list.
+// * Sound, made by the engine as well (sfx, sfx_tone, song_*): guns with
+//   a little pitch variation, spread shots, missile launches and lock-on
+//   beeps, the laser's hum, explosions by size, hits and armour pings,
+//   power-ups, the mega bomb, alarms (low shield, boss warning) and the
+//   shop. Music: a chiptune for the title, the flight, the boss and the
+//   shop, jingles for a cleared sector and game over. M: music on/off.
 
 GLOBAL
   PFW = 480; PFH = 600;          // playfield size (the panel is on the right)
@@ -69,6 +75,18 @@ GLOBAL
   // ---- graphics
   g_player[2]; g_enemy[4]; g_ground[4]; g_build[2]; g_pick[6];
   g_bturret = 0; g_bwreck = 0; g_core_c = 0; g_core_o = 0; g_panel = 0; g_logo = 0; g_dim = 0; g_boss = 0;
+
+  // ---- sound: ids made once, a private random generator for the pitch
+  // variations (the game's rand() sequence stays untouched), times of the
+  // last sounds of each kind (rate limits) and the music wanted now
+  sn_gun[1]; sn_spread = 0; sn_missile = 0; sn_lock = 0; sn_laser = 0; sn_boom[2]; sn_efire[1];
+  sn_ting = 0; sn_hit = 0; sn_phit = 0; sn_alarm = 0; sn_siren = 0; sn_mega = 0; sn_mega2 = 0; sn_die2 = 0;
+  sn_pgun = 0; sn_pweap = 0; sn_pbomb = 0; sn_pshield = 0; sn_pcash = 0;
+  sn_blip = 0; sn_buy = 0; sn_deny = 0; sn_launch = 0; sn_switch = 0;
+  sn_r = 2024; sn_tick = 0; sn_gi = 0; sn_boom_t[2]; sn_efire_t = -99; sn_hit_t = -99; sn_ting_t = -99;
+  sn_phit_t = -99; sn_lock_t = -99;
+  sn_music = 1; sn_want = 0; sn_cur = -1; sn_loop = 1;
+  song_title = 0; song_fly = 0; song_boss = 0; song_shop = 0; song_clear = 0; song_over = 0;
 
 // ==== Small helpers ====
 FUNCTION fmin(a, b); BEGIN IF (a < b) RETURN a; END RETURN b; END
@@ -123,6 +141,163 @@ END
 FUNCTION road_x(wy);
 BEGIN
   RETURN 240 + sin(wy * o_f + o_ph) * 150;
+END
+
+// ==== Sound ====
+
+// A random number for sound variations only (a small LCG of our own).
+FUNCTION srnd(a, b);
+BEGIN
+  sn_r = (sn_r * 1103 + 4271) % 65521;
+  RETURN a + sn_r % (b - a + 1);
+END
+
+// Pan for a playfield x: -70 at the left edge, 70 at the right.
+FUNCTION sn_pan(px);
+BEGIN
+  RETURN clamp(int(px - 240) / 3, -70, 70);
+END
+
+FUNCTION make_sounds();
+BEGIN
+  sn_gun[0] = sfx_tone(wave_square, 1300, 650, 60, 26);
+  sn_gun[1] = sfx_tone(wave_noise, 5200, 1600, 55, 24);
+  sn_spread = sfx_tone(wave_saw, 1100, 480, 90, 22);
+  sn_missile = sfx_tone(wave_noise, 700, 2600, 320, 32);
+  sn_lock = sfx_tone(wave_square, 1760, 1760, 45, 22);
+  sn_laser = sfx_tone(wave_saw, 150, 178, 190, 22);
+  sn_boom[0] = sfx(sfx_explosion, 2);            // small, medium, large
+  sn_boom[1] = sfx(sfx_explosion, 13);
+  sn_boom[2] = sfx(sfx_explosion, 27);
+  sn_efire[0] = sfx_tone(wave_square, 720, 340, 70, 18);
+  sn_efire[1] = sfx_tone(wave_saw, 420, 190, 110, 20);
+  sn_ting = sfx_tone(wave_triangle, 2600, 2000, 70, 30);
+  sn_hit = sfx(sfx_hit, 5);
+  sn_phit = sfx(sfx_hit, 19);
+  sn_alarm = sfx_tone(wave_square, 1000, 1000, 90, 24);
+  sn_siren = sfx_tone(wave_square, 380, 900, 420, 28);
+  sn_mega = sfx_tone(wave_noise, 320, 30, 1500, 80);
+  sn_mega2 = sfx_tone(wave_sine, 120, 30, 1200, 70);
+  sn_die2 = sfx_tone(wave_saw, 900, 60, 1000, 28);
+  sn_pgun = sfx(sfx_powerup, 1);
+  sn_pweap = sfx(sfx_powerup, 6);
+  sn_pbomb = sfx_tone(wave_triangle, 150, 620, 260, 55);
+  sn_pshield = sfx_tone(wave_sine, 300, 1300, 380, 50);
+  sn_pcash = sfx(sfx_coin, 2);
+  sn_blip = sfx(sfx_blip, 2);
+  sn_switch = sfx(sfx_blip, 9);
+  sn_buy = sfx(sfx_coin, 7);
+  sn_deny = sfx_tone(wave_square, 140, 110, 200, 34);
+  sn_launch = sfx_tone(wave_noise, 300, 2200, 700, 40);
+  sn_boom_t[0] = -99; sn_boom_t[1] = -99; sn_boom_t[2] = -99;
+  RETURN 0;
+END
+
+FUNCTION make_songs();
+BEGIN
+  // Title: a heroic tune in D
+  song_title = song_new(128);
+  song_track(song_title, inst_square,
+    "D5 - - A4 - - D5 - E5 - F#5 - E5 - D5 - | C#5 - - A4 - - C#5 - E5 - - - A4 - - - |" +
+    "B4 - - G4 - - B4 - D5 - G5 - F#5 - E5 - | F#5 - - D5 - - A4 - D5 - - - - - . . ", 34);
+  song_track(song_title, inst_bass,
+    "D4 . D5 . D4 . D5 . D4 . D5 . D4 . D5 . | A3 . A4 . A3 . A4 . A3 . A4 . A3 . A4 . |" +
+    "G3 . G4 . G3 . G4 . G3 . G4 . G3 . G4 . | D4 . D5 . D4 . D5 . A3 . A4 . A3 . A4 . ", 50);
+  song_track(song_title, inst_pad,
+    "D4 - - - - - - - - - - - - - - - | A3 - - - - - - - - - - - - - - - |" +
+    "G3 - - - - - - - - - - - - - - - | D4 - - - - - - - A3 - - - - - - - ", 20);
+  song_track(song_title, inst_drums, "k . h . s . h . k . k . s . h h ", 36);
+  // Flight: a driving tune in D minor
+  song_fly = song_new(150);
+  song_track(song_fly, inst_square,
+    "D5 . D5 F5 . D5 G5 . F5 . D5 . C5 . A4 . | D5 . D5 F5 . D5 A5 . G5 . F5 . E5 . C5 . |" +
+    "Bb4 . Bb4 D5 . Bb4 F5 . E5 . D5 . C5 . A4 . | A4 . C#5 . E5 . G5 . A5 - - - . . . . ", 26);
+  song_track(song_fly, inst_bass,
+    "D4 . D4 D5 . D4 D4 D5 D4 . D4 D5 . D4 D5 . | D4 . D4 D5 . D4 D4 D5 D4 . D4 D5 . D4 D5 . |" +
+    "Bb3 . Bb3 Bb4 . Bb3 Bb3 Bb4 Bb3 . Bb3 Bb4 . Bb3 Bb4 . | A3 . A3 A4 . A3 A3 A4 A3 . A3 A4 . A3 A4 . ", 48);
+  song_track(song_fly, inst_drums, "k . h . s . h k k . h . s . h h ", 38);
+  // Boss: fast, chromatic, menacing
+  song_boss = song_new(164);
+  song_track(song_boss, inst_saw,
+    "E5 . F5 . E5 . Eb5 . E5 . . . B4 . C5 . | E5 . F5 . E5 . Eb5 . E5 . G5 . F5 . Eb5 . |" +
+    "C5 . Db5 . C5 . B4 . C5 . . . G4 . Ab4 . | B4 . C5 . D5 . Eb5 . E5 - - - . . . . ", 20);
+  song_track(song_boss, inst_bass,
+    "E4 E4 E5 E4 E4 E4 E5 E4 E4 E4 E5 E4 F4 F4 F5 F4 | E4 E4 E5 E4 E4 E4 E5 E4 E4 E4 E5 E4 F4 F4 F5 F4 |" +
+    "C4 C4 C5 C4 C4 C4 C5 C4 C4 C4 C5 C4 Db4 Db4 Db5 Db4 | B3 B3 B4 B3 B3 B3 B4 B3 B3 B3 B4 B3 B3 B3 B4 B3 ", 50);
+  song_track(song_boss, inst_drums, "k h k h s h k h k h k h s h s s ", 40);
+  // Shop: relaxed
+  song_shop = song_new(96);
+  song_track(song_shop, inst_pluck,
+    "C5 . E5 . G5 . E5 . A5 . G5 . E5 . D5 . | F5 . A5 . C6 . A5 . G5 . E5 . D5 . . . ", 30);
+  song_track(song_shop, inst_bass,
+    "C4 . . . G3 . . . A3 . . . E3 . . . | F3 . . . C4 . . . G3 . . . G3 . . . ", 45);
+  song_track(song_shop, inst_pad,
+    "C4 - - - - - - - A3 - - - - - - - | F3 - - - - - - - G3 - - - - - - - ", 16);
+  song_track(song_shop, inst_drums, "k . . h . . s . . h k . s . h . ", 22);
+  // Jingles, played once
+  song_clear = song_new(140);
+  song_track(song_clear, inst_square, "C5 . E5 . G5 . C6 - - - G5 . C6 - - - - - - - . . . . ", 42);
+  song_track(song_clear, inst_bass, "C4 - - - - - - - G3 - - - C4 - - - - - - - . . . . ", 55);
+  song_track(song_clear, inst_drums, "k . . . s . . . k . k . s . . . k . . . . . . . ", 40);
+  song_over = song_new(90);
+  song_track(song_over, inst_square, "D5 - C5 - A4 - F4 - E4 - - - D4 - - - - - - - . . . . ", 38);
+  song_track(song_over, inst_bass, "D4 - - - Bb3 - - - A3 - - - D3 - - - - - - - . . . . ", 55);
+  song_track(song_over, inst_drums, "k . . . . . . . k . . . s . . . k . . . . . . . ", 36);
+  music_volume(40);
+  RETURN 0;
+END
+
+FUNCTION want_song(sng, lp);
+BEGIN
+  sn_want = sng; sn_loop = lp;
+  RETURN 0;
+END
+
+// Picks the music for the moment, loops the laser's hum and the low
+// shield alarm, and toggles the music with M. A jingle (loop 0) plays
+// even with the music off.
+PROCESS snd_director();
+BEGIN
+  LOOP
+    sn_tick = sn_tick + 1;
+    IF (state == 0) want_song(song_title, 1); END
+    IF (state == 1 OR state == 2)
+      IF (boss_on == 1) want_song(song_boss, 1); ELSE want_song(song_fly, 1); END
+    END
+    IF (state == 3) want_song(song_clear, 0); END
+    IF (state == 4) want_song(song_shop, 1); END
+    IF (state == 5) want_song(song_over, 0); END
+    IF (key_pressed(_m)) sn_music = 1 - sn_music; sn_cur = -1; END
+    IF (sn_want != sn_cur)
+      IF (sn_want AND (sn_music OR sn_loop == 0)) song_play(sn_want, sn_loop); ELSE song_stop(); END
+      sn_cur = sn_want;
+    END
+    IF (laser_on AND player_alive AND sn_tick % 9 == 0) play_sound(sn_laser, 45, srnd(92, 108), sn_pan(plx)); END
+    IF (state == 2 AND player_alive AND shield * 4 < shield_max AND sn_tick % 50 == 0)
+      sn_arp(sn_alarm, 40, 7, 100, 100, 0, 0);
+    END
+    FRAME;
+  END
+END
+
+// Up to four notes of sound snd (pitch percent, 0 none), gap frames apart.
+PROCESS sn_arp(snd, vol, gap, a, b, c, d);
+PRIVATE k = 0; p = 0;
+BEGIN
+  FROM k = 0 TO 3;
+    p = a;
+    IF (k == 1) p = b; END
+    IF (k == 2) p = c; END
+    IF (k == 3) p = d; END
+    IF (p > 0) play_sound(snd, vol, p, 0); END
+    FRAME(gap * 100);
+  END
+END
+
+// A sound at most every `gap` frames: returns 1 when it may play now.
+FUNCTION sn_ready(t, gap);
+BEGIN
+  RETURN sn_tick - t >= gap;
 END
 
 // ==== Generated graphics. Planes face right (angle 0) like every DIV sprite. ====
@@ -342,6 +517,10 @@ BEGIN
       eb_on[i] = 1; eb_x[i] = px; eb_y[i] = py; eb_k[i] = k;
       eb_vx[i] = get_distx(a, spd); eb_vy[i] = get_disty(a, spd);
       eb_cur = i + 1;
+      IF (sn_ready(sn_efire_t, 8))
+        sn_efire_t = sn_tick;
+        play_sound(sn_efire[k % 2], 32, srnd(90, 115), sn_pan(px));
+      END
       RETURN i;
     END
   END
@@ -411,6 +590,10 @@ BEGIN
   END
   IF (sz >= 2) fx_add(3, px, py, 0, 0, 12, 14 + sz * 14); END
   IF (sz >= 3 AND shake < 9) shake = 9; END
+  IF (sn_ready(sn_boom_t[sz - 1], 3))            // one of each size every few frames
+    sn_boom_t[sz - 1] = sn_tick;
+    play_sound(sn_boom[sz - 1], 40 + sz * 20, 170 - sz * 35 + srnd(-10, 10), sn_pan(px));
+  END
   RETURN 0;
 END
 
@@ -438,6 +621,7 @@ FUNCTION hurt(d);
 BEGIN
   IF (p_inv > 0 OR god OR player_alive == 0) RETURN 0; END
   shield = shield - d; shake = fmax(shake, 3);
+  IF (sn_ready(sn_phit_t, 6)) sn_phit_t = sn_tick; play_sound(sn_phit, 75, srnd(70, 85), sn_pan(plx)); END
   RETURN 1;
 END
 
@@ -459,6 +643,18 @@ END
 FUNCTION say(id);
 BEGIN
   msg_id = id; msg_t = 150;
+  // the sound of each event
+  IF (id == 0) play_sound(sn_launch, 60, 100, 0); END
+  IF (id == 1) play_sound(sn_pgun, 70, 100, 0); END
+  IF (id >= 2 AND id <= 4) play_sound(sn_pweap, 70, 90 + id * 10, 0); END
+  IF (id == 5) play_sound(sn_pbomb, 70, 100, 0); END
+  IF (id == 6) play_sound(sn_pshield, 70, 100, 0); END
+  IF (id == 7) sn_arp(sn_pcash, 60, 5, 100, 150, 0, 0); END
+  IF (id == 8) sn_arp(sn_siren, 55, 28, 100, 100, 100, 0); END     // boss warning
+  IF (id == 9) sn_arp(sn_alarm, 50, 6, 100, 126, 150, 0); END
+  IF (id == 10) sn_arp(sn_siren, 55, 16, 120, 120, 120, 120); END
+  IF (id == 12) play_sound(sn_die2, 60, 100, 0); END
+  IF (id == 13) play_sound(sn_mega, 100, 100, 0); play_sound(sn_mega2, 90, 100, 0); END
   RETURN 0;
 END
 
@@ -997,6 +1193,7 @@ BEGIN
   END
   FROM j = 1 TO 5; explode(lx + rand(-60, 60), ly + rand(-40, 40), 3); END
   shake = 14; bomb_flash = 20;
+  play_sound(sn_mega, 90, 80, 0); play_sound(sn_mega2, 80, 80, 0);
   score = score + 5000 * lvl; money = money + 5000 * lvl;
   boss_on = 2;
 END
@@ -1027,16 +1224,20 @@ BEGIN
           IF (gun_lv >= 3) pshot(plx, ply - 20, 90000, 12, 0, 1); END
           IF (gun_lv >= 4) pshot(plx - 14, ply - 8, 94000, 12, 0, 1); pshot(plx + 14, ply - 8, 86000, 12, 0, 1); END
           IF (gun_lv >= 5) pshot(plx - 16, ply - 6, 104000, 11, 0, 1); pshot(plx + 16, ply - 6, 76000, 11, 0, 1); END
+          sn_gi = 1 - sn_gi;                          // two gun sounds in turn, pitch varied
+          play_sound(sn_gun[sn_gi], 34, srnd(90, 112) + gun_lv * 3, sn_pan(plx));
         END
         IF (spec == 1 AND spec_t <= 0)
           FROM s = -1 TO 1 STEP 2;
             pshot(plx, ply - 12, 90000 + s * 10000, 10, 1, 1);
             pshot(plx, ply - 12, 90000 + s * 22000, 10, 1, 1);
           END
+          play_sound(sn_spread, 34, srnd(95, 110), sn_pan(plx));
           spec_t = 13;
         END
         IF (spec == 2 AND spec_t <= 0)
           pshot(plx - 14, ply, 125000, 3, 2, 4); pshot(plx + 14, ply, 55000, 3, 2, 4);
+          play_sound(sn_missile, 50, srnd(90, 110), sn_pan(plx));
           spec_t = 34;
         END
         IF (spec == 3) laser_on = 1; END
@@ -1052,6 +1253,7 @@ BEGIN
           IF (owns(spec)) BREAK; END
         END
         IF (owns(spec) == 0) spec = 0; END
+        play_sound(sn_switch, 45, 100 + spec * 12, 0);
       END
       // ramming planes
       FROM s = 0 TO 63;
@@ -1151,6 +1353,9 @@ BEGIN
               IF (d < bd) bd = d; best = s; END
             END
           END
+          IF (best >= 0 AND pb_t[i] == 9 AND sn_ready(sn_lock_t, 8))   // lock-on beep
+            sn_lock_t = sn_tick; sn_arp(sn_lock, 30, 4, 100, 150, 0, 0);
+          END
           IF (best >= 0 AND pb_t[i] > 8)
             pb_ang[i] = lerp_angle(pb_ang[i], fget_angle(pb_x[i], pb_y[i], t_x[best], t_y[best]), 0.14);
           ELSE IF (pb_t[i] > 8) pb_ang[i] = lerp_angle(pb_ang[i], 90000, 0.1); END END
@@ -1173,9 +1378,13 @@ BEGIN
           IF (hit >= 0)
             t_hp[hit] = t_hp[hit] - pb_dmg[i]; t_flash[hit] = 3;
             spark(pb_x[i], pb_y[i]); pb_on[i] = 0;
+            IF (sn_ready(sn_hit_t, 6)) sn_hit_t = sn_tick; play_sound(sn_hit, 26, srnd(110, 140), sn_pan(pb_x[i])); END
             IF (pb_k[i] == 2) explode(pb_x[i], pb_y[i], 1); END
           ELSE
-            IF (arm >= 0) spark(pb_x[i], pb_y[i]); pb_on[i] = 0; END
+            IF (arm >= 0)
+              spark(pb_x[i], pb_y[i]); pb_on[i] = 0;
+              IF (sn_ready(sn_ting_t, 5)) sn_ting_t = sn_tick; play_sound(sn_ting, 30, srnd(90, 115), sn_pan(pb_x[i])); END
+            END
           END
           IF (pb_on[i])
             SWITCH (pb_k[i])
@@ -1284,6 +1493,7 @@ BEGIN
   write(0, 560, 516, 4, "Z/SPACE  fire");
   write(0, 560, 532, 4, "X/B  mega bomb");
   write(0, 560, 548, 4, "C  switch special");
+  write(0, 560, 564, 4, "M  music on/off");
   LOOP
     IF (score > hiscore) hiscore = score; END
     // shield bar
@@ -1428,9 +1638,10 @@ BEGIN
   set_fps(60, 0);
   screen_color('#000000');
   make_graphics();
+  make_sounds(); make_songs();
   FRAME;
   FROM i = 0 TO 4; g_chunk[i] = new_graphic(480, 256); chunk(i); END
-  panel(); pshots(); eshots(); fxman(); hud();
+  panel(); pshots(); eshots(); fxman(); hud(); snd_director();
 
   LOOP
     // ---- title: the first sector scrolls by behind the logo
@@ -1444,6 +1655,7 @@ BEGIN
     REPEAT scroll_y = scroll_y + scroll_spd; do_shake(); FRAME; UNTIL (key_pressed(_enter) OR key_pressed(_space))
     delete_text(t1); delete_text(t2); delete_text(t3);
     signal(TYPE plate, s_kill);
+    play_sound(sn_buy, 60, 100, 0);
 
     // ---- a new game
     score = 0; money = 0; lives = 3; shield_max = 100; shield = 100; gun_lv = 1; bombs = 2;
@@ -1472,11 +1684,12 @@ BEGIN
       clear_play();
       state = 4; shop_sel = 0;
       LOOP
-        IF (key_pressed(_up)) shop_sel = (shop_sel + 7) % 8; END
-        IF (key_pressed(_down)) shop_sel = (shop_sel + 1) % 8; END
+        IF (key_pressed(_up)) shop_sel = (shop_sel + 7) % 8; play_sound(sn_blip, 40, 100, 0); END
+        IF (key_pressed(_down)) shop_sel = (shop_sel + 1) % 8; play_sound(sn_blip, 40, 90, 0); END
         IF (key_pressed(_z) OR key_pressed(_enter) OR key_pressed(_space))
           IF (shop_sel == 7) BREAK; END
-          shop_buy(shop_sel);
+          IF (shop_buy(shop_sel)) sn_arp(sn_buy, 60, 5, 100, 150, 0, 0);
+          ELSE play_sound(sn_deny, 60, 100, 0); END
         END
         draw_shop();
         FRAME;

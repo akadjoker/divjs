@@ -17,6 +17,12 @@ PROGRAM racer;
 // removes a limited amount of the sideways part, so a fast car slides
 // (less grip on grass, sand, oil and with the handbrake). Sliding hard
 // leaves skid marks drawn straight into the track graphic.
+//
+// Sound is made by the engine (sfx, sfx_tone, song_*: no files): an
+// engine note that climbs through four gears with the speed, tyre squeal
+// and dirt, kerb rumble, bumps, 3-2-1-GO beeps, checkpoint and lap
+// chimes, overtakes, and a chiptune for the title, the race and the
+// podium. It starts with the first key press.
 
 GLOBAL
   MAPW = 2560; MAPH = 1920;   // track graphic, in pixels
@@ -67,6 +73,16 @@ GLOBAL
   n_dust = 0; n_bumps = 0; n_hits = 0;
   autopilot = 0;                    // 1 = the AI drives the player car (tests)
   first_race = 1;
+
+  // ---- sound (made by the engine) and music
+  s_eng = 0; s_kerb = 0; s_skid = 0; s_dirt = 0; s_thud = 0; s_bump = 0;
+  s_crash = 0; s_beep = 0; s_go = 0; s_check = 0; s_lap = 0; s_final = 0;
+  s_miss = 0; s_up = 0; s_down = 0; s_win = 0; s_lose = 0;
+  song_title = 0; song_race = 0; song_podium = 0; song_now = 0;
+  snd_frame = 0; snd_rnd = 7;       // own random numbers: rand() stays the game's
+  eng_acc = 0.0; skid_acc = 0.0; kerb_acc = 0.0;
+  chit_t[3];                        // frame of each car's last bump sound
+  last_cnt = 0; last_state = -1; last_pos = 4; pos_t = 0; last_miss = 0;
 
 // =====================================================================
 // Small helpers
@@ -196,6 +212,194 @@ BEGIN
   g_pos[3] = big_text(90, 44, "4th", 200, 205, 215, 36);
   g_title = big_text(360, 64, "POCKET GP", 255, 210, 60, 56);
   g_fin = big_text(340, 64, "FINISHED!", 255, 255, 255, 52);
+  RETURN 0;
+END
+
+// =====================================================================
+// Sound and music (all made by the engine: sfx, sfx_tone, song_*)
+// =====================================================================
+
+// Pseudo-random numbers for sound variety only, so that rand() (tracks,
+// AI) gives exactly the same races as without sound
+FUNCTION snd_rand(a, b);
+BEGIN
+  snd_rnd = (snd_rnd * 75 + 74) % 65537;
+  RETURN a + snd_rnd % (b - a + 1);
+END
+
+FUNCTION make_sounds();
+BEGIN
+  s_eng = sfx_tone(wave_saw, 90, 80, 110, 34);        // one engine firing
+  s_kerb = sfx_tone(wave_square, 130, 110, 45, 26);   // rumble strips
+  s_skid = sfx_tone(wave_noise, 2600, 2000, 150, 20); // tyre squeal
+  s_dirt = sfx_tone(wave_noise, 700, 260, 150, 30);   // sliding on grass/sand
+  s_thud = sfx_tone(wave_triangle, 170, 55, 170, 70); // tree / tyre wall
+  s_bump = sfx(sfx_hit, 9);                           // car against car
+  s_crash = sfx(sfx_hit, 4);
+  s_beep = sfx_tone(wave_square, 440, 440, 240, 40);  // 3, 2, 1
+  s_go = sfx_tone(wave_square, 880, 880, 650, 40);    // GO!
+  s_check = sfx(sfx_blip, 3);
+  s_lap = sfx(sfx_coin, 5);
+  s_final = sfx(sfx_powerup, 2);
+  s_miss = sfx_tone(wave_square, 230, 150, 300, 34);
+  s_up = sfx_tone(wave_triangle, 660, 990, 120, 44);  // overtaking
+  s_down = sfx_tone(wave_triangle, 520, 330, 150, 38);
+  s_win = sfx(sfx_powerup, 7);
+  s_lose = sfx_tone(wave_triangle, 420, 170, 700, 46);
+
+  // Title and garage: an easy-going tune in C
+  song_title = song_new(116);
+  song_track(song_title, inst_pluck,
+    "C5 . E5 . G5 . C6 . B5 . G5 . E5 . G5 . | A5 - - . E5 . C5 . A4 . C5 . E5 - - . |" +
+    "F5 . A5 . C6 . A5 . G5 . F5 . E5 . D5 . | D5 - - . B4 . D5 . G5 - - - . . . . ", 42);
+  song_track(song_title, inst_bass,
+    "C3 . C4 . C3 . C4 . C3 . C4 . C3 . C4 . | A2 . A3 . A2 . A3 . A2 . A3 . A2 . A3 . |" +
+    "F2 . F3 . F2 . F3 . F2 . F3 . F2 . F3 . | G2 . G3 . G2 . G3 . G2 . G3 . B2 . D3 . ", 60);
+  song_track(song_title, inst_drums, "k . h . s . h . | k . h k s . h h ", 40);
+
+  // Racing: a fast one in E minor
+  song_race = song_new(150);
+  song_track(song_race, inst_square,
+    "E5 . E5 G5 . E5 B5 . A5 . G5 . F#5 . E5 . | C5 . C5 E5 . C5 G5 . F#5 . E5 . D5 . E5 . |" +
+    "D5 . D5 F#5 . D5 A5 . G5 . F#5 . E5 . D5 . | B4 . D#5 . F#5 . B5 - - - A5 . G5 . F#5 . ", 34);
+  song_track(song_race, inst_bass,
+    "E3 . E3 . E4 . E3 . E3 . E3 . E4 . E3 . | C3 . C3 . C4 . C3 . C3 . C3 . C4 . C3 . |" +
+    "D3 . D3 . D4 . D3 . D3 . D3 . D4 . D3 . | B2 . B2 . B3 . B2 . B2 . B2 . B3 . B2 . ", 60);
+  song_track(song_race, inst_pad,
+    "E4 - - - - - - - - - - - - - - - | E4 - - - - - - - - - - - - - - - |" +
+    "F#4 - - - - - - - - - - - - - - - | D#4 - - - - - - - - - - - - - - - ", 22);
+  song_track(song_race, inst_drums, "k . h . s . h k | k . h . s . h h ", 44);
+
+  // Results: a little fanfare
+  song_podium = song_new(128);
+  song_track(song_podium, inst_square,
+    "G4 . C5 . E5 . G5 - - . E5 . G5 - - - | A5 . G5 . F5 . E5 . D5 . E5 . C5 - - - ", 36);
+  song_track(song_podium, inst_bass,
+    "C3 . . . G2 . . . C3 . . . G2 . . . | F2 . . . G2 . . . C3 . . . C3 . . . ", 60);
+  song_track(song_podium, inst_drums, "k . . . s . . . k . k . s . h h ", 40);
+  music_volume(38);
+  RETURN 0;
+END
+
+// Plays song s unless it is already on
+FUNCTION music(s);
+BEGIN
+  IF (song_now != s)
+    song_now = s;
+    song_play(s);
+  END
+  RETURN 0;
+END
+
+// Volume and pan of a sound made at (px, py), heard from the player's car
+FUNCTION snd_near(px, py, vol);
+PRIVATE d;
+BEGIN
+  d = abs(px - cx[0]) + abs(py - cy[0]);
+  IF (d > 600) RETURN 0; END
+  RETURN vol * (600 - d) / 600;
+END
+
+FUNCTION snd_pan(px);
+BEGIN
+  RETURN clamp((px - cx[0]) / 3, -80, 80);
+END
+
+// A bump (hit: closing speed in px/s) for car ci at its position; kind 0
+// scenery, 1 another car. One sound per car every 8 frames at most.
+FUNCTION bump_sound(ci, hit, kind);
+PRIVATE v;
+BEGIN
+  IF (hit < 25 OR snd_frame - chit_t[ci] < 8) RETURN 0; END
+  chit_t[ci] = snd_frame;
+  v = snd_near(cx[ci], cy[ci], clamp(hit * 0.35, 20, 100));
+  IF (ci == 0) v = clamp(hit * 0.4, 30, 100); END
+  IF (v < 4) RETURN 0; END
+  IF (kind == 0)
+    play_sound(s_thud, v, snd_rand(85, 115), snd_pan(cx[ci]));
+    IF (hit > 160) play_sound(s_crash, v * 0.7, snd_rand(80, 110), snd_pan(cx[ci])); END
+  ELSE
+    play_sound(s_bump, v * 0.8, snd_rand(90, 130), snd_pan(cx[ci]));
+  END
+  RETURN 0;
+END
+
+// The player's engine: short firings, quicker and higher with the revs.
+// Four gears, so the note climbs, drops at a shift and climbs again.
+FUNCTION engine_sound(fwd, thr, surf, dt);
+PRIVATE v, gear, frac, rpm, pitch, vol;
+BEGIN
+  v = abs(fwd);
+  gear = int(v / 90);
+  IF (gear > 3) gear = 3; END
+  frac = clamp((v - gear * 90) / 90.0, 0, 1.3);
+  rpm = 0.12 + frac * 0.8;
+  IF (thr) rpm += 0.12; END
+  pitch = 62 + gear * 16 + rpm * 100;
+  vol = 16;
+  IF (thr) vol = 26; END
+  IF (state == 4) vol = vol / 2; END
+  eng_acc += dt * (14 + rpm * 26);
+  IF (eng_acc >= 1)
+    eng_acc = clamp(eng_acc - 1, 0, 0.99);
+    play_sound(s_eng, vol, pitch, 0);
+  END
+  // kerbs rattle
+  kerb_acc += dt * 16;
+  IF (surf == 1 AND v > 60 AND kerb_acc >= 1)
+    play_sound(s_kerb, 26, snd_rand(90, 110), 0);
+  END
+  IF (kerb_acc >= 1) kerb_acc = 0; END
+  RETURN 0;
+END
+
+// Tyres squealing (asphalt) or scrabbling (grass, sand), for the player
+FUNCTION skid_sound(slide, surf, dt);
+BEGIN
+  skid_acc += dt * 11;
+  IF (skid_acc < 1) RETURN 0; END
+  skid_acc = 0;
+  IF (surf >= 2)
+    play_sound(s_dirt, clamp(slide * 0.2, 18, 45), snd_rand(85, 115), 0);
+  ELSE
+    play_sound(s_skid, clamp(slide * 0.18, 14, 40), snd_rand(92, 108), 0);
+  END
+  RETURN 0;
+END
+
+// Countdown beeps, GO, finish, overtakes and the music for each part
+// (called by the main loop every frame)
+FUNCTION race_sounds();
+PRIVATE d;
+BEGIN
+  snd_frame++;
+  IF (state <= 1) music(song_title); END
+  IF (state == 2)
+    d = clamp(int(count_t + 0.999), 1, 3);
+    IF (last_state != 2 OR d != last_cnt)
+      play_sound(s_beep, 70, 100, 0);
+      last_cnt = d;
+    END
+  END
+  IF (state == 3 AND last_state != 3)
+    play_sound(s_go, 75, 100, 0);
+    music(song_race);
+    last_pos = p_pos; last_miss = 0;
+  END
+  IF (state == 3)
+    IF (p_pos != last_pos AND snd_frame - pos_t > 20)
+      IF (p_pos < last_pos) play_sound(s_up, 55, 100, 0); ELSE play_sound(s_down, 45, 100, 0); END
+      last_pos = p_pos; pos_t = snd_frame;
+    END
+    IF (cmiss[0] AND last_miss == 0) play_sound(s_miss, 60, 100, 0); END
+    last_miss = cmiss[0];
+  END
+  IF (state == 4 AND last_state != 4)
+    IF (p_pos == 1) play_sound(s_win, 80, 100, 0); ELSE play_sound(s_lose, 70, 100, 0); END
+    play_sound(s_lap, 70, 80, 0);
+    music(song_podium);
+  END
+  last_state = state;
   RETURN 0;
 END
 
@@ -638,10 +842,12 @@ BEGIN
   cmiss[ci] = (k >= 12 AND k < np / 2 AND cgates[ci] > 0);
   IF (k < 6 AND cdist[ci] < HW + 40)
     cgates[ci]++;
+    IF (ci == 0 AND g != 0) play_sound(s_check, 45, 100 + g * 6, 0); END
     IF (g == 0)
       IF (cgates[ci] > 1)                           // a lap is done
         lt = race_t - clapst[ci];
         IF (ci == 0)
+          IF (cgates[ci] < LAPS * ng + 1) play_sound(s_lap, 70, 100, 0); END
           last_lap = lt;
           IF (best_lap == 0 OR lt < best_lap) best_lap = lt; END
         END
@@ -650,7 +856,10 @@ BEGIN
       IF (cgates[ci] == LAPS * ng + 1)              // chequered flag
         fin_count++; cfin[ci] = fin_count; ctime[ci] = race_t;
       ELSE
-        IF (ci == 0 AND cgates[ci] == (LAPS - 1) * ng + 1) msg_t = 2.5; END
+        IF (ci == 0 AND cgates[ci] == (LAPS - 1) * ng + 1)
+          msg_t = 2.5;
+          play_sound(s_final, 60, 100, 0);
+        END
       END
     END
   END
@@ -772,6 +981,7 @@ BEGIN
             vx -= nx * vn * 1.4; vy -= ny * vn * 1.4;
             vx = vx * 0.8; vy = vy * 0.8;
             n_hits++;
+            bump_sound(ci, -vn, 0);
           END
         END
       END
@@ -791,6 +1001,7 @@ BEGIN
               vx -= nx * vn * 0.65; vy -= ny * vn * 0.65;
               cvx[i] += nx * vn * 0.65; cvy[i] += ny * vn * 0.65;
               n_bumps++;
+              bump_sound(ci, -vn, 1);
             END
           END
         END
@@ -813,6 +1024,7 @@ BEGIN
         END
       END
       skid = 1;
+      IF (ci == 0 AND state >= 3) skid_sound(abs(lat) + abs(fwd) * brk * 0.3, surf, dt); END
     ELSE
       skid = 0;
     END
@@ -825,6 +1037,7 @@ BEGIN
     cvx[ci] = vx; cvy[ci] = vy; cx[ci] = x; cy[ci] = y;
     angle = cang[ci];
     IF (state >= 3) checkpoints(ci); END
+    IF (ci == 0 AND state >= 2) engine_sound(fwd, thr, surf, dt); END
 
     // ---- the camera looks ahead of the player
     IF (ci == 0)
@@ -986,6 +1199,7 @@ BEGIN
   set_fps(60, 0);
   screen_color('#0a1208');
   make_graphics();
+  make_sounds();
   start_scroll(0, 0, g_map, 0, 0, 0);
   panel(g_mini, 556, 68);
   banner();
@@ -1027,6 +1241,7 @@ BEGIN
       draw_hud();
       IF (state == 4) draw_results(); END
     END
+    race_sounds();
     FRAME;
   END
 END
