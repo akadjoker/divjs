@@ -201,7 +201,7 @@ Conventions used below:
 
 | Name | Arguments | Returns | Description |
 |------|-----------|---------|-------------|
-| `path_find` | `x1, y1, x2, y2[, TYPE, cell, diagonal, max_nodes]` | path/0 | A* over a grid of `cell`-pixel squares (default 16) avoiding processes of `TYPE`; returns a path id, 0 if none. |
+| `path_find` | `x1, y1, x2, y2[, TYPE, cell, diagonal, max_nodes, clearance]` | path/0 | A* over a grid of `cell`-pixel squares (default 16) avoiding processes of `TYPE`; returns a path id, 0 if none. `clearance` (pixels, default 0) keeps the path that far from the obstacles - use half the size of the process that follows it, or its body will brush the walls. Diagonal steps never cut an obstacle's corner. |
 | `path_length` | `path` | number | Number of points in the path. |
 | `path_get_x` | `path, index` | number | X of a point. |
 | `path_get_y` | `path, index` | number | Y of a point. |

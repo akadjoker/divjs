@@ -2930,6 +2930,68 @@ async function testPathNativesScrollState() {
   assert(active === 1, `get_path active esperado 1, obtido ${active}`);
 }
 
+// path_find's clearance keeps a follower's whole body off the walls (the
+// pathfinding demo's 16 px bot brushed them: the path was planned for its
+// centre), and diagonal steps never cut a wall's corner.
+async function testPathFindClearanceAndCorners()
+{
+  const vm = new VM();
+  const runtime = createRuntime(vm);
+  const walls = [
+    { x: 120, y: 60, width: 24, height: 120 },     // centred boxes, as in DIV
+    { x: 60, y: 150, width: 100, height: 20 }
+  ];
+  for (const w of walls)
+  {
+    vm.processManager.create('wall', { ...w, angle: 0 });
+  }
+  const wallType = vm.processManager.getTypeCode('wall');
+  const boxes = walls.map((w) => [w.x - w.width / 2, w.y - w.height / 2, w.x + w.width / 2, w.y + w.height / 2]);
+  // Does a 16x16 body centred anywhere on the path touch a wall?
+  const bodyHits = (pathId) =>
+  {
+    let hits = 0;
+    const n = runtime.pathLengthNative(pathId);
+    for (let i = 0; i + 1 < n; i++)
+    {
+      const ax = runtime.pathGetXNative(pathId, i);
+      const ay = runtime.pathGetYNative(pathId, i);
+      const bx = runtime.pathGetXNative(pathId, i + 1);
+      const by = runtime.pathGetYNative(pathId, i + 1);
+      for (let t = 0; t <= 1; t += 0.1)
+      {
+        const cx = ax + (bx - ax) * t;
+        const cy = ay + (by - ay) * t;
+        for (const [x0, y0, x1, y1] of boxes)
+        {
+          if (cx + 8 > x0 && cx - 8 < x1 && cy + 8 > y0 && cy - 8 < y1)
+          {
+            hits++;
+          }
+        }
+      }
+    }
+    return hits;
+  };
+  const pointPath = runtime.pathFindNative(40, 40, 200, 110, wallType, 8, 1, 8192);
+  const bodyPath = runtime.pathFindNative(40, 40, 200, 110, wallType, 8, 1, 8192, 8);
+  assert(pointPath > 0 && bodyPath > 0, `os dois caminhos deviam existir: ${pointPath}, ${bodyPath}`);
+  assert(bodyHits(pointPath) > 0, 'sem clearance, um corpo de 16 px devia raspar as paredes (confirma que o teste mede algo)');
+  assert(bodyHits(bodyPath) === 0, `com clearance 8, um corpo de 16 px nao devia tocar em nenhuma parede (${bodyHits(bodyPath)} toques)`);
+
+  // Two walls touching only at a corner: the diagonal between them is shut.
+  const vm2 = new VM();
+  const rt2 = createRuntime(vm2);
+  vm2.processManager.create('wall', { x: 24, y: 8, width: 16, height: 16, angle: 0 });   // cell (1,0)
+  vm2.processManager.create('wall', { x: 8, y: 24, width: 16, height: 16, angle: 0 });   // cell (0,1)
+  const t2 = vm2.processManager.getTypeCode('wall');
+  // (0,0) -> (1,1) straight through the corner would be a 2-point path;
+  // the only legal ways go around the walls.
+  const corner = rt2.pathFindNative(8, 8, 24, 24, t2, 16, 1, 8192);
+  assert(corner > 0 && rt2.pathLengthNative(corner) > 2,
+    `o caminho devia contornar as paredes e nao passar pelo canto entre elas (${corner ? rt2.pathLengthNative(corner) : 0} pontos)`);
+}
+
 async function testPathFindAvoidsObstacleType() {
   const vm = new VM();
   const runtime = createRuntime(vm);
@@ -4421,6 +4483,7 @@ export async function runAllTests() {
     ['let_me_alone kills others', testLetMeAloneKillsOthers],
     ['__get_path/__set_path scroll state', testPathNativesScrollState],
     ['path_find (A*) avoids TYPE obstacle and exposes points', testPathFindAvoidsObstacleType],
+    ['path_find: clearance keeps a body off walls, no corner cutting', testPathFindClearanceAndCorners],
     ['path_assign/path_step follows path using delta time', testPathAssignAndStepUsesDeltaTime],
     ['relative process field access: father.x and son.x', testRelativeProcessFieldAccessFatherAndSon],
     ['out_of_region / out_of_screen', testOutOfRegionAndScreen],

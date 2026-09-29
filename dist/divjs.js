@@ -14100,12 +14100,28 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
   _manhattanDistance(ax, ay, bx, by) {
     return (Math.abs(ax - bx) + Math.abs(ay - by)) * 10;
   }
-  _nodeBlocked(gx, gy, cellSize, obstacleTypeCode) {
+  _nodeBlocked(gx, gy, cellSize, obstacleTypeCode, clearance = 0) {
     if (!obstacleTypeCode) return false;
     const cx = gx * cellSize + Math.floor(cellSize * 0.5);
     const cy = gy * cellSize + Math.floor(cellSize * 0.5);
-    const hit = this.vm?.processManager?.collisionPoint(cx, cy, obstacleTypeCode) || 0;
-    return hit > 0;
+    const pm = this.vm?.processManager;
+    if (!(clearance > 0)) {
+      const hit = pm?.collisionPoint(cx, cy, obstacleTypeCode) || 0;
+      return hit > 0;
+    }
+    const ids = pm?.byType?.get(obstacleTypeCode);
+    if (!ids) return false;
+    for (const id of ids) {
+      const p = pm.get(id);
+      if (!p || !p.active || p.dead || p.finished || p.sleeping) continue;
+      for (const shape of getProcessShapes(p)) {
+        const a2 = shape.aabb;
+        if (a2 && a2.minX < cx + clearance && a2.maxX > cx - clearance && a2.minY < cy + clearance && a2.maxY > cy - clearance) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
   _buildPathPoints(cameFrom, endKey, startX, startY, endX, endY, cellSize) {
     const chain = [];
@@ -14130,7 +14146,11 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     chain[chain.length - 1].y = Math.round(endY);
     return chain;
   }
-  pathFindNative(startX, startY, endX, endY, obstacleTypeCode = 0, cellSize = 16, allowDiagonal = 1, maxNodes = 4096) {
+  // clearance: how far (in pixels) the path keeps from obstacles - half
+  // the size of whoever follows it. With 0 a cell is free when its centre
+  // is; with more, when a square of that half-size around the centre
+  // touches no obstacle. Diagonal steps never cut an obstacle's corner.
+  pathFindNative(startX, startY, endX, endY, obstacleTypeCode = 0, cellSize = 16, allowDiagonal = 1, maxNodes = 4096, clearance = 0) {
     const size = Math.max(4, Math.floor(Number(cellSize) || 16));
     const allowDiag = Number(allowDiagonal) !== 0;
     const maxVisited = Math.max(64, Math.floor(Number(maxNodes) || 4096));
@@ -14139,6 +14159,7 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     const tx = Number(endX) || 0;
     const ty = Number(endY) || 0;
     const obstacleType = Math.trunc(Number(obstacleTypeCode) || 0);
+    const keepOff = Math.max(0, Number(clearance) || 0);
     const sx = Math.floor(ox / size);
     const sy = Math.floor(oy / size);
     const ex = Math.floor(tx / size);
@@ -14200,7 +14221,10 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
         if (nx < minX || nx > maxX || ny < minY || ny > maxY) continue;
         const nKey = this._gridKey(nx, ny);
         if (closed.has(nKey)) continue;
-        if (nKey !== endKey && this._nodeBlocked(nx, ny, size, obstacleType)) {
+        if (nKey !== endKey && this._nodeBlocked(nx, ny, size, obstacleType, keepOff)) {
+          continue;
+        }
+        if (dx !== 0 && dy !== 0 && (this._nodeBlocked(current.x + dx, current.y, size, obstacleType, keepOff) || this._nodeBlocked(current.x, current.y + dy, size, obstacleType, keepOff))) {
           continue;
         }
         const tentativeG = current.g + stepCost;
