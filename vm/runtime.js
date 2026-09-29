@@ -2409,10 +2409,10 @@ export class CanvasEngineRuntime {
       return this.vm?.processManager?.get(Number(process.parentId) || 0) || null;
     }
 
-    // SON is the LAST process this one created (dgs2 12860-12867) - this
+    // SON is the LAST process this one created - this
     // used to return the oldest living child, scanning every process on
     // each access. BIGBRO/SMALLBRO are the brothers created just before /
-    // after it (dgs2 12396-12411, 12841-12853). All three are links kept
+    // after it. All three are links kept
     // on the Process (see ProcessManager.getRelative).
     if (root === 'son' || root === 'bigbro' || root === 'smallbro')
     {
@@ -4298,7 +4298,7 @@ export class CanvasEngineRuntime {
       .filter(({ entry }) => entry && entry.active);
 
     for (const process of processes) {
-      // An asleep process is not displayed (dgs2 10683-10686); a frozen
+      // An asleep process is not displayed; a frozen
       // one still is. Both used to be drawn.
       if (process.sleeping)
       {

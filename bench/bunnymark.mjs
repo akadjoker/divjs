@@ -74,14 +74,9 @@ function runOne(count, ticks) {
 
   // Spawning happens in batches of SPAWN_BATCH per tick (via the
   // "spawner" process in the generated source) instead of one giant FOR
-  // loop in MAIN - see BUGS.md "MAIN silently truncates and permanently
-  // stops on large spawn loops" for why: a single-tick spawn loop hits
-  // the 100,000-instruction per-tick budget guard (vm.js's runMain())
-  // well before 5,000 processes with this per-spawn instruction cost,
-  // after which MAIN silently stops forever. Batching keeps each
-  // individual tick's instruction count far under that ceiling
-  // regardless of the total target count, so this measures genuine
-  // steady-state throughput instead of an artifact of that limit.
+  // loop in MAIN: a single-tick spawn loop runs into the per-tick
+  // instruction budget (vm.js's runMain()). Batching keeps each tick well
+  // under it, so this measures steady-state throughput and not the limit.
   const spawnTicksNeeded = Math.ceil(count / SPAWN_BATCH) + 2;
   const spawnStart = process.hrtime.bigint();
   for (let t = 0; t < spawnTicksNeeded; t++) {
