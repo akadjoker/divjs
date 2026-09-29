@@ -3835,7 +3835,7 @@ var ProcessManager = class {
   }
   // Takes a removed process out of its brothers' chain. Its own children
   // are left behind as orphans: nothing reaches them from above any more,
-  // which is what DIV does with tree signals (dgs2 10713-10718). Their
+  // which is what DIV does with tree signals. Their
   // parentId still names the dead id, so `father` reads 0, as before.
   _unlinkFromFather(process) {
     const father = this.byId.get(process.parentId);

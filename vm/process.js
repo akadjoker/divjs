@@ -524,7 +524,7 @@ export class Process {
     // suspended: not executed (S_SLEEP and S_FREEZE). sleeping: S_SLEEP
     // only - the manual's asleep process "will appear to be dead", i.e.
     // it is also not drawn and not detected by collisions, while a frozen
-    // one stays visible and collidable (dgs2 8919-8930, 10683-10692).
+    // one stays visible and collidable.
     this.suspended = false;
     this.sleeping = false;
     this.finished = false;
@@ -842,7 +842,7 @@ export class ProcessManager {
 
   // Takes a removed process out of its brothers' chain. Its own children
   // are left behind as orphans: nothing reaches them from above any more,
-  // which is what DIV does with tree signals (dgs2 10713-10718). Their
+  // which is what DIV does with tree signals. Their
   // parentId still names the dead id, so `father` reads 0, as before.
   _unlinkFromFather(process)
   {
@@ -1159,8 +1159,8 @@ export class ProcessManager {
       }
       // MAIN is not spared: the manual's let_me_alone() "sends a s_kill
       // signal to all the processes, except the one executed by this
-      // function" (dgs2 9851-9853), and MAIN is the program's initial
-      // process (dgs2 8872-8874). Called from MAIN, as usual, it only
+      // function", and MAIN is the program's initial
+      // process. Called from MAIN, as usual, it only
       // spares MAIN because MAIN is the caller. The mouse is an
       // engine-owned process with no compiled body of its own (real DIV's
       // mouse is a separate struct, never a killable process) - killing
