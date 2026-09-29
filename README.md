@@ -5,6 +5,10 @@ processes, `FRAME`, `TYPE`, signals, all of it - and run them at 60 fps in
 any modern browser, with physics, sound, music and online multiplayer on
 top.
 
+It started for fun: one weekend I began porting an old DIV-style virtual
+machine of mine to JavaScript, just to see if it would fly in a browser. I
+didn't expect it to run this well.
+
 [![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/akadjoker)
 
 This repository is the engine. **[▶ The playground](https://akadjoker.github.io/divjs-playground/)** - the online
@@ -49,20 +53,18 @@ tutorials run on it, and on top of what DIV had it adds the things you'd
 want today - rigid-body physics, synthesised sound and music, and
 peer-to-peer online play.
 
-## Made by AI, on purpose
+## The games are the test
 
-Almost every game in the playground was written by AI coding agents,
-working only from the language and the reference in
-[docs/natives.md](docs/natives.md) - the same material you have. Each one
-was then played in a real browser with real key presses, checked for
-warnings and frame drops, and fixed until it held 60 fps.
+The games in the playground are built only from the language and the
+reference in [docs/natives.md](docs/natives.md) - the same material you
+have. Each one was played in a real browser with real key presses, checked
+for warnings and frame drops, and fixed until it held 60 fps.
 
-That's the point of showing them: if an agent can build a Street Fighter
-clone, a Bomberman with CPU players that plan their escapes, or a cat
-that knocks vases off shelves from that reference, the engine and its docs
-are doing their job - and you can build them too. The engine started as
-my own port and has since been extended with the same agents, with tests
-for every feature.
+That's the point of showing them: if a Street Fighter clone, a Bomberman
+with CPU players that plan their escapes, or a cat that knocks vases off
+shelves can be built from that reference, the engine and its docs are
+doing their job - and you can build them too. Every engine feature has
+tests.
 
 ## A taste of DIV
 
