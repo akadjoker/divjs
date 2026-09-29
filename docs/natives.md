@@ -207,7 +207,7 @@ Conventions used below:
 | `path_get_y` | `path, index` | number | Y of a point. |
 | `path_clear` | `path` | 1/0 | Forgets a path. |
 | `path_assign` | `path[, start_index]` | 1/0 | Makes the current process follow the path. |
-| `path_step` | `[speed, arrive_radius]` | 0/1/2 | Moves the current process along its path at `speed` pixels per second: 1 moving, 2 arrived, 0 no path. |
+| `path_step` | `[speed, arrive_radius]` | 0/1/2 | Moves the current process along its path at `speed` pixels per second: 1 moving, 2 arrived, 0 no path. It never overshoots a point. `arrive_radius` makes it turn that many pixels early, cutting corners by up to that much: use 0 with a path planned with `clearance`, or add the radius to the clearance. |
 | `path_stop` | — | 1/0 | Stops following. |
 | `path_index` | — | number | Index of the point being walked to. |
 
