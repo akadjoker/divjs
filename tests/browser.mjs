@@ -814,6 +814,85 @@ try
     assert(tutor !== 'game', 'in a program that does not use Tab, Tab should move the focus on');
   });
 
+  // dist/divjs.js (npm run build): the whole engine in one module with no
+  // imports. It runs a program on its own, exposes the public API, and a
+  // game packed from it (as divjs-playground's Export does) runs offline.
+  await check('bundle: dist/divjs.js runs a program, and a game packed from it runs offline', async () =>
+  {
+    const page = await browser.newPage();
+    const problems = watch(page);
+    await page.goto(`${BASE}/tests/simples.html`);
+    const result = await page.evaluate(async () =>
+    {
+      const divjs = await import('/dist/divjs.js');
+      const canvas = document.createElement('canvas');
+      canvas.width = 160;
+      canvas.height = 100;
+      document.body.appendChild(canvas);
+      const game = divjs.runDivDemo({ canvas, source: 'program b; global n; begin loop n = n + 1; frame; end end' });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const state = game.getState();
+      const frames = state.vm.globals.get(state.bytecode.globals.n);
+      game.destroy();
+      const bytecode = divjs.compile('program c; begin end');
+      const response = await fetch('/dist/divjs.js');
+      const html = divjs.buildPackedHtml({
+        modules: divjs.bundleEngineModules(await response.text()),
+        source: 'program packed; global n; begin set_mode(160, 100); loop n = n + 1; frame; end end'
+      });
+      return {
+        version: divjs.VERSION,
+        api: ['runDivDemo', 'VM', 'CanvasEngineRuntime', 'Lexer', 'Parser', 'Compiler', 'DivError', 'hashState', 'parseDivFpgBuffer'].filter((k) => !divjs[k]),
+        frames,
+        compiled: Array.isArray(bytecode.code) || typeof bytecode === 'object',
+        html
+      };
+    });
+    await page.close();
+    assert(problems.length === 0, problems.join('\n'));
+    const pkg = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'));
+    assert(result.version === pkg.version, `VERSION ${result.version} should match package.json ${pkg.version}`);
+    assert(result.api.length === 0, `missing from the public API: ${result.api.join(', ')}`);
+    assert(result.frames > 5, `the bundle should run the program (${result.frames} frames)`);
+    assert(result.compiled, 'compile() should return bytecode');
+
+    const dir = await mkdtemp(join(tmpdir(), 'divjs-bundle-'));
+    try
+    {
+      const file = join(dir, 'packed.html');
+      await (await import('node:fs/promises')).writeFile(file, result.html);
+      const offline = await browser.newPage();
+      const offProblems = watch(offline);
+      const network = [];
+      await offline.route('**/*', (route) =>
+      {
+        const url = route.request().url();
+        if (/^(file|blob|data):/.test(url))
+        {
+          return route.continue();
+        }
+        network.push(url);
+        return route.abort();
+      });
+      await offline.goto(`file://${file}`);
+      await offline.waitForFunction(() => window.divGame?.getState?.().running, null, { timeout: 5000 });
+      await offline.waitForTimeout(300);
+      const n = await offline.evaluate(() =>
+      {
+        const s = window.divGame.getState();
+        return s.vm.globals.get(s.bytecode.globals.n);
+      });
+      await offline.close();
+      assert(offProblems.length === 0, offProblems.join('\n'));
+      assert(network.length === 0, `the packed game asked the network for ${network.join(', ')}`);
+      assert(n > 5, `the game packed from the bundle should run (${n} frames)`);
+    }
+    finally
+    {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   // tools/pack.mjs: one .html with the engine, the program and its files,
   // opened from disk with every network request blocked.
   await check('packed game runs from file:// with no network', async () =>

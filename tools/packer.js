@@ -202,7 +202,10 @@ try
   const urls = {};
   for (const mod of modules)
   {
-    const code = mod.source.replace(/__DIVJS_MODULE__\\[([^\\]]+)\\]/g, (token, path) => urls[path]);
+    // One module (the dist/divjs.js bundle) has no imports to rewrite -
+    // and its own text holds the packer, token pattern included.
+    const code = modules.length === 1 ? mod.source
+      : mod.source.replace(/__DIVJS_MODULE__\\[([^\\]]+)\\]/g, (token, path) => urls[path]);
     urls[mod.path] = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
   }
   const { runDivDemo } = await import(urls[modules[modules.length - 1].path]);

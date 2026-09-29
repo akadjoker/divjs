@@ -12,7 +12,8 @@
     "pack": "node tools/pack.mjs",
     "build:physics": "esbuild node_modules/planck/dist/planck.mjs --bundle --format=esm --minify --legal-comments=inline --outfile=vendor/planck.js",
     "capture": "node tools/capture.mjs",
-    "itch": "node tools/itch.mjs"
+    "itch": "node tools/itch.mjs",
+    "build": "esbuild index.js --bundle --format=esm --legal-comments=inline --outfile=dist/divjs.js && esbuild index.js --bundle --format=esm --minify --legal-comments=eof --outfile=dist/divjs.min.js"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",
@@ -30,5 +31,27 @@
     "gifenc": "^1.0.3",
     "planck": "^1.5.0",
     "playwright": "^1.56.1"
-  }
+  },
+  "version": "1.0.0",
+  "description": "The DIV Games Studio language in the browser: compiler, virtual machine and runtime",
+  "main": "./dist/divjs.js",
+  "exports": {
+    ".": "./dist/divjs.js",
+    "./src": "./index.js"
+  },
+  "files": [
+    "dist/",
+    "index.js",
+    "divjs.js",
+    "compiler/",
+    "parser/",
+    "vm/",
+    "graph/",
+    "vendor/",
+    "tools/packer.js",
+    "tools/pack.mjs",
+    "docs/natives.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ]
 }
