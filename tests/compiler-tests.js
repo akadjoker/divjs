@@ -1,5 +1,4 @@
-// Regression tests for the compiler items of docs/review-2026-09.md
-// (P3.1-P3.7 and the compiler part of P5). They only need the lexer,
+// Compiler regression tests. They only need the lexer,
 // parser, compiler and the bare VM - no canvas - so they also run under
 // Node.
 import { Lexer } from '../compiler/tokenizer.js';
@@ -74,7 +73,7 @@ function expectDivError(label, source, stage, line, col, fragment)
 
 async function testForLoopUsesGlobalCounter()
 {
-  // P3.1: FOR with a GLOBAL counter created a local of the same name.
+  // FOR with a GLOBAL counter created a local of the same name.
   const { said, globals } = runSource(`PROGRAM t;
 GLOBAL i; after;
 BEGIN
@@ -89,7 +88,7 @@ END`);
 
 async function testCompoundAssignEvaluatesIndexOnce()
 {
-  // P3.2: "a[k()] += 1" and "a[k()]++" called k() twice (read a[1], wrote a[2]).
+  // "a[k()] += 1" and "a[k()]++" called k() twice (read a[1], wrote a[2]).
   const source = (statement) => `PROGRAM t;
 GLOBAL a[3]; calls;
 FUNCTION k() BEGIN calls = calls + 1; RETURN calls; END
@@ -108,7 +107,7 @@ BEGIN a[1] = 5; a[2] = 100; a[k()] -= 2; a[1] *= 3; a[k()]--; say(a[1], a[2], ca
 
 async function testAssignmentExpressionEvaluatesIndexOnce()
 {
-  // P3.3: an assignment used as a value re-read its target, evaluating
+  // An assignment used as a value re-read its target, evaluating
   // the index again (and reading a different cell).
   const { said } = runSource(`PROGRAM t;
 GLOBAL a[3]; calls; r; q;
@@ -124,7 +123,7 @@ END`);
 
 async function testLocalSectionInitializers()
 {
-  // P3.4: "LOCAL hp = 10;" started every process (and MAIN) at 0.
+  // "LOCAL hp = 10;" started every process (and MAIN) at 0.
   const { globals } = runSource(`PROGRAM t;
 GLOBAL got; main_hp; given;
 LOCAL hp = 10; mp = 3; t[2];
@@ -142,7 +141,7 @@ BEGIN main_hp = hp; p(7); END`);
 
 async function testDashDashCommentAfterValue()
 {
-  // P3.5: "--" after ")", a number or a name was read as a decrement.
+  // "--" after ")", a number or a name was read as a decrement.
   const { globals } = runSource(`PROGRAM t;
 GLOBAL r; step = 3;
 BEGIN
@@ -163,7 +162,7 @@ END`);
 
 async function testNamesAreCaseInsensitive()
 {
-  // P3.6: keywords were case-insensitive but names were not ("X = 50"
+  // Keywords were case-insensitive but names were not ("X = 50"
   // created a new local; x stayed 0).
   const { said, globals, bytecode } = runSource(`PROGRAM t;
 GLOBAL gx; Score; Hits;
@@ -188,7 +187,7 @@ BEGIN mover(); SAY(score, Pos.a, pos.B); END`);
 
 async function testStructInitializerCompilesExpressions()
 {
-  // P3.7: only bare numeric literals were kept; "1+1" or "-v" became 0.
+  // Only bare numeric literals were kept; "1+1" or "-v" became 0.
   const { said } = runSource(`PROGRAM t;
 GLOBAL v = 4;
 STRUCT s[1] a; b; END = 1+1, -v, 7;
@@ -201,7 +200,7 @@ BEGIN END`, 'compiler', 2, 1, 'initial values');
 
 async function testPrivateNamedLikeParameterIsError()
 {
-  // P5: the PRIVATE shared the parameter's slot and zeroed the argument.
+  // The PRIVATE shared the parameter's slot and zeroed the argument.
   expectDivError('PRIVATE com nome de parametro', `PROGRAM t;
 PROCESS p(speed)
 PRIVATE
@@ -212,7 +211,7 @@ BEGIN p(7); END`, 'compiler', 4, 3, 'same name as a parameter');
 
 async function testGlobalNamedLikeProcessFieldIsError()
 {
-  // P5: inside every process the predefined local of the same name won.
+  // Inside every process the predefined local of the same name won.
   expectDivError('GLOBAL size', `PROGRAM t;
 GLOBAL score; size = 5;
 BEGIN END`, 'compiler', 2, 15, 'predefined process variable');
@@ -224,7 +223,7 @@ BEGIN END`, 'compiler', 3, 8, 'LOCAL section');
 
 async function testIndexingScalarStructFieldIsError()
 {
-  // P5: "s[0].a[1]" on a scalar field silently read s[1].a.
+  // "s[0].a[1]" on a scalar field silently read s[1].a.
   expectDivError('campo escalar indexado', `PROGRAM t;
 STRUCT s[1] a; b; END
 BEGIN
@@ -234,7 +233,7 @@ END`, 'compiler', 4, 7, 'not an array or a STRUCT');
 
 async function testUndeclaredPathRootIsError()
 {
-  // P5: "foo[3] = 5" compiled to __set_path and read back 0 at runtime.
+  // "foo[3] = 5" compiled to __set_path and read back 0 at runtime.
   expectDivError('raiz nao declarada', `PROGRAM t;
 BEGIN
   foo[3] = 5;
@@ -255,7 +254,7 @@ END`);
 
 async function testExtraArrayInitializersIsError()
 {
-  // P5: values past the last cell were dropped without a word.
+  // Values past the last cell were dropped without a word.
   expectDivError('valores a mais', `PROGRAM t;
 GLOBAL a[1] = 1, 2, 3;
 BEGIN END`, 'compiler', 2, 8, '2 cells but 3 initial values');
@@ -265,7 +264,7 @@ BEGIN END`, 'compiler', 2, 8, '2 cells but 3 initial values');
 
 async function testMalformedNumberIsLexerError()
 {
-  // P5: "1.2.3" was read as 1.2.
+  // "1.2.3" was read as 1.2.
   expectDivError('1.2.3', `PROGRAM t;
 GLOBAL r = 1.2.3;
 BEGIN END`, 'lexer', 2, 12, 'Malformed number');
@@ -273,7 +272,7 @@ BEGIN END`, 'lexer', 2, 12, 'Malformed number');
 
 async function testUnterminatedBlockCommentIsLexerError()
 {
-  // P5: an unclosed /* swallowed the rest of the file.
+  // An unclosed /* swallowed the rest of the file.
   expectDivError('/* sem fim', `PROGRAM t;
 GLOBAL r = 1;
 BEGIN
@@ -284,7 +283,7 @@ END`, 'lexer', 4, 10, 'Unterminated /* comment');
 
 async function testLocalSectionsParse()
 {
-  // P5: a second LOCAL section was a syntax error; a STRUCT inside LOCAL
+  // A second LOCAL section was a syntax error; a STRUCT inside LOCAL
   // failed with "Expected private name".
   const { globals } = runSource(`PROGRAM t;
 GLOBAL r;
@@ -335,7 +334,7 @@ BEGIN END`, 'compiler', 3, 9, 'same name as a parameter of this FUNCTION');
 
 async function testDisasmShowsGlobalInitialisation()
 {
-  // P5: the code before the first body (global initialisers and the
+  // The code before the first body (global initialisers and the
   // jump to MAIN) was never printed.
   const text = disassemble(compileSource(`PROGRAM t;
 GLOBAL score = 77;
@@ -421,22 +420,22 @@ BEGIN say(s[0].a, s[0].b, s[1].a, s[1].b, u[1].p, u[1].q); END`);
 export const compilerTests = [
   ['compiler: STRUCT defaults fill what the initializer list leaves (decision)', testStructDefaultsFillWhatTheListLeaves],
   ['compiler: FOR/FROM evaluate the TO limit once (decision)', testForLimitIsEvaluatedOnce],
-  ['compiler: FOR with a GLOBAL counter uses the global (P3.1)', testForLoopUsesGlobalCounter],
-  ['compiler: compound assignment evaluates the index once (P3.2)', testCompoundAssignEvaluatesIndexOnce],
-  ['compiler: assignment used as a value evaluates the index once (P3.3)', testAssignmentExpressionEvaluatesIndexOnce],
-  ['compiler: LOCAL section initializers (P3.4)', testLocalSectionInitializers],
-  ['lexer: -- comment after ), a number or a name (P3.5)', testDashDashCommentAfterValue],
-  ['compiler: names are case-insensitive (P3.6)', testNamesAreCaseInsensitive],
-  ['compiler: STRUCT initializer compiles expressions (P3.7)', testStructInitializerCompilesExpressions],
-  ['compiler: PRIVATE named like a parameter is an error (P5)', testPrivateNamedLikeParameterIsError],
-  ['compiler: GLOBAL named like a process field is an error (P5)', testGlobalNamedLikeProcessFieldIsError],
-  ['compiler: indexing a scalar STRUCT field is an error (P5)', testIndexingScalarStructFieldIsError],
-  ['compiler: undeclared dotted/indexed root is an error (P5)', testUndeclaredPathRootIsError],
-  ['compiler: extra GLOBAL array initial values is an error (P5)', testExtraArrayInitializersIsError],
-  ['lexer: 1.2.3 is an error (P5)', testMalformedNumberIsLexerError],
-  ['lexer: unterminated /* is an error (P5)', testUnterminatedBlockCommentIsLexerError],
-  ['parser: several LOCAL sections (P5)', testLocalSectionsParse],
+  ['compiler: FOR with a GLOBAL counter uses the global', testForLoopUsesGlobalCounter],
+  ['compiler: compound assignment evaluates the index once', testCompoundAssignEvaluatesIndexOnce],
+  ['compiler: assignment used as a value evaluates the index once', testAssignmentExpressionEvaluatesIndexOnce],
+  ['compiler: LOCAL section initializers', testLocalSectionInitializers],
+  ['lexer: -- comment after ), a number or a name', testDashDashCommentAfterValue],
+  ['compiler: names are case-insensitive', testNamesAreCaseInsensitive],
+  ['compiler: STRUCT initializer compiles expressions', testStructInitializerCompilesExpressions],
+  ['compiler: PRIVATE named like a parameter is an error', testPrivateNamedLikeParameterIsError],
+  ['compiler: GLOBAL named like a process field is an error', testGlobalNamedLikeProcessFieldIsError],
+  ['compiler: indexing a scalar STRUCT field is an error', testIndexingScalarStructFieldIsError],
+  ['compiler: undeclared dotted/indexed root is an error', testUndeclaredPathRootIsError],
+  ['compiler: extra GLOBAL array initial values is an error', testExtraArrayInitializersIsError],
+  ['lexer: 1.2.3 is an error', testMalformedNumberIsLexerError],
+  ['lexer: unterminated /* is an error', testUnterminatedBlockCommentIsLexerError],
+  ['parser: several LOCAL sections', testLocalSectionsParse],
   ['compiler: a FUNCTION takes a PRIVATE section (decision)', testFunctionPrivateSection],
-  ['disasm: shows the global initialisation code (P5)', testDisasmShowsGlobalInitialisation],
+  ['disasm: shows the global initialisation code', testDisasmShowsGlobalInitialisation],
   ['compiler: FROM without STEP counts towards the final value', testFromWithoutStepCountsTowardsFinal]
 ];
