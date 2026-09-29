@@ -231,6 +231,9 @@ export function parseNotes(text, drums = false)
 // ── The engine ──────────────────────────────────────────────────────────
 
 let sharedContext = null;
+// The page's sound was paused because the page was hidden (see
+// AudioEngine.followVisibility); shared like the context itself.
+let pausedByHide = false;
 
 function audioContextClass()
 {
@@ -259,6 +262,35 @@ export class AudioEngine
     this.stats = { played: 0, skipped: 0, notes: 0 };
     this.drumBuffers = null;
     this.decoder = null;
+    // A hidden page is silent: the game stops with its frames, but the
+    // music's timer and the audio clock would carry on (on a phone, with
+    // the browser in the background). The sound is paused while the page
+    // is hidden and goes on where it was when the page comes back.
+    this.onVisibility = null;
+    if (typeof document !== 'undefined' && this.available)
+    {
+      this.onVisibility = () => this.followVisibility(document.hidden);
+      document.addEventListener('visibilitychange', this.onVisibility);
+    }
+  }
+
+  // hidden: the page was just hidden (true) or shown again (false).
+  followVisibility(hidden)
+  {
+    if (!sharedContext)
+    {
+      return;
+    }
+    if (hidden && sharedContext.state === 'running')
+    {
+      pausedByHide = true;
+      sharedContext.suspend().catch(() => {});
+    }
+    else if (!hidden && pausedByHide)
+    {
+      pausedByHide = false;
+      sharedContext.resume().catch(() => {});
+    }
   }
 
   // The page-wide AudioContext (browsers limit how many a page may have),
@@ -743,6 +775,11 @@ export class AudioEngine
   // Everything stops; the shared context stays for the next program.
   dispose()
   {
+    if (this.onVisibility)
+    {
+      document.removeEventListener('visibilitychange', this.onVisibility);
+      this.onVisibility = null;
+    }
     this.stopSong();
     this.stop(0);
     if (this.master)

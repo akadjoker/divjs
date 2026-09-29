@@ -11596,6 +11596,7 @@ function parseNotes(text, drums = false) {
   return { events, steps: tokens.length };
 }
 var sharedContext = null;
+var pausedByHide = false;
 function audioContextClass() {
   return typeof window !== "undefined" ? window.AudioContext || window.webkitAudioContext || null : null;
 }
@@ -11620,6 +11621,26 @@ var AudioEngine = class {
     this.stats = { played: 0, skipped: 0, notes: 0 };
     this.drumBuffers = null;
     this.decoder = null;
+    this.onVisibility = null;
+    if (typeof document !== "undefined" && this.available) {
+      this.onVisibility = () => this.followVisibility(document.hidden);
+      document.addEventListener("visibilitychange", this.onVisibility);
+    }
+  }
+  // hidden: the page was just hidden (true) or shown again (false).
+  followVisibility(hidden) {
+    if (!sharedContext) {
+      return;
+    }
+    if (hidden && sharedContext.state === "running") {
+      pausedByHide = true;
+      sharedContext.suspend().catch(() => {
+      });
+    } else if (!hidden && pausedByHide) {
+      pausedByHide = false;
+      sharedContext.resume().catch(() => {
+      });
+    }
   }
   // The page-wide AudioContext (browsers limit how many a page may have),
   // with this engine's own output under it.
@@ -11992,6 +12013,10 @@ var AudioEngine = class {
   }
   // Everything stops; the shared context stays for the next program.
   dispose() {
+    if (this.onVisibility) {
+      document.removeEventListener("visibilitychange", this.onVisibility);
+      this.onVisibility = null;
+    }
     this.stopSong();
     this.stop(0);
     if (this.master) {

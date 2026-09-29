@@ -11,7 +11,7 @@ import { compilerTests } from './compiler-tests.js';
 import { vmTests } from './vm-tests.js';
 import { runtimeTests } from './runtime-tests.js';
 import { encodeCode, decodeCode, hashState, NET_CONNECTED, NET_DESYNC } from '../vm/net.js';
-import { synthesize, sfxRecipe, noteFrequency, parseNotes, SAMPLE_RATE } from '../vm/audio.js';
+import { AudioEngine, synthesize, sfxRecipe, noteFrequency, parseNotes, SAMPLE_RATE } from '../vm/audio.js';
 import { padDirections, parseKeyList, normalizeTouchLayout, GamepadInput, VirtualKeys } from '../vm/controls.js';
 
 const tinyPngDataUrl =
@@ -4820,6 +4820,47 @@ function makeWav(seconds, freq)
 // The natives: sfx ids are reused, a sound plays on its own channel and
 // stops, a WAV from the project files loads (the frame waits for it) and
 // plays, a song schedules notes, stops, and a song that does not loop ends.
+// A hidden page is silent: on a phone with the browser in the background
+// the game stops with its frames, and the music must stop with it (its
+// timer and the audio clock would otherwise play on). It goes on when the
+// page comes back.
+async function testAudioPausesWhileHidden()
+{
+  const audio = new AudioEngine();
+  const setHidden = (hidden) =>
+  {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+    document.dispatchEvent(new Event('visibilitychange'));
+  };
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  try
+  {
+    audio.unlock();
+    await wait(100);
+    assert(audio.running, 'o contexto de audio devia estar a tocar (Chromium headless permite)');
+    const song = audio.newSong(240);
+    audio.addTrack(song, 'square', 'C5 E5 G5 C6');
+    audio.playSong(song);
+    await wait(300);
+    assert(audio.stats.notes > 0, 'a musica devia estar a tocar');
+    setHidden(true);
+    await wait(150);
+    assert(!audio.running, 'com a pagina escondida o som devia estar suspenso');
+    const notes = audio.stats.notes;
+    await wait(600);
+    assert(audio.stats.notes === notes, `escondida, a musica nao devia agendar notas (agendou ${audio.stats.notes - notes})`);
+    setHidden(false);
+    await wait(300);
+    assert(audio.running, 'de volta a pagina, o som devia continuar');
+    assert(audio.stats.notes > notes, 'de volta a pagina, a musica devia continuar');
+  }
+  finally
+  {
+    delete document.hidden;
+    audio.dispose();
+  }
+}
+
 async function testAudioNativesPlayLoadAndSong()
 {
   const bytecode = compileSource(`program snd;
@@ -4988,6 +5029,7 @@ export async function runAllTests() {
     ['net: net_close while gathering keeps the panel closed', testNetCloseDuringGatheringKeepsThePanelClosed],
     ['audio: effects, determinism, notes', testAudioSynthesisAndNotes],
     ['audio: natives play, load a WAV from project files, songs', testAudioNativesPlayLoadAndSong],
+    ['audio: silent while the page is hidden, goes on when shown', testAudioPausesWhileHidden],
     ['keys typed into editable elements are not swallowed', testKeysTypedIntoEditableElementsAreNotSwallowed],
     ['restart restores the canvas size after set_mode', testRestartRestoresCanvasSizeAfterSetMode],
     ['runtimes do not share graphics or pivot resolver', testRuntimesDoNotShareGraphicsOrPivotResolver],
