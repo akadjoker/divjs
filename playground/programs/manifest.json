@@ -1,0 +1,601 @@
+{
+  "programs": [
+    {
+      "id": "tutor0a",
+      "title": "Tutorial 0a: ship and shots",
+      "category": "tutorials",
+      "file": "tutor0a.div",
+      "width": 320,
+      "height": 200,
+      "clearColor": "#000",
+      "description": "The ship follows the mouse and fires; the first DIV Games Studio tutorial.",
+      "controls": "Mouse to move, left button to fire"
+    },
+    {
+      "id": "tutor0b",
+      "title": "Tutorial 0b: enemies",
+      "category": "tutorials",
+      "file": "tutor0b.div",
+      "width": 320,
+      "height": 200,
+      "clearColor": "#000",
+      "description": "Tutorial 0 with enemies that fall from the top of the screen.",
+      "controls": "Mouse to move, left button to fire"
+    },
+    {
+      "id": "tutor1a",
+      "title": "Tutorial 1a: asteroids",
+      "category": "tutorials",
+      "file": "tutor1a.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000",
+      "description": "A rotating ship among four big asteroids.",
+      "controls": "Left/right to turn, up to thrust"
+    },
+    {
+      "id": "tutor1b",
+      "title": "Tutorial 1b: asteroids with score",
+      "category": "tutorials",
+      "file": "tutor1b.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000",
+      "description": "Tutorial 1 with shots, score and a bitmap font.",
+      "controls": "Left/right to turn, up to thrust, Ctrl to shoot"
+    },
+    {
+      "id": "tutor2",
+      "title": "Tutorial 2: planets",
+      "category": "tutorials",
+      "file": "tutor2.div",
+      "width": 320,
+      "height": 200,
+      "clearColor": "#000",
+      "description": "Each press creates a planet process.",
+      "controls": "Space to create a planet"
+    },
+    {
+      "id": "tutor3",
+      "title": "Tutorial 3: pong",
+      "category": "tutorials",
+      "file": "tutor3.div",
+      "width": 320,
+      "height": 200,
+      "clearColor": "#000",
+      "description": "Two rackets and a ball, one player on each side of the keyboard.",
+      "controls": "Q/A left racket, P/L right racket"
+    },
+    {
+      "id": "tutor4",
+      "title": "Tutorial 4: worm",
+      "category": "tutorials",
+      "file": "tutor4.div",
+      "width": 320,
+      "height": 200,
+      "clearColor": "#000",
+      "description": "The classic worm: eat the apples, avoid the walls and your own body.",
+      "controls": "Arrow keys"
+    },
+    {
+      "id": "tutor5",
+      "title": "Tutorial 5: snake",
+      "category": "tutorials",
+      "file": "tutor5.div",
+      "width": 320,
+      "height": 200,
+      "clearColor": "#000",
+      "description": "A snake that follows the mouse, using RESOLUTION for sub-pixel movement.",
+      "controls": "Mouse"
+    },
+    {
+      "id": "tutor6",
+      "title": "Tutorial 6: smile",
+      "category": "tutorials",
+      "file": "tutor6.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000",
+      "description": "A board puzzle: clicking a square flips it and its neighbours.",
+      "controls": "Mouse click, space to restart"
+    },
+    {
+      "id": "platformer-basic",
+      "title": "Basic platformer",
+      "category": "examples",
+      "file": "platformer-basic.div",
+      "width": 800,
+      "height": 600,
+      "clearColor": "#0b1117",
+      "description": "A minimal platformer drawn with shapes.",
+      "controls": "Arrow keys, space to jump"
+    },
+    {
+      "id": "frame-timing",
+      "title": "FRAME(n) timing",
+      "category": "examples",
+      "file": "frame-timing.div",
+      "width": 480,
+      "height": 240,
+      "clearColor": "#000",
+      "description": "The same movement in several processes that differ only in FRAME(n)."
+    },
+    {
+      "id": "scroll",
+      "title": "Scroll window",
+      "category": "examples",
+      "file": "scroll.div",
+      "width": 320,
+      "height": 200,
+      "clearColor": "#000",
+      "description": "A ball moving over a scroll background.",
+      "controls": "Arrow keys"
+    },
+    {
+      "id": "sound-lab",
+      "title": "Sound Lab: effects and music",
+      "category": "examples",
+      "file": "sound-lab.div",
+      "width": 640,
+      "height": 360,
+      "clearColor": "#10161c",
+      "description": "Every sound made by the engine, with no files: the classic game effects from sfx() with variations, and a chiptune written as lines of notes with song_new / song_track / song_play.",
+      "controls": "1-8 play an effect, Up/Down change its variation, M music on/off. The browser only allows sound after your first key press"
+    },
+    {
+      "id": "breakout",
+      "title": "Breakout",
+      "category": "demos",
+      "file": "breakout.div",
+      "width": 480,
+      "height": 520,
+      "clearColor": "#0d1520",
+      "description": "Break every brick with the ball.",
+      "controls": "Left/right or A/D to move, space to launch"
+    },
+    {
+      "id": "platformer",
+      "title": "Platformer",
+      "category": "demos",
+      "file": "platformer.div",
+      "width": 480,
+      "height": 400,
+      "clearColor": "#0a0a14",
+      "description": "Platforms, coins, enemies and shooting.",
+      "controls": "Left/right to move, up or Z to jump, space or X to fire"
+    },
+    {
+      "id": "shmup",
+      "title": "Space shooter",
+      "category": "demos",
+      "file": "shmup.div",
+      "width": 360,
+      "height": 520,
+      "clearColor": "#020408",
+      "description": "A vertical shoot 'em up with enemy waves.",
+      "controls": "Arrow keys or WASD, Z or space to fire"
+    },
+    {
+      "id": "bunnymark",
+      "title": "Bunnymark",
+      "category": "demos",
+      "file": "bunnymark.div",
+      "width": 800,
+      "height": 600,
+      "clearColor": "#1a2030",
+      "description": "Stress test: how many bouncing sprites the engine keeps at full speed.",
+      "controls": "1 adds 50 bunnies, 2 adds 500"
+    },
+    {
+      "id": "pathfind",
+      "title": "Pathfinding",
+      "category": "demos",
+      "file": "pathfind.div",
+      "width": 860,
+      "height": 520,
+      "clearColor": "#0e1a29",
+      "description": "A bot recomputes an A* path around TYPE wall blocks.",
+      "controls": "Left click to pick a destination"
+    },
+    {
+      "id": "fpg-fnt-game",
+      "title": "FPG and FNT assets",
+      "category": "demos",
+      "file": "fpg-fnt-game.div",
+      "width": 800,
+      "height": 500,
+      "clearColor": "#0e1a29",
+      "description": "Sprites from a DIV .fpg file, text in a DIV .fnt font, collision boxes.",
+      "controls": "Arrow keys or WASD, Tab toggles collision debug"
+    },
+    {
+      "id": "maze",
+      "title": "Maze Runner",
+      "category": "procedural",
+      "file": "maze.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Every level is a new perfect maze (recursive backtracker); ghosts hunt you along a BFS distance field.",
+      "controls": "Arrow keys or WASD move, Space/Enter start and restart"
+    },
+    {
+      "id": "vector-asteroids",
+      "title": "Vector Asteroids",
+      "category": "procedural",
+      "file": "vector-asteroids.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Asteroids with randomly generated jagged rocks that split into new random shapes.",
+      "controls": "Left/Right rotate, Up thrust, Space fire, Down hyperspace, Enter/Space start"
+    },
+    {
+      "id": "invaders",
+      "title": "Procedural Invaders",
+      "category": "procedural",
+      "file": "invaders.div",
+      "width": 560,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Space Invaders where every wave brings three newly generated symmetric alien species.",
+      "controls": "Left/Right or A/D move, Space fire, Space/Enter start and restart"
+    },
+    {
+      "id": "cave-flyer",
+      "title": "Cave Flyer",
+      "category": "procedural",
+      "file": "cave-flyer.div",
+      "width": 480,
+      "height": 320,
+      "clearColor": "#000000",
+      "description": "Endless one-button cave built from smooth value noise; it narrows and speeds up as you go.",
+      "controls": "Hold Space (or Up / W / mouse) to climb, release to fall"
+    },
+    {
+      "id": "dungeon",
+      "title": "Deep Delve",
+      "category": "procedural",
+      "file": "dungeon.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Turn-based roguelike: generated rooms and corridors, fog of war with line of sight, find the key and go deeper.",
+      "controls": "Arrow keys or WASD move/attack, Space waits, starts and restarts"
+    },
+    {
+      "id": "rts",
+      "title": "Red Ore (RTS)",
+      "category": "procedural",
+      "file": "rts.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Red Alert style real-time strategy on a new generated map every match: harvest ore, build tanks and riflemen, survive the waves, destroy the red HQ.",
+      "controls": "Drag to select, click/right-click to move or attack, arrows/screen edge scroll, minimap jumps, 1/2/3 build, Space starts"
+    },
+    {
+      "id": "artillery",
+      "title": "Artillery (Worms)",
+      "category": "procedural",
+      "file": "artillery.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Turn-based Worms / Scorched Earth duel on a new island every match: destructible terrain, wind, three weapons and a CPU team that aims by simulating its shots.",
+      "controls": "Arrows/A-D walk, Up/Down aim, hold Space to charge, Enter jump, 1/2/3 weapons, mouse aims too; D on the title starts a CPU vs CPU demo"
+    },
+    {
+      "id": "tower-defense",
+      "title": "Keep Defense",
+      "category": "procedural",
+      "file": "tower-defense.div",
+      "width": 800,
+      "height": 600,
+      "clearColor": "#000000",
+      "description": "Tower defense on a generated winding road: five tower types with upgrades and targeting modes, flyers, bosses and growing waves.",
+      "controls": "Mouse: panel button or 1-5 then click grass to build; click a tower to Upgrade/Sell/Target (U/S/T); N next wave, F speed, Esc cancels"
+    },
+    {
+      "id": "colony",
+      "title": "Isle of Settlers",
+      "category": "procedural",
+      "file": "colony.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Settlers-style colony sim on a generated island: autonomous settlers chop, mine, fish, haul and build; day and night; grow the colony to 16.",
+      "controls": "Drag to mark trees/rocks (right-drag unmarks), H/F/M/S build, 1-5 job priorities, arrows/edge scroll, Z speed, P pause"
+    },
+    {
+      "id": "racer",
+      "title": "Pocket GP (racing)",
+      "category": "procedural",
+      "file": "racer.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Micro Machines style top-down racer on a new circuit every race: drifting, skid marks, checkpoints, 3 laps against three AI cars.",
+      "controls": "Up accelerate, Down brake/reverse, Left/Right steer, Space handbrake; Space/Enter starts and restarts"
+    },
+    {
+      "id": "lemmings",
+      "title": "Burrowers (Lemmings)",
+      "category": "procedural",
+      "file": "lemmings.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Lemmings-style puzzle: every level is generated from its number around a planned route, and grants exactly the skills it needs plus a margin.",
+      "controls": "Pick a skill (buttons or 1-8) then click a lemming; P/Space pause, F fast, Nuke button, Esc gives up; title has level buttons"
+    },
+    {
+      "id": "raptor",
+      "title": "Stormwing (shoot'em up)",
+      "category": "procedural",
+      "file": "raptor.div",
+      "width": 640,
+      "height": 600,
+      "clearColor": "#000000",
+      "description": "Raptor-style vertical shoot'em up: generated terrain and ground targets, wave formations from a small grammar, bosses built from parts, power-ups and a shop between sectors.",
+      "controls": "Arrows/WASD fly, Z/Space/Ctrl fire, X/B mega bomb, C switch special; shop: Up/Down choose, Z/Enter buy"
+    },
+    {
+      "id": "sandbox",
+      "title": "TerraDIV (sandbox)",
+      "category": "procedural",
+      "file": "sandbox.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Terraria-style 2D sandbox: a new 400x120 world each game with caves, ore veins and lakes; mine, build, craft better pickaxes and survive the nights.",
+      "controls": "A/D or arrows walk, Space/W jump, hold left mouse mine/attack, right mouse place, 1-9/0 or Q/E hotbar, C crafting, hold T fast-forward, Esc pause (N new world)"
+    },
+    {
+      "id": "physics-sandbox",
+      "title": "Physics sandbox",
+      "category": "physics",
+      "file": "physics-sandbox.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Rigid-body physics (phys_* functions, Planck.js): crates, balls, a pyramid, a spinning kinematic paddle and a wrecking ball on a chain of pinned links.",
+      "controls": "Left click crate, right click ball, P pyramid, R reset, W swings the wrecking ball, D shows the physics shapes"
+    },
+    {
+      "id": "tetris",
+      "title": "Tetris",
+      "category": "procedural",
+      "file": "tetris.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Guideline-style Tetris: SRS rotation and kicks, 7-bag, hold, ghost, T-spins, combos; Marathon and a Garbage mode where holed rows rise faster and faster.",
+      "controls": "Left/Right move, Up/X rotate, Z/Ctrl rotate back, Down soft drop, Space hard drop, C/Shift hold, P/Esc pause; title: Up/Down mode, Left/Right level"
+    },
+    {
+      "id": "aquarium",
+      "title": "Living Aquarium (boids)",
+      "category": "procedural",
+      "file": "aquarium.div",
+      "width": 800,
+      "height": 600,
+      "clearColor": "#000000",
+      "description": "Hundreds of fish schooling with boids rules on a neighbour grid, pikes that hunt them, food that makes them breed; populations rise and fall, charted live.",
+      "controls": "Left click food, right click pike, 1-4 add fish, Q/W/E/R remove, M add 100, K remove pikes, F feeder, Z/X C/V B/N boids weights, D debug, P pause, H help"
+    },
+    {
+      "id": "match3",
+      "title": "Sugar Swap (match-3)",
+      "category": "procedural",
+      "file": "match3.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Candy Crush style match-3: striped, wrapped and colour-bomb specials with their combos, cascades, and generated levels with holes, jelly, ice, spreading chocolate, goals and stars.",
+      "controls": "Mouse: click a candy then a neighbour, or drag it; map: click a level, Enter plays the newest; Esc back to the map; results: Retry / Map / Next"
+    },
+    {
+      "id": "slingshot",
+      "title": "Slingshot (Angry Birds)",
+      "category": "physics",
+      "file": "slingshot.div",
+      "width": 800,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Angry Birds style, on the engine's physics: generated levels of wood, stone and ice structures with pigs; blocks crack and break from impacts; four birds with powers.",
+      "controls": "Drag the bird back and release; click in flight for its power (blue splits, yellow speeds up, black dives); arrows/A-D look around, R retry, L levels, N/Enter next"
+    },
+    {
+      "id": "physics-lab",
+      "title": "Physics lab",
+      "category": "physics",
+      "file": "physics-lab.div",
+      "width": 800,
+      "height": 600,
+      "clearColor": "#000000",
+      "description": "Eight physics test scenes with their measured numbers next to the expected ones: Newton's cradle, dominoes, rope bridge, ragdoll, catapult, marble run, materials, stress pile.",
+      "controls": "1-8 scene, R restart, D shapes, mouse drags/throws bodies, Space scene action, X lifts two cradle balls, Up/Down catapult counterweight"
+    },
+    {
+      "id": "arkanoid",
+      "title": "Arkanoid",
+      "category": "procedural",
+      "file": "arkanoid.div",
+      "width": 480,
+      "height": 640,
+      "clearColor": "#000000",
+      "description": "Arkanoid-style brick breaker: every round a symmetric wall generated from its number, silver and gold bricks, seven capsules, floating enemies and a mothership boss every 5th round.",
+      "controls": "Mouse or Left/Right (A/D) move; Space or click launches, fires the laser and releases a caught ball; Space/Enter/click starts"
+    },
+    {
+      "id": "hillclimb",
+      "title": "Hill Climb",
+      "category": "physics",
+      "file": "hillclimb.div",
+      "width": 800,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Hill Climb Racing style, on the engine's physics: a chassis with two pinned wheels on endless noise terrain streamed in chunks, four biomes, gaps and ramps, flips, fuel, coins, upgrades and two vehicles.",
+      "controls": "Right/Up gas, Left/Down brake/reverse (in the air they tilt the car); garage: 1/2/3 upgrades, V vehicle, Enter/Space start"
+    },
+    {
+      "id": "bubbles",
+      "title": "Bubble Dino (Puzzle Bobble)",
+      "category": "procedural",
+      "file": "bubbles.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Puzzle Bobble style bubble shooter on a hex grid: rounds generated as symmetric patterns, stones, rainbow and bomb bubbles, a pressing ceiling, and a VS CPU mode with garbage.",
+      "controls": "Left/Right or mouse aim, Space/Up/click fire, Down/X/right click swap; menu Up/Down or 1/2 then Enter; game over: Space continue, R restart, Esc title"
+    },
+    {
+      "id": "karate",
+      "title": "Karate-Do (International Karate)",
+      "category": "procedural",
+      "file": "karate.div",
+      "width": 640,
+      "height": 400,
+      "clearColor": "#000000",
+      "description": "One-on-one karate in the style of International Karate: articulated fighters animated from 36 poses, a referee, half and full points, a CPU that gets harder each round, belts, bonus rounds and generated backdrops.",
+      "controls": "P1 arrows + Space/Ctrl/Z (fire + direction picks the move), P2 WASD + Q; Enter/Space 1 player, 2 for two players, Esc leaves a bout"
+    },
+    {
+      "id": "fighter",
+      "title": "Street Duel (Street Fighter style)",
+      "category": "procedural",
+      "file": "fighter.div",
+      "width": 640,
+      "height": 400,
+      "clearColor": "#000000",
+      "description": "One-on-one fighter in the style of Street Fighter II with a Pit-Fighter pit: jointed fighters with their own proportions, motion-input specials and supers, combos, dizzy and super meters, throws, a CPU that blocks, anti-airs and punishes, a 4-stage arcade ladder with a boss, and a crowd that throws items into the ring.",
+      "controls": "P1 arrows move, A S D punches, Z X C kicks; P2 I J K L move, 1 2 3 punches, 4 5 6 kicks. Hold back to block (down-back low); forward + heavy punch close throws; down + punch picks up an item. Specials: quarter circles and charges (see the select screen). Enter confirms, H hitboxes, Esc title"
+    },
+    {
+      "id": "bomber",
+      "title": "Bomber Arena (Bomberman)",
+      "category": "procedural",
+      "file": "bomber.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Bomberman-style battles on generated, mirrored arenas with four themes (classic, pits, conveyor belts, warps) against up to three CPU bombers that plan with a danger map and only drop a bomb when they can escape it; chain reactions, kicks, remote bombs, skull curses and sudden death.",
+      "controls": "P1 arrows + Space bomb, Enter remote; P2 WASD + Q bomb, E remote. Menu: Up/Down choose, Left/Right change, Space/Enter start; Esc title; after a match Enter rematch, Space title"
+    },
+    {
+      "id": "pinball",
+      "title": "Procedural Pinball",
+      "category": "physics",
+      "file": "pinball.div",
+      "width": 480,
+      "height": 800,
+      "clearColor": "#000000",
+      "description": "A physics pinball whose table is generated from a seed: orbit, ramp, rollover lanes, pop bumpers, drop targets, spinner, kickbacks and a ball saver, with glowing lamps drawn in code.",
+      "controls": "Left/Z and Right/M flippers, hold Space/Down to pull the plunger, Up/T nudge (too much tilts); Space starts, N makes a new table"
+    },
+    {
+      "id": "brawler",
+      "title": "Neon Fists (beat 'em up)",
+      "category": "procedural",
+      "file": "brawler.div",
+      "width": 640,
+      "height": 400,
+      "clearColor": "#000000",
+      "description": "Belt-scrolling beat 'em up in the style of Double Dragon / Final Fight: generated stages with parallax (downtown, docks, subway), combos, grabs and throws, weapons, enemies that surround you and take turns, a boss per stage, and a second player.",
+      "controls": "Arrows move, Z/Ctrl punch, X/Alt jump (Z in the air: jump kick), C kick, Z+X back elbow, walk into a dazed enemy to grab; P2: WASD, Q punch, E jump, R kick (Q joins); Enter/Space start"
+    },
+    {
+      "id": "strike",
+      "title": "Dune Strike (Desert Strike)",
+      "category": "procedural",
+      "file": "strike.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Desert Strike style helicopter campaign: every campaign a new generated desert with bases, roads, oases and a coast, and five missions (radar, rescue, SAMs, convoy, command bunker); fuel, ammo, armour, winch.",
+      "controls": "Left/Right turn, Up thrust, Down brake, A/D (or Shift+Left/Right) strafe, Space guns, Z Hydra rockets, X Hellfire (homing), M map; Space/Enter on screens"
+    },
+    {
+      "id": "net-tanks",
+      "title": "Net Tanks (online, 2 players)",
+      "category": "online",
+      "file": "net-tanks.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#10161c",
+      "description": "Two tanks in a generated arena, played online peer to peer: the host sends an invitation code, the guest sends back an answer code, and both computers run the game in lockstep with net_key(). Also from two tabs, or two players on one keyboard.",
+      "controls": "1 host online, 2 join online, 3/4 host/join from another tab, 5 one keyboard. Online: arrows or WASD, Space fires. One keyboard: blue WASD + Space, red arrows + Enter. Esc back to the menu"
+    },
+    {
+      "id": "bad-cat",
+      "title": "Bad Cat",
+      "category": "physics",
+      "file": "bad-cat.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#2a1c1c",
+      "description": "You are the cat: knock cups, plates, vases, plants, books and the goldfish bowl off the shelves (physics bodies that break on hard impacts) while the owner is not looking. Hide or sit innocently when the footsteps come. Every room is generated; sounds and music are made by the engine.",
+      "controls": "Left/Right or A/D run, Up/W/Z/Space jump (hold for higher), X/J swipe, C/K sit innocently, Down/S hide (under the table, behind the sofa), sit on the floor or drop through furniture; Enter start"
+    },
+    {
+      "id": "chicken-cannon",
+      "title": "Chicken Cannon",
+      "category": "physics",
+      "file": "chicken-cannon.div",
+      "width": 800,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "A farm cannon fires live, flapping, squawking chickens at generated forts of wooden planks and straw bales guarded by grumpy scarecrows and foxes. Wood cracks and breaks from impacts, straw gets shoved around; three chickens: the bouncy hen, the heavy fat hen and the egg bomber. Engine-made sound effects and a country chiptune.",
+      "controls": "Hold the mouse button and point to aim (angle and power), release to fire; or Up/Down angle, Left/Right power, Space fire. 1-3 or Tab (or click the tray) picks the chicken; click or Space in flight drops the egg bomber's egg. R retry, Enter next level"
+    },
+    {
+      "id": "wobbly-walker",
+      "title": "Wobbly Walker",
+      "category": "physics",
+      "file": "wobbly-walker.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#5aa0eb",
+      "description": "QWOP style, on the engine's physics: a ragdoll runner of pinned bodies driven by joint motors with limits, on a new bumpy track with tipping hurdles every attempt. Reach 100 m without landing on your face.",
+      "controls": "Q/W swing the thighs, O/P bend the knees; R restarts, Space after a fall"
+    },
+    {
+      "id": "ghost-squad",
+      "title": "Ghost Squad",
+      "category": "procedural",
+      "file": "ghost-squad.div",
+      "width": 640,
+      "height": 480,
+      "clearColor": "#000000",
+      "description": "Pac-Man turned around: you are the four ghosts and a computer Pac-Man runs a new generated maze every round, fleeing you and going for the power pills. Catch him 3 times before he eats every dot.",
+      "controls": "Arrows move your ghost, 1-4 pick a ghost, TAB or Space next ghost, N new maze; Space/Enter on screens"
+    }
+  ],
+  "categories": [
+    {
+      "id": "tutorials",
+      "title": "DIV tutorials"
+    },
+    {
+      "id": "examples",
+      "title": "Examples"
+    },
+    {
+      "id": "demos",
+      "title": "Demos"
+    },
+    {
+      "id": "procedural",
+      "title": "Procedural games"
+    },
+    {
+      "id": "physics",
+      "title": "Physics"
+    },
+    {
+      "id": "online",
+      "title": "Online"
+    }
+  ]
+}

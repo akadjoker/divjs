@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>DivJS Browser Smoke Test</title>
+  <link rel="stylesheet" href="../styles/demo-runner.css">
+</head>
+<body>
+  <div class="stage">
+    <canvas id="game" width="800" height="600"></canvas>
+    <div id="loading" class="overlay">Loading assets...</div>
+    <div id="error" class="hidden"></div>
+    <div id="status" class="overlay hidden" style="pointer-events:none;top:auto;bottom:8px;left:8px;right:auto;padding:8px 10px;font:12px JetBrains Mono,Consolas,monospace;background:rgba(6,10,18,0.75);">Running smoke test...</div>
+  </div>
+
+  <script type="module">
+    import { bootDivDemo } from '../divjs.js';
+
+    const loadingEl = document.getElementById('loading');
+    const errorEl = document.getElementById('error');
+    const stageEl = document.querySelector('.stage');
+    const statusEl = document.getElementById('status');
+
+    const source = `program browser_smoke;
+
+global g_player;
+global g_tile;
+
+process actor(x, y, graph);
+private
+  step = 0;
+begin
+  width = 24;
+  height = 24;
+
+  loop
+    x = x + 40 * get_delta();
+    if (out_of_screen()) x = 0; end
+
+    step = step + 3000;
+    angle = step;
+
+    xput(0, g_tile, x + 30, y, 0, 100, 0, 0);
+    frame(100);
+  end
+end
+
+begin
+  set_mode(800, 600);
+  screen_color('#014');
+
+  g_player = load_graphic('../assets/001.png');
+  g_tile = load_tile('../assets/006.png', 0, 0, 32, 32);
+
+  actor(80, 160, g_player);
+  loop frame; end
+end`;
+
+    let done = false;
+
+    function pass(msg) {
+      if (done) return;
+      done = true;
+      statusEl.textContent = `PASS: ${msg}`;
+      statusEl.classList.remove('hidden');
+      statusEl.style.color = '#86efac';
+    }
+
+    function fail(err) {
+      if (done) return;
+      done = true;
+      statusEl.textContent = `FAIL: ${err?.message || String(err)}`;
+      statusEl.classList.remove('hidden');
+      statusEl.style.color = '#fca5a5';
+      console.error(err);
+    }
+
+    try {
+      await bootDivDemo({
+        canvas: 'game',
+        source,
+        clearColor: '#0b1117',
+        virtualWidth: 480,
+        virtualHeight: 320,
+        debugShowStats: true,
+        preventDefaultKeys: true,
+        preload: {
+          images: ['../assets/001.png', '../assets/006.png'],
+          audio: []
+        },
+        loadingElement: loadingEl,
+        errorElement: errorEl,
+        showVirtualKeys: true,
+        virtualKeysContainer: stageEl,
+        onError: fail
+      });
+
+      setTimeout(() => pass('bootDivDemo + load_graphic/load_tile OK'), 1200);
+    } catch (err) {
+      fail(err);
+    }
+  </script>
+</body>
+</html>

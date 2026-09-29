@@ -1,0 +1,62 @@
+PROGRAM bunnymark;
+
+GLOBAL g_wabbit = 0;
+GLOBAL add_queue = 0;
+GLOBAL g_count = 0;   // bunnies spawned so far (they never die)
+GLOBAL g_fps = 0;
+GLOBAL sw = 800;
+GLOBAL sh = 600;
+
+PROCESS bunny(vx, vy);
+BEGIN
+  width = 26; height = 37;
+  x = rand(800);
+  y = rand(400);
+  graph = g_wabbit;
+  LOOP
+    x = x + vx * get_delta();
+    y = y + vy * get_delta();
+    vy = vy + 500 * get_delta();
+    IF (x < 13)    x = 13;    vx = abs(vx);  END
+    IF (x > sw-13) x = sw-13; vx = -abs(vx); END
+    IF (y < 18)    y = 18;    vy = abs(vy);  END
+    IF (y > sh-18) y = sh-18; vy = -abs(vy) * 85 / 100; END
+    FRAME;
+  END
+END
+
+PROCESS spawner();
+BEGIN
+  LOOP
+    WHILE (add_queue > 0)
+      bunny(rand(600) - 300, rand(200) - 100);
+      add_queue = add_queue - 1;
+      g_count = g_count + 1;
+    END
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(800, 600);
+  set_fps(60, 0);  // written for 60 fps (DIV's default is 18)
+  screen_color('#1a2030');
+  g_wabbit = load_graphic('../assets/wabbit_alpha.png');
+  spawner();
+
+  // Keys 1 and 2 add bunnies (the demo page also has buttons for it).
+  // Top right (align 2 = right edge at x); the demo page puts its own
+  // timing overlay in the top left corner.
+  set_color('#e6fffb');
+  write(0, 790, 10, 2, '1: +50 bunnies   2: +500 bunnies');
+  write(0, 740, 24, 2, 'bunnies:');
+  write_int(0, 790, 24, 2, OFFSET g_count);
+  write(0, 740, 38, 2, 'fps:');
+  write_int(0, 790, 38, 2, OFFSET g_fps);
+  LOOP
+    IF (key_pressed(_1)) add_queue = add_queue + 50; END
+    IF (key_pressed(_2)) add_queue = add_queue + 500; END
+    g_fps = fps;
+    FRAME;
+  END
+END

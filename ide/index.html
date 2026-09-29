@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS IDE</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #171f27;
+      --panel-2: #1f2a35;
+      --text: #e8f1f8;
+      --muted: #95a8b8;
+      --accent: #2dd4bf;
+      --danger: #ff6b6b;
+      --border: #2a3948;
+      --canvas-bg: #0b1117;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background: radial-gradient(circle at 20% 0%, #152333 0%, var(--bg) 50%);
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+    }
+
+    .app {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      height: 100vh;
+      padding: 14px;
+      gap: 12px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 14px;
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0.3px;
+    }
+
+    .brand span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 9px 14px;
+      font-weight: 700;
+      cursor: pointer;
+      color: #042a27;
+      background: var(--accent);
+    }
+
+    button.secondary {
+      color: var(--text);
+      background: #304355;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+      min-width: 260px;
+      text-align: right;
+    }
+
+    .workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .panel {
+      min-height: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+
+    .panel h2 {
+      margin: 0;
+      font-size: 14px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-2);
+    }
+
+    textarea {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      outline: none;
+      resize: none;
+      background: #111922;
+      color: #d8ebff;
+      padding: 14px;
+      line-height: 1.45;
+      font: 14px/1.45 "JetBrains Mono", "Consolas", monospace;
+    }
+
+    .panel-footer {
+      border-top: 1px solid var(--border);
+      padding: 8px 12px;
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .viewport {
+      display: grid;
+      grid-template-rows: 1fr auto auto;
+      min-height: 0;
+      background: var(--canvas-bg);
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      border: 0;
+    }
+
+    .console {
+      max-height: 160px;
+      overflow: auto;
+      border-top: 1px solid var(--border);
+      background: #101820;
+      font: 12px/1.35 "JetBrains Mono", "Consolas", monospace;
+      padding: 10px;
+      color: #c1d3e2;
+      white-space: pre-wrap;
+    }
+
+    .console .error {
+      color: var(--danger);
+    }
+
+    .inspector {
+      border-top: 1px solid var(--border);
+      background: #0f1720;
+      padding: 10px;
+      max-height: 240px;
+      overflow: auto;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      font: 12px/1.35 "JetBrains Mono", "Consolas", monospace;
+    }
+
+    .inspect-card {
+      border: 1px solid #253545;
+      border-radius: 8px;
+      background: #121c26;
+      min-height: 68px;
+      overflow: hidden;
+    }
+
+    .inspect-card h3 {
+      margin: 0;
+      padding: 6px 8px;
+      font: 700 11px/1 "Fira Sans", "Segoe UI", sans-serif;
+      letter-spacing: 0.4px;
+      color: #8cc7ff;
+      border-bottom: 1px solid #253545;
+      text-transform: uppercase;
+    }
+
+    .inspect-card pre {
+      margin: 0;
+      padding: 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #d7e8f7;
+      max-height: 120px;
+      overflow: auto;
+    }
+
+    @media (max-width: 980px) {
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+
+      .status {
+        min-width: 0;
+      }
+
+      .inspector {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="topbar">
+      <div class="brand">
+        <h1>DivJS IDE</h1>
+        <span>Write Div code, press Play, run on canvas.</span>
+      </div>
+      <div class="actions">
+        <button id="playBtn">Play</button>
+        <button id="stopBtn" class="secondary">Stop</button>
+        <span class="status" id="status">Idle</span>
+      </div>
+    </div>
+
+    <div class="workspace">
+      <section class="panel">
+        <h2>code.div</h2>
+        <textarea id="editor" spellcheck="false"></textarea>
+        <div class="panel-footer">
+          <span>Shortcuts: Ctrl+Enter = Play</span>
+          <span id="codeStats"></span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Preview</h2>
+        <div class="viewport">
+          <canvas id="game" width="800" height="600"></canvas>
+          <div class="console" id="console"></div>
+          <div class="inspector" id="inspector">
+            <div class="inspect-card">
+              <h3>VM</h3>
+              <pre id="inspectVm">idle</pre>
+            </div>
+            <div class="inspect-card">
+              <h3>Globals</h3>
+              <pre id="inspectGlobals">{}</pre>
+            </div>
+            <div class="inspect-card">
+              <h3>Main Stack</h3>
+              <pre id="inspectMain">[]</pre>
+            </div>
+            <div class="inspect-card">
+              <h3>Current Process</h3>
+              <pre id="inspectCurrent">none</pre>
+            </div>
+            <div class="inspect-card">
+              <h3>Process List</h3>
+              <pre id="inspectProcesses">[]</pre>
+            </div>
+            <div class="inspect-card">
+              <h3>Process Memory</h3>
+              <pre id="inspectMemory">[]</pre>
+            </div>
+          </div>
+        </div>
+        <div class="panel-footer">
+          <span>Controls: arrows, space, z</span>
+          <span id="runtimeStats"></span>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script type="module">
+    import { Lexer } from '../compiler/tokenizer.js';
+    import { Parser } from '../parser/parser.js';
+    import { Compiler } from '../compiler/compiler.js';
+    import { VM } from '../vm/vm.js';
+    import { CanvasEngineRuntime } from '../vm/runtime.js';
+
+    const editor = document.getElementById('editor');
+    const playBtn = document.getElementById('playBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusLabel = document.getElementById('status');
+    const codeStats = document.getElementById('codeStats');
+    const runtimeStats = document.getElementById('runtimeStats');
+    const consoleEl = document.getElementById('console');
+    const inspectVm = document.getElementById('inspectVm');
+    const inspectGlobals = document.getElementById('inspectGlobals');
+    const inspectMain = document.getElementById('inspectMain');
+    const inspectCurrent = document.getElementById('inspectCurrent');
+    const inspectProcesses = document.getElementById('inspectProcesses');
+    const inspectMemory = document.getElementById('inspectMemory');
+
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    let vm = null;
+    let engineRuntime = null;
+    let running = false;
+    let lastTime = 0;
+    let fps = 0;
+
+    const defaultProgram = `program ide_demo;
+
+global speed = 200;
+global gravity = 500;
+global jump_force = 300;
+global bullet_speed = 550;
+
+process bullet(x, y, dir);
+private
+  vx = 0;
+begin
+  width = 8;
+  height = 8;
+
+  loop
+    vx = dir * bullet_speed;
+    x = x + vx * get_delta();
+
+    if (x < -30 || x > 830)
+      return;
+    end
+
+    set_color('#ff7a59');
+    circle(x, y, 4);
+    frame;
+  end
+end
+
+process player(x, y);
+private
+  vx = 0;
+  vy = 0;
+  on_ground = 0;
+  fire_cd = 0;
+begin
+  loop
+    vx = 0;
+    vy = vy + gravity * get_delta();
+    fire_cd = fire_cd - get_delta();
+
+    if (key_down(_left))
+      vx = -speed;
+    end
+
+    if (key_down(_right))
+      vx = speed;
+    end
+
+    if (key_down(_space) && on_ground)
+      vy = -jump_force;
+      on_ground = 0;
+    end
+
+    if (key_down(_fire) && fire_cd <= 0)
+      bullet(x + 20, y + 16, 1);
+      fire_cd = 0.15;
+    end
+
+    x = x + vx * get_delta();
+    y = y + vy * get_delta();
+
+    if (y > 550)
+      y = 550;
+      vy = 0;
+      on_ground = 1;
+    end
+
+    set_color('#ffd166');
+    text(x + 20, y - 14, 'player');
+    frame;
+  end
+end
+
+begin
+  player(120, 200);
+
+  loop
+    frame;
+  end
+end
+`;
+
+    editor.value = defaultProgram;
+
+    window.addEventListener('keydown', (e) => {
+      if (engineRuntime) {
+        engineRuntime.setKeyState(e.key, true, e.code);
+      }
+      if (e.key === 'Enter' && e.ctrlKey) {
+        e.preventDefault();
+        runProgram();
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (engineRuntime) {
+        engineRuntime.setKeyState(e.key, false, e.code);
+      }
+    });
+
+    window.addEventListener('blur', () => {
+      if (engineRuntime) {
+        engineRuntime.clearKeyState();
+      }
+    });
+
+    function writeConsole(line, isError = false) {
+      const div = document.createElement('div');
+      if (isError) {
+        div.className = 'error';
+      }
+      div.textContent = line;
+      consoleEl.appendChild(div);
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+
+    function clearConsole() {
+      consoleEl.textContent = '';
+    }
+
+    function compileSource(source) {
+      const lexer = new Lexer(source);
+      const tokens = lexer.tokenize();
+      const parser = new Parser(tokens);
+      const ast = parser.parse();
+      const compiler = new Compiler();
+      return compiler.compile(ast);
+    }
+
+    function asJson(value) {
+      return JSON.stringify(value, null, 2);
+    }
+
+    function updateInspector() {
+      if (!vm) {
+        inspectVm.textContent = 'idle';
+        inspectGlobals.textContent = '{}';
+        inspectMain.textContent = '[]';
+        inspectCurrent.textContent = 'none';
+        inspectProcesses.textContent = '[]';
+        inspectMemory.textContent = '[]';
+        return;
+      }
+
+      const vmView = {
+        ip: vm.ip,
+        dt: vm.dt,
+        running,
+        halted: vm.halted,
+        mainIp: vm.mainIp,
+        mainFinished: vm.mainFinished,
+        stackSize: vm.stack.length,
+        processCount: vm.processManager.count()
+      };
+
+      const globalsView = Object.fromEntries(vm.globals.entries());
+
+      const mainView = {
+        mainStack: vm.mainStack,
+        mainLocals: vm.mainLocals,
+        mainCallStack: vm.mainCallStack
+      };
+
+      const current = vm.currentProcess
+        ? {
+            id: vm.currentProcess.id,
+            name: vm.currentProcess.name,
+            ip: vm.currentProcess.ip,
+            x: vm.currentProcess.x,
+            y: vm.currentProcess.y,
+            width: vm.currentProcess.width,
+            height: vm.currentProcess.height,
+            active: vm.currentProcess.active,
+            finished: vm.currentProcess.finished
+          }
+        : null;
+
+      const processList = vm.processManager.getAll().map((p) => ({
+        id: p.id,
+        name: p.name,
+        ip: p.ip,
+        x: Number(p.x).toFixed(2),
+        y: Number(p.y).toFixed(2),
+        active: p.active,
+        finished: p.finished,
+        dead: p.dead
+      }));
+
+      const memoryView = vm.processManager.getAll().map((p) => ({
+        id: p.id,
+        name: p.name,
+        stack: p.stack,
+        locals: p.locals,
+        privates: p.privates
+      }));
+
+      inspectVm.textContent = asJson(vmView);
+      inspectGlobals.textContent = asJson(globalsView);
+      inspectMain.textContent = asJson(mainView);
+      inspectCurrent.textContent = current ? asJson(current) : 'none';
+      inspectProcesses.textContent = asJson(processList);
+      inspectMemory.textContent = asJson(memoryView);
+    }
+
+    // A replaced runtime must release its canvas listeners, or each run
+    // leaves another set behind, each keeping its whole VM alive.
+    function disposeRuntime()
+    {
+      if (engineRuntime)
+      {
+        engineRuntime.dispose();
+        engineRuntime = null;
+      }
+    }
+
+    function stopProgram() {
+      running = false;
+      vm = null;
+      disposeRuntime();
+      statusLabel.textContent = 'Stopped';
+      runtimeStats.textContent = 'runtime: stopped';
+      updateInspector();
+    }
+
+    function runProgram() {
+      try {
+        clearConsole();
+
+        const source = editor.value;
+        const bytecode = compileSource(source);
+
+        disposeRuntime();
+        vm = new VM();
+        vm.load(bytecode);
+        engineRuntime = new CanvasEngineRuntime({
+          vm,
+          ctx,
+          width: canvas.width,
+          height: canvas.height,
+          clearColor: '#0b1117',
+          logFn: (line) => writeConsole(line)
+        });
+        engineRuntime.registerNatives();
+
+        lastTime = 0;
+        fps = 0;
+        running = true;
+        statusLabel.textContent = 'Running';
+        writeConsole('[ok] Program started');
+        updateInspector();
+      } catch (err) {
+        running = false;
+        vm = null;
+        disposeRuntime();
+        statusLabel.textContent = 'Compile error';
+        writeConsole(String(err.message || err), true);
+        updateInspector();
+      }
+    }
+
+    function renderFrame(timestamp) {
+      requestAnimationFrame(renderFrame);
+
+      const dt = lastTime === 0 ? (1 / 60) : (timestamp - lastTime) / 1000;
+      lastTime = timestamp;
+      fps = dt > 0 ? (1 / dt) : 0;
+
+      if (running && vm && engineRuntime) {
+        engineRuntime.beginFrame(dt);
+
+        try {
+          vm.tick();
+        } catch (err) {
+          writeConsole(String(err.message || err), true);
+          stopProgram();
+        }
+      }
+
+      if (running && vm && engineRuntime) {
+        engineRuntime.render();
+
+        runtimeStats.textContent = `fps: ${fps.toFixed(1)} | processes: ${vm.processManager.count()} | time: ${engineRuntime.totalTime.toFixed(2)}s`;
+      } else {
+        ctx.fillStyle = '#0b1117';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        runtimeStats.textContent = 'runtime: idle';
+      }
+
+      updateInspector();
+
+      codeStats.textContent = `${editor.value.split('\n').length} lines`;
+    }
+
+    playBtn.addEventListener('click', runProgram);
+    stopBtn.addEventListener('click', stopProgram);
+
+    requestAnimationFrame(renderFrame);
+    runProgram();
+  </script>
+</body>
+</html>

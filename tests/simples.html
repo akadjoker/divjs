@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>DivJS - Quick Runner</title>
+  <link rel="stylesheet" href="../styles/demo-runner.css">
+</head>
+<body>
+  <div class="stage">
+    <canvas id="game" width="800" height="600"></canvas>
+    <div id="loading" class="overlay">Loading assets...</div>
+    <div id="error" class="hidden"></div>
+  </div>
+
+  <script type="module">
+    import { bootDivDemo } from '../divjs.js';
+
+    const loadingEl = document.getElementById('loading');
+    const errorEl = document.getElementById('error');
+    const stageEl = document.querySelector('.stage');
+
+    const source = `program quick_test;
+
+global speed = 230;
+global g_player;
+global g_tile;
+
+process player(x, y, graph);
+private
+  angle_step = 0;
+begin
+  width = 24;
+  height = 24;
+  size = 100;
+
+  loop
+    if (key(_left)) x = x - speed * get_delta(); end
+    if (key(_right)) x = x + speed * get_delta(); end
+    if (key(_up)) y = y - speed * get_delta(); end
+    if (key(_down)) y = y + speed * get_delta(); end
+
+    angle_step = angle_step + 3000;
+    angle = angle_step;
+
+    xput(0, g_tile, x + 40, y, 0, 100, 0, 0);
+    frame(100);
+  end
+end
+
+begin
+  set_title("DivJS quick runner");
+  set_mode(800, 600);
+  screen_color('#014');
+
+  g_player = load_graphic('../assets/001.png');
+  g_tile = load_tile('../assets/006.png', 0, 0, 32, 32);
+
+  player(220, 220, g_player);
+  loop frame; end
+end`;
+
+    async function boot() {
+      try {
+        await bootDivDemo({
+          canvas: 'game',
+          source,
+          clearColor: '#0b1117',
+          virtualWidth: 480,
+          virtualHeight: 320,
+          debugDrawProcessBounds: true,
+          debugProcessBoundsColor: '#8cecff',
+          debugShowStats: true,
+          preventDefaultKeys: true,
+          preload: {
+            images: ['../assets/001.png', '../assets/006.png'],
+            audio: []
+          },
+          loadingElement: loadingEl,
+          errorElement: errorEl,
+          showVirtualKeys: true,
+          virtualKeysContainer: stageEl,
+          onError: (err) => {
+            console.error(err);
+          }
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>

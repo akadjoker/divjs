@@ -1,0 +1,1255 @@
+PROGRAM tower_defense;
+
+// KEEP DEFENSE - a procedural tower-defense game.
+// Every match is played on a new map: a winding road is carved from one
+// edge of a 20x18 tile grid to the keep (straight runs along the main
+// axis, long switchbacks across it, so the road never touches itself),
+// then ponds, woods and rocks are scattered around it. Towers can only
+// be built on free grass. The map is painted once into the background.
+// Enemies are processes that walk the road cell by cell (flyers ignore
+// it and head straight for the keep). Towers are processes with a turret
+// that turns towards the target and leads it; bullets and effects live in
+// fixed pools drawn by one manager process each, so the process count
+// stays bounded however heavy the fight gets.
+
+GLOBAL
+  MW = 20; MH = 18; NC = 360;    // map size in 32-pixel tiles, cell count
+  OY = 24;                       // the map starts under the top bar
+  PX = 640;                      // the side panel starts here
+
+  // ---- the map (cell = row * MW + column)
+  tile[359];       // 0 grass, 1 road, 2 rock, 3 tree, 4 water, 5 keep
+  tw_at[359];      // tower slot + 1 standing on a cell, 0 none
+  pth[359]; plen = 0;            // road cells from the entry to the keep
+  orient = 0; cross = 0; v0 = 0; // road layout (see builder)
+  seed = 0;
+
+  // ---- enemies: 0 runner, 1 grunt, 2 armoured, 3 flyer, 4 boss
+  ek_hp[4]; ek_spd[4]; ek_arm[4]; ek_gold[4]; ek_rad[4];
+  e_used[63]; e_kind[63]; e_x[63]; e_y[63]; e_vx[63]; e_vy[63];
+  e_hp[63]; e_max[63]; e_arm[63]; e_prog[63]; e_slow[63]; e_slowf[63];
+  n_alive = 0;
+
+  // ---- towers: 0 machine gun, 1 cannon, 2 frost, 3 sniper, 4 tesla.
+  // Per-level tables are indexed kind * 3 + level.
+  tk_cost[4]; tk_spd[4]; kc_r[4]; kc_g[4]; kc_b[4];
+  tk_rng[14]; tk_dmg[14]; tk_rate[14]; tk_sp[14];  // sp: splash / chain
+  t_used[47]; t_gen[47]; t_kind[47]; t_lv[47]; t_x[47]; t_y[47]; t_cell[47];
+  t_cd[47]; t_think[47]; t_tgt[47]; t_mode[47]; t_spent[47];
+  chain[7];
+
+  // ---- pools: projectiles and effects
+  p_used[95]; p_kind[95]; p_x[95]; p_y[95]; p_ang[95]; p_t[95]; p_dmg[95]; p_lv[95];
+  n_shots = 0;
+  f_used[79]; f_kind[79]; f_x[79]; f_y[79]; f_x2[79]; f_y2[79]; f_t[79]; f_life[79]; f_v[79];
+
+  // ---- graphics
+  g_bg = 0; g_en[5]; g_tur[14]; g_ring = 0; ring_r = 0;
+  g_title = 0; g_over = 0; g_msg = 0; msg_t = 0.0;
+
+  // ---- game state
+  state = 3;       // 0 title, 1 playing, 2 game over, 3 building the map
+  money = 0; lives = 0; wave = 0; hi_wave = 0;
+  wq[99]; wq_n = 0; wq_i = 0; spawn_t = 0.0; paid = 1; next_t = 0.0; hpmul = 1.0;
+  dt = 0.0; gspd = 1;
+  build_sel = -1; sel_t = -1; lprev = 0; rprev = 0;
+  ring_on = 0; ring_x = 0; ring_y = 0; ring_want = 0;
+  gh_g = 0; gh_x = 0; gh_y = 0;
+
+// ---- Tables and small helpers ----
+
+FUNCTION set_tower(k, cost, spd, r, g, b);
+BEGIN
+  tk_cost[k] = cost; tk_spd[k] = spd; kc_r[k] = r; kc_g[k] = g; kc_b[k] = b;
+  RETURN 0;
+END
+
+FUNCTION set_level(i, rng, dmg, rate, sp);
+BEGIN
+  tk_rng[i] = rng; tk_dmg[i] = dmg; tk_rate[i] = rate; tk_sp[i] = sp;
+  RETURN 0;
+END
+
+FUNCTION set_enemy(k, hp, spd, arm, gold, rad);
+BEGIN
+  ek_hp[k] = hp; ek_spd[k] = spd; ek_arm[k] = arm; ek_gold[k] = gold; ek_rad[k] = rad;
+  RETURN 0;
+END
+
+FUNCTION init_tables();
+BEGIN
+  // kind, cost, projectile speed (0 = instant hit), colour
+  set_tower(0, 50, 480, 225, 205, 80);
+  set_tower(1, 90, 250, 215, 95, 60);
+  set_tower(2, 70, 300, 110, 210, 245);
+  set_tower(3, 120, 0, 120, 205, 110);
+  set_tower(4, 150, 0, 185, 125, 245);
+  // level stats: range, damage, seconds between shots, splash/chain
+  set_level(0, 96, 6, 0.20, 0);    set_level(1, 108, 10, 0.16, 0);  set_level(2, 122, 16, 0.12, 0);
+  set_level(3, 104, 26, 1.30, 36); set_level(4, 116, 48, 1.20, 42); set_level(5, 128, 84, 1.05, 50);
+  set_level(6, 84, 3, 0.90, 28);   set_level(7, 96, 6, 0.80, 32);   set_level(8, 108, 10, 0.70, 38);
+  set_level(9, 190, 55, 1.70, 0);  set_level(10, 230, 110, 1.50, 0); set_level(11, 270, 200, 1.30, 0);
+  set_level(12, 88, 18, 1.00, 3);  set_level(13, 98, 30, 0.90, 4);  set_level(14, 110, 48, 0.80, 6);
+  // kind, hp, speed (px/s), armour, gold, radius
+  set_enemy(0, 18, 72, 0, 3, 7);
+  set_enemy(1, 36, 42, 0, 4, 9);
+  set_enemy(2, 75, 28, 4, 8, 11);
+  set_enemy(3, 26, 48, 0, 6, 11);
+  set_enemy(4, 520, 22, 6, 80, 17);
+  RETURN 0;
+END
+
+FUNCTION tname(k);
+BEGIN
+  SWITCH (k)
+    CASE 0 RETURN "MACHINE GUN";
+    CASE 1 RETURN "CANNON";
+    CASE 2 RETURN "FROST";
+    CASE 3 RETURN "SNIPER";
+  END
+  RETURN "TESLA";
+END
+
+FUNCTION mname(m);
+BEGIN
+  IF (m == 0) RETURN "FIRST"; END
+  IF (m == 1) RETURN "STRONGEST"; END
+  RETURN "NEAREST";
+END
+
+FUNCTION cx_of(c); BEGIN RETURN (c % MW) * 32 + 16; END
+FUNCTION cy_of(c); BEGIN RETURN (c / MW) * 32 + 16 + OY; END
+
+FUNCTION inbox(mx, my, bx, by, bw, bh);
+BEGIN
+  RETURN (mx >= bx AND mx < bx + bw AND my >= by AND my < by + bh);
+END
+
+// Road layout: u runs along the main axis (entry edge to keep edge), v
+// across it; orient picks which screen edge is the entry.
+FUNCTION cell_uv(u, v);
+BEGIN
+  SWITCH (orient)
+    CASE 0 RETURN v * MW + u;
+    CASE 1 RETURN v * MW + MW - 1 - u;
+    CASE 2 RETURN u * MW + v;
+  END
+  RETURN (MH - 1 - u) * MW + v;
+END
+
+FUNCTION up_cost(s);
+BEGIN
+  RETURN int(tk_cost[t_kind[s]] * (0.75 + t_lv[s] * 0.75));
+END
+
+FUNCTION angle_diff(a, b);
+PRIVATE d;
+BEGIN
+  d = normalize_angle(a - b);
+  IF (d > 180000) d = 360000 - d; END
+  RETURN d;
+END
+
+// =====================================================================
+// Generated graphics. Sprites face right (angle 0); the draw functions
+// take a target graphic and an offset so the panel can reuse them.
+// =====================================================================
+
+// Stone platform under a tower: trim in the tower's colour, one gold
+// pip per level
+FUNCTION draw_platform(g, ox, oy, k, lv);
+PRIVATE i;
+BEGIN
+  gfx_rect(g, ox + 2, oy + 2, 28, 28, 70, 70, 74);
+  gfx_rect(g, ox + 3, oy + 3, 26, 26, 128, 126, 120);
+  gfx_rect(g, ox + 5, oy + 5, 22, 22, 104, 102, 98);
+  gfx_rect_outline(g, ox + 4, oy + 4, 24, 24, kc_r[k], kc_g[k], kc_b[k]);
+  FOR i = 0 TO lv gfx_rect(g, ox + 5 + i * 5, oy + 25, 3, 3, 250, 215, 60); END
+  RETURN 0;
+END
+
+// Turret of kind k, level lv, in a 32x32 box centred on (ox+16, oy+16)
+FUNCTION draw_turret(g, ox, oy, k, lv);
+PRIVATE r, gg, b, i, cx, cy, tr, tg, tb;
+BEGIN
+  r = kc_r[k]; gg = kc_g[k]; b = kc_b[k];
+  cx = ox + 16; cy = oy + 16;
+  tr = 150; tg = 150; tb = 160;                  // level trim: steel,
+  IF (lv == 1) tr = 205; tg = 140; tb = 70; END  // bronze,
+  IF (lv == 2) tr = 250; tg = 215; tb = 60; END  // gold
+  SWITCH (k)
+    CASE 0                                       // machine gun: 1-3 barrels
+      FOR i = 0 TO lv gfx_rect(g, cx, cy - 1 - lv * 2 + i * 4, 14, 2, 40, 40, 44); END
+      gfx_circle(g, cx, cy, 7, tr, tg, tb);
+      gfx_circle(g, cx, cy, 5, r, gg, b);
+      gfx_rect(g, cx - 2, cy - 2, 4, 4, 60, 60, 50);
+    CASE 1                                       // cannon: fat barrel
+      gfx_rect(g, cx, cy - 3 - lv / 2, 11 + lv * 2, 6 + lv, 36, 36, 38);
+      gfx_rect(g, cx + 9 + lv * 2, cy - 4 - lv / 2, 3, 8 + lv, tr, tg, tb);
+      gfx_circle(g, cx - 1, cy, 9, tr, tg, tb);
+      gfx_circle(g, cx - 1, cy, 7, r, gg, b);
+      gfx_circle(g, cx - 3, cy - 2, 2, 250, 170, 140);
+    CASE 2                                       // frost: crystal emitter
+      gfx_rect(g, cx, cy - 1, 11, 3, 200, 240, 255);
+      FOR i = 0 TO 5
+        gfx_line(g, cx - 2, cy, cx - 2 + get_distx(i * 60000, 8 + lv), cy + get_disty(i * 60000, 8 + lv), tr, tg, tb);
+      END
+      gfx_circle(g, cx - 2, cy, 5, r, gg, b);
+      gfx_circle(g, cx - 3, cy - 1, 2, 240, 255, 255);
+      gfx_circle(g, cx + 12, cy, 2 + lv / 2, 230, 250, 255);
+    CASE 3                                       // sniper: long thin barrel
+      gfx_rect(g, cx, cy - 1, 11 + lv * 2, 2, 34, 34, 36);
+      gfx_rect(g, cx + 9 + lv * 2, cy - 2, 3, 4, tr, tg, tb);
+      gfx_rect(g, cx - 4, cy - 5, 8, 3, 50, 60, 50);           // scope
+      gfx_circle(g, cx - 3, cy + 1, 5, tr, tg, tb);
+      gfx_circle(g, cx - 3, cy + 1, 3, r, gg, b);
+    CASE 4                                       // tesla: coil and prong
+      gfx_rect(g, cx, cy - 1, 10, 2, 150, 110, 60);
+      FOR i = 0 TO lv + 1 gfx_circle_outline(g, cx - 2, cy, 9 - i * 2, 200, 130, 60); END
+      gfx_circle(g, cx - 2, cy, 3, r, gg, b);
+      gfx_circle(g, cx + 11, cy, 2, 230, 220, 255);
+      gfx_rect(g, cx - 12, cy - 1, 3, 3, tr, tg, tb);
+  END
+  RETURN 0;
+END
+
+FUNCTION draw_enemy(g, k, flap);
+PRIVATE i, w;
+BEGIN
+  SWITCH (k)
+    CASE 0                                       // runner: small orange beetle
+      FOR i = 0 TO 2 gfx_line(g, 5 + i * 3, 1, 5 + i * 3, 12, 60, 30, 10); END
+      gfx_circle(g, 8, 6, 5, 240, 150, 40);
+      gfx_circle(g, 12, 6, 3, 250, 200, 90);
+      gfx_pixel(g, 13, 5, 0, 0, 0);
+    CASE 1                                       // grunt: green blob with eyes
+      gfx_circle(g, 10, 10, 9, 40, 90, 30);
+      gfx_circle(g, 10, 10, 7, 90, 180, 60);
+      gfx_circle(g, 14, 7, 2, 255, 255, 255); gfx_circle(g, 14, 13, 2, 255, 255, 255);
+      gfx_pixel(g, 15, 7, 0, 0, 0); gfx_pixel(g, 15, 13, 0, 0, 0);
+    CASE 2                                       // armoured: plated crawler
+      gfx_rect(g, 1, 1, 22, 5, 40, 40, 40);
+      gfx_rect(g, 1, 16, 22, 5, 40, 40, 40);
+      gfx_rect(g, 3, 4, 18, 14, 120, 125, 135);
+      FOR i = 0 TO 2 gfx_rect(g, 5 + i * 6, 6, 4, 10, 160, 165, 175); END
+      gfx_rect(g, 20, 8, 4, 6, 200, 60, 40);
+    CASE 3                                       // flyer: purple bat, 2 frames
+      w = 11 - flap * 5;
+      FOR i = 0 TO 8
+        gfx_line(g, 11 - i / 2, 11, 6 + i, 11 - w, 110, 40, 150);
+        gfx_line(g, 11 - i / 2, 11, 6 + i, 11 + w, 110, 40, 150);
+      END
+      gfx_circle(g, 12, 11, 5, 170, 80, 210);
+      gfx_pixel(g, 15, 9, 255, 230, 60); gfx_pixel(g, 15, 13, 255, 230, 60);
+    CASE 4                                       // boss: spiked red brute
+      FOR i = 0 TO 11
+        gfx_line(g, 20, 20, 20 + get_distx(i * 30000, 19), 20 + get_disty(i * 30000, 19), 90, 20, 20);
+      END
+      gfx_circle(g, 20, 20, 15, 120, 20, 20);
+      gfx_circle(g, 20, 20, 12, 200, 45, 35);
+      gfx_circle(g, 27, 15, 3, 255, 220, 40); gfx_circle(g, 27, 25, 3, 255, 220, 40);
+      gfx_rect(g, 14, 17, 6, 6, 150, 30, 25);
+  END
+  RETURN 0;
+END
+
+FUNCTION big_text(w, h, s, r, g, b, sz);
+PRIVATE gr;
+BEGIN
+  gr = new_graphic(w, h);
+  gfx_fill_rgba(gr, 0, 0, 0, 0);
+  gfx_text(gr, 3, 3, s, 0, 0, 0, sz);
+  gfx_text(gr, 0, 0, s, r, g, b, sz);
+  RETURN gr;
+END
+
+FUNCTION make_graphics();
+PRIVATE k, lv, g, i, by;
+BEGIN
+  FOR k = 0 TO 4
+    FOR lv = 0 TO 2
+      g = new_graphic(32, 32); gfx_fill_rgba(g, 0, 0, 0, 0);
+      draw_turret(g, 0, 0, k, lv);
+      g_tur[k * 3 + lv] = g;
+    END
+  END
+  g_en[0] = new_graphic(16, 13); g_en[1] = new_graphic(20, 20);
+  g_en[2] = new_graphic(24, 22); g_en[3] = new_graphic(24, 23);
+  g_en[4] = new_graphic(40, 40); g_en[5] = new_graphic(24, 23);
+  FOR k = 0 TO 5
+    gfx_fill_rgba(g_en[k], 0, 0, 0, 0);
+    IF (k == 5) draw_enemy(g_en[5], 3, 1); ELSE draw_enemy(g_en[k], k, 0); END
+  END
+  g_ring = new_graphic(600, 600);
+  g_title = big_text(420, 50, "KEEP DEFENSE", 240, 210, 90, 44);
+  g_over = big_text(360, 50, "GAME OVER", 235, 70, 50, 44);
+  g_msg = new_graphic(480, 34);
+
+  // background: top bar, side panel with buttons (the map is painted
+  // into it by the builder)
+  g_bg = new_graphic(800, 600);
+  gfx_fill(g_bg, 30, 32, 38);
+  gfx_rect(g_bg, 0, 0, 640, 24, 22, 24, 30);
+  gfx_rect(g_bg, PX, 0, 2, 600, 80, 84, 96);
+  gfx_text(g_bg, PX + 10, 6, "KEEP DEFENSE", 240, 210, 90, 16);
+  gfx_text(g_bg, PX + 10, 30, "GOLD", 240, 200, 80, 12);
+  gfx_text(g_bg, PX + 10, 45, "LIVES", 240, 110, 100, 12);
+  gfx_text(g_bg, PX + 10, 60, "WAVE", 150, 190, 250, 12);
+  FOR k = 0 TO 4
+    by = 78 + k * 44;
+    gfx_rect(g_bg, PX + 6, by, 148, 40, 72, 76, 88);
+    gfx_rect(g_bg, PX + 7, by + 1, 146, 38, 48, 52, 62);
+    gfx_rect(g_bg, PX + 11, by + 4, 32, 32, 60, 110, 50);
+    draw_platform(g_bg, PX + 11, by + 4, k, 0);
+    draw_turret(g_bg, PX + 11, by + 4, k, 0);
+    gfx_text(g_bg, PX + 50, by + 6, "" + (k + 1) + " " + tname(k), 225, 228, 235, 11);
+    gfx_text(g_bg, PX + 50, by + 22, "$" + tk_cost[k], 240, 200, 80, 11);
+  END
+  gfx_text(g_bg, PX + 104, 78 + 1 * 44 + 22, "ground", 170, 170, 170, 10);
+  gfx_text(g_bg, PX + 104, 78 + 2 * 44 + 22, "slows", 170, 170, 170, 10);
+  gfx_text(g_bg, PX + 104, 78 + 3 * 44 + 22, "range", 170, 170, 170, 10);
+  gfx_text(g_bg, PX + 104, 78 + 4 * 44 + 22, "chain", 170, 170, 170, 10);
+  gfx_rect(g_bg, PX + 6, 300, 148, 136, 40, 43, 52);          // selection box
+  FOR i = 0 TO 2 gfx_rect(g_bg, PX + 6, 352 + i * 28, 148, 22, 72, 76, 88); END
+  gfx_rect(g_bg, PX + 6, 448, 148, 30, 60, 90, 60);           // next wave
+  gfx_rect(g_bg, PX + 6, 484, 148, 22, 72, 76, 88);           // speed
+  i = 522;
+  gfx_text(g_bg, PX + 8, i, "Click a button (1-5),", 150, 155, 165, 10);
+  gfx_text(g_bg, PX + 8, i + 12, "then grass to build.", 150, 155, 165, 10);
+  gfx_text(g_bg, PX + 8, i + 24, "Right click/ESC: cancel", 150, 155, 165, 10);
+  gfx_text(g_bg, PX + 8, i + 36, "U upgrade  S sell", 150, 155, 165, 10);
+  gfx_text(g_bg, PX + 8, i + 48, "T target  N wave  F speed", 150, 155, 165, 10);
+  RETURN 0;
+END
+
+// Paints one map tile into the background
+FUNCTION paint_tile(c);
+PRIVATE px, py, t, v, i, n, a, b;
+BEGIN
+  px = (c % MW) * 32; py = (c / MW) * 32 + OY;
+  t = tile[c];
+  v = rand(-6, 6);
+  IF (t == 1 OR t == 5)                             // road: packed dirt
+    gfx_rect(g_bg, px, py, 32, 32, 176 + v, 146 + v, 96 + v);
+    FOR i = 0 TO 5 gfx_pixel(g_bg, px + rand(2, 29), py + rand(2, 29), 140, 112, 70); END
+    gfx_circle(g_bg, px + rand(6, 25), py + rand(6, 25), 1, 200, 180, 140);
+    // darker verge on every side that borders the countryside
+    n = c % MW;
+    IF (n == 0) a = 1; ELSE a = tile[c - 1] == 1 OR tile[c - 1] == 5; END
+    IF (a == 0) gfx_rect(g_bg, px, py, 3, 32, 120, 100, 60); END
+    IF (n == MW - 1) a = 1; ELSE a = tile[c + 1] == 1 OR tile[c + 1] == 5; END
+    IF (a == 0) gfx_rect(g_bg, px + 29, py, 3, 32, 120, 100, 60); END
+    IF (c < MW) a = 1; ELSE a = tile[c - MW] == 1 OR tile[c - MW] == 5; END
+    IF (a == 0) gfx_rect(g_bg, px, py, 32, 3, 120, 100, 60); END
+    IF (c >= NC - MW) a = 1; ELSE a = tile[c + MW] == 1 OR tile[c + MW] == 5; END
+    IF (a == 0) gfx_rect(g_bg, px, py + 29, 32, 3, 120, 100, 60); END
+  ELSE
+    IF (t == 4)                                     // water
+      gfx_rect(g_bg, px, py, 32, 32, 34, 86 + v, 160 + v);
+      FOR i = 0 TO 1
+        a = py + rand(5, 26);
+        b = px + rand(3, 14);
+        gfx_line(g_bg, b, a, b + rand(6, 12), a, 90, 150, 220);
+      END
+    ELSE                                            // grass under the rest
+      gfx_rect(g_bg, px, py, 32, 32, 70 + v, 128 + v, 52 + v / 2);
+      gfx_rect_outline(g_bg, px, py, 32, 32, 64 + v, 118 + v, 48);
+      FOR i = 0 TO 4
+        a = px + rand(2, 29); b = py + rand(3, 29);
+        gfx_line(g_bg, a, b, a + rand(-1, 1), b - 2, 50, 100, 38);
+      END
+      IF (rand(0, 5) == 0) gfx_pixel(g_bg, px + rand(3, 28), py + rand(3, 28), 240, 230, 120); END
+    END
+  END
+  IF (t == 2)                                       // rocks
+    gfx_circle(g_bg, px + 12, py + 18, 8, 90, 88, 86);
+    gfx_circle(g_bg, px + 11, py + 16, 6, 150, 146, 140);
+    gfx_circle(g_bg, px + 22, py + 22, 5, 80, 78, 76);
+    gfx_circle(g_bg, px + 21, py + 21, 3, 130, 126, 122);
+  END
+  IF (t == 3)                                       // tree
+    gfx_circle(g_bg, px + 18, py + 20, 11, 30, 60, 26);
+    gfx_rect(g_bg, px + 14, py + 20, 4, 9, 90, 60, 30);
+    gfx_circle(g_bg, px + 15, py + 14, 10, 34, 96 + v, 36);
+    gfx_circle(g_bg, px + 12, py + 11, 5, 60, 136 + v, 52);
+  END
+  IF (t == 5)                                       // the keep
+    gfx_rect(g_bg, px + 2, py + 6, 28, 24, 90, 90, 96);
+    gfx_rect(g_bg, px + 4, py + 8, 24, 20, 150, 148, 150);
+    FOR i = 0 TO 3 gfx_rect(g_bg, px + 3 + i * 7, py + 3, 5, 5, 150, 148, 150); END
+    gfx_rect(g_bg, px + 12, py + 18, 8, 10, 60, 40, 30);
+    gfx_line(g_bg, px + 16, py - 6, px + 16, py + 6, 60, 60, 60);
+    gfx_rect(g_bg, px + 17, py - 6, 8, 5, 60, 110, 230);
+  END
+  RETURN 0;
+END
+
+// Tower platform painted onto the map (the turret is the process)
+FUNCTION paint_tower(s);
+PRIVATE c;
+BEGIN
+  c = t_cell[s];
+  gfx_rect(g_bg, (c % MW) * 32, (c / MW) * 32 + OY, 32, 32, 70, 128, 52);
+  draw_platform(g_bg, (c % MW) * 32, (c / MW) * 32 + OY, t_kind[s], t_lv[s]);
+  RETURN 0;
+END
+
+// ---- Map builder: new road and terrain, painted over a few frames ----
+PROCESS builder(next_state);
+PRIVATE u, v, tv, n, c, i, j, k, len, cx, cy, r;
+BEGIN
+  state = 3;
+  seed = rand(1, 99999);
+  rand_seed(seed);
+  FOR c = 0 TO NC - 1 tile[c] = 0; tw_at[c] = 0; END
+  FRAME;
+
+  // 1. the road: runs of 2-3 cells along u, switchbacks across v of 3+
+  // cells. Two switchbacks are always at least one column apart, so the
+  // road never runs alongside itself.
+  orient = rand(0, 3);
+  IF (orient < 2) len = MW; cross = MH; ELSE len = MH; cross = MW; END
+  u = 0; v = rand(3, cross - 4); v0 = v;
+  plen = 0;
+  pth[0] = cell_uv(0, v); plen = 1;
+  LOOP
+    n = rand(2, 3);
+    IF (len - 1 - u < 4) n = len - 1 - u; END      // finish the last stretch
+    FOR i = 1 TO n u++; pth[plen] = cell_uv(u, v); plen++; END
+    IF (u >= len - 1) BREAK; END
+    REPEAT tv = rand(1, cross - 2); UNTIL (abs(tv - v) >= 3);
+    WHILE (v != tv) v += sign(tv - v); pth[plen] = cell_uv(u, v); plen++; END
+  END
+  FOR i = 0 TO plen - 1 tile[pth[i]] = 1; END
+  tile[pth[plen - 1]] = 5;
+
+  // 2. ponds, woods and rocks on the free cells
+  FOR k = 1 TO rand(1, 3)
+    cx = rand(1, MW - 2); cy = rand(1, MH - 2); r = rand(1, 2);
+    FOR j = cy - r TO cy + r
+      FOR i = cx - r TO cx + r
+        IF (i >= 0 AND j >= 0 AND i < MW AND j < MH)
+          c = j * MW + i;
+          IF (tile[c] == 0 AND (i - cx) * (i - cx) + (j - cy) * (j - cy) <= r * r + 1 AND rand(0, 9) < 8)
+            tile[c] = 4;
+          END
+        END
+      END
+    END
+  END
+  FOR k = 1 TO rand(3, 6)                           // woods: short random walks
+    cx = rand(0, MW - 1); cy = rand(0, MH - 1);
+    FOR i = 1 TO rand(4, 10)
+      c = cy * MW + cx;
+      IF (tile[c] == 0) tile[c] = 3; END
+      cx = clamp(cx + rand(-1, 1), 0, MW - 1); cy = clamp(cy + rand(-1, 1), 0, MH - 1);
+    END
+  END
+  FOR c = 0 TO NC - 1
+    IF (tile[c] == 0 AND rand(0, 99) < 5) tile[c] = 2; END
+  END
+  // keep most cells beside the road buildable
+  FOR i = 0 TO plen - 1
+    cx = pth[i] % MW; cy = pth[i] / MW;
+    FOR j = cy - 1 TO cy + 1
+      FOR k = cx - 1 TO cx + 1
+        IF (k >= 0 AND j >= 0 AND k < MW AND j < MH)
+          c = j * MW + k;
+          IF ((tile[c] == 2 OR tile[c] == 3) AND rand(0, 99) < 60) tile[c] = 0; END
+        END
+      END
+    END
+  END
+  FRAME;
+
+  // 3. paint, 60 tiles a frame
+  FOR c = 0 TO NC - 1
+    paint_tile(c);
+    IF (c % 60 == 59) FRAME; END
+  END
+  // entry marker: a dark gap with arrows pointing into the map
+  c = pth[0];
+  gfx_circle(g_bg, cx_of(c), cy_of(c), 7, 60, 40, 30);
+  gfx_circle(g_bg, cx_of(c), cy_of(c), 4, 200, 60, 40);
+  rand_seed();
+  state = next_state;
+END
+
+// ---- Pools: effects and projectiles ----
+
+// Effect kinds: 0 explosion, 1 tracer, 2 lightning, 3 frost burst,
+// 4 floating gold text, 5 muzzle flash
+FUNCTION fx_add(k, x1, y1, x2, y2, life, v);
+PRIVATE i;
+BEGIN
+  FOR i = 0 TO 79
+    IF (f_used[i] == 0)
+      f_used[i] = 1; f_kind[i] = k; f_x[i] = x1; f_y[i] = y1; f_x2[i] = x2; f_y2[i] = y2;
+      f_t[i] = life; f_life[i] = life; f_v[i] = v;
+      RETURN i;
+    END
+  END
+  RETURN -1;
+END
+
+// A line of small squares (the screen has no line primitive)
+FUNCTION dots(x1, y1, x2, y2, stp, sz);
+PRIVATE n, i;
+BEGIN
+  n = int(fget_distance(x1, y1, x2, y2) / (stp + 0.001)) + 1;
+  FOR i = 0 TO n
+    draw_rect(x1 + (x2 - x1) * i / n - sz / 2, y1 + (y2 - y1) * i / n - sz / 2, sz, sz);
+  END
+  RETURN 0;
+END
+
+PROCESS fxman();
+PRIVATE i, q, a, j, lx, ly, nx, ny, d, ang;
+BEGIN
+  LOOP
+    FOR i = 0 TO 79
+      IF (f_used[i])
+        f_t[i] -= get_delta();
+        IF (f_t[i] <= 0)
+          f_used[i] = 0;
+        ELSE
+          q = f_t[i] / (f_life[i] + 0.0001);       // 1 -> 0 over the life
+          SWITCH (f_kind[i])
+            CASE 0
+              set_color("rgba(255," + int(90 + q * 150) + ",40," + q + ")");
+              circle(f_x[i], f_y[i], f_v[i] * (1.2 - q));
+              set_color("rgba(255,250,200," + q + ")");
+              circle(f_x[i], f_y[i], f_v[i] * 0.4 * q);
+            CASE 1
+              set_color("rgba(255,255,200," + q + ")");
+              dots(f_x[i], f_y[i], f_x2[i], f_y2[i], 4, 2);
+            CASE 2                               // jagged, flickering bolt
+              set_color("rgba(200,180,255," + (0.4 + q * 0.6) + ")");
+              ang = fget_angle(f_x[i], f_y[i], f_x2[i], f_y2[i]) + 90000;
+              lx = f_x[i]; ly = f_y[i];
+              FOR j = 1 TO 4
+                a = rand(-6, 6);
+                IF (j == 4) a = 0; END
+                nx = f_x[i] + (f_x2[i] - f_x[i]) * j * 0.25 + get_distx(ang, a);
+                ny = f_y[i] + (f_y2[i] - f_y[i]) * j * 0.25 + get_disty(ang, a);
+                dots(lx, ly, nx, ny, 3, 2);
+                lx = nx; ly = ny;
+              END
+            CASE 3
+              set_color("rgba(160,230,255," + (q * 0.5) + ")");
+              circle(f_x[i], f_y[i], f_v[i] * (1.1 - q * 0.5));
+            CASE 4
+              set_color("rgba(255,220,80," + q + ")");
+              text(f_x[i] - 6, f_y[i] - (1 - q) * 18, "+" + f_v[i]);
+            CASE 5
+              set_color("rgba(255,240,160," + q + ")");
+              circle(f_x[i], f_y[i], 2 + f_v[i] * q);
+          END
+        END
+      END
+    END
+    FRAME;
+  END
+END
+
+// Damage after armour (armour never stops more than 3/4 of a hit)
+FUNCTION hurt(i, dmg);
+PRIVATE d;
+BEGIN
+  d = dmg - e_arm[i];
+  IF (d < dmg * 0.25) d = dmg * 0.25; END
+  e_hp[i] -= d;
+  RETURN 0;
+END
+
+FUNCTION shot_add(k, x1, y1, x2, y2, dmg, lv);
+PRIVATE i;
+BEGIN
+  IF (n_shots >= 96) RETURN -1; END
+  FOR i = 0 TO 95
+    IF (p_used[i] == 0)
+      p_used[i] = 1; p_kind[i] = k; p_x[i] = x1; p_y[i] = y1;
+      p_ang[i] = fget_angle(x1, y1, x2, y2);
+      p_t[i] = fget_distance(x1, y1, x2, y2) / (tk_spd[k] + 0.001);
+      p_dmg[i] = dmg; p_lv[i] = lv;
+      n_shots++;
+      RETURN i;
+    END
+  END
+  RETURN -1;
+END
+
+// A projectile reached its aim point
+FUNCTION impact(p);
+PRIVATE i, k, best, bd, d, r, px, py;
+BEGIN
+  k = p_kind[p]; px = p_x[p]; py = p_y[p];
+  IF (k == 0)                                    // bullet: whoever is there
+    best = -1; bd = 13;
+    FOR i = 0 TO 63
+      IF (e_used[i])
+        IF (abs(e_x[i] - px) < 24 AND abs(e_y[i] - py) < 24)
+          d = fget_distance(px, py, e_x[i], e_y[i]) - ek_rad[e_kind[i]] * 0.5;
+          IF (d < bd) bd = d; best = i; END
+        END
+      END
+    END
+    IF (best >= 0) hurt(best, p_dmg[p]); END
+    RETURN 0;
+  END
+  r = tk_sp[k * 3 + p_lv[p]];                    // cannon / frost: splash
+  FOR i = 0 TO 63
+    IF (e_used[i] AND e_hp[i] > 0 AND (k == 2 OR e_kind[i] != 3))
+      IF (abs(e_x[i] - px) < r + 16 AND abs(e_y[i] - py) < r + 16)
+        IF (fget_distance(px, py, e_x[i], e_y[i]) < r + ek_rad[e_kind[i]])
+          hurt(i, p_dmg[p]);
+          IF (k == 2)
+            d = 0.6 - p_lv[p] * 0.1;             // speed factor while slowed
+            IF (e_slow[i] <= 0 OR d < e_slowf[i]) e_slowf[i] = d; END
+            e_slow[i] = 1.6 + p_lv[p] * 0.3;
+          END
+        END
+      END
+    END
+  END
+  IF (k == 1) fx_add(0, px, py, 0, 0, 0.35, r * 0.8); ELSE fx_add(3, px, py, 0, 0, 0.3, r); END
+  RETURN 0;
+END
+
+PROCESS shotman();
+PRIVATE i, stp;
+BEGIN
+  LOOP
+    FOR i = 0 TO 95
+      IF (p_used[i])
+        IF (dt > 0)
+          p_t[i] -= dt;
+          stp = tk_spd[p_kind[i]] * dt;
+          IF (p_t[i] <= 0)
+            stp = stp + p_t[i] * tk_spd[p_kind[i]];   // land exactly
+          END
+          p_x[i] += get_distx(p_ang[i], stp);
+          p_y[i] += get_disty(p_ang[i], stp);
+          IF (p_t[i] <= 0) impact(i); p_used[i] = 0; n_shots--; END
+        END
+        IF (p_used[i])
+          SWITCH (p_kind[i])
+            CASE 0 draw_rect(p_x[i] - 1, p_y[i] - 1, 3, 3, '#fff2a0');
+            CASE 1
+              set_color('#202020'); circle(p_x[i], p_y[i], 4);
+              set_color('#806050'); circle(p_x[i] - 1, p_y[i] - 1, 2);
+            CASE 2
+              set_color('#b0f0ff'); circle(p_x[i], p_y[i], 3);
+              set_color('#ffffff'); circle(p_x[i], p_y[i], 1);
+          END
+        END
+      END
+    END
+    FRAME;
+  END
+END
+
+// ---- Enemies ----
+PROCESS enemy(k, hp);
+PRIVATE s, i, wx, wy, d, stp, ox, oy, a, d0, f, ft, w, bx, by, done;
+BEGIN
+  s = -1;
+  FOR i = 0 TO 63
+    IF (e_used[i] == 0) s = i; BREAK; END
+  END
+  IF (s < 0) RETURN; END
+  e_used[s] = 1; e_kind[s] = k;
+  e_hp[s] = hp; e_max[s] = hp; e_arm[s] = ek_arm[k] + wave / 6;
+  e_slow[s] = 0; e_vx[s] = 0; e_vy[s] = 0; e_prog[s] = 0;
+  n_alive++;
+  graph = g_en[k]; z = 0;
+  IF (k == 3) z = -5; END
+  i = 1;                                         // next road cell
+  bx = cx_of(pth[plen - 1]); by = cy_of(pth[plen - 1]);
+  IF (k == 3)                                    // flyers: somewhere on the entry edge
+    wx = cell_uv(0, clamp(v0 + rand(-4, 4), 0, cross - 1));
+    x = cx_of(wx); y = cy_of(wx);
+    d0 = fget_distance(x, y, bx, by);
+  ELSE
+    x = cx_of(pth[0]); y = cy_of(pth[0]);
+  END
+  angle = fget_angle(x, y, cx_of(pth[1]), cy_of(pth[1]));
+  LOOP
+    IF (e_hp[s] <= 0)                            // killed: bounty
+      money += ek_gold[k];
+      fx_add(0, x, y, 0, 0, 0.4, ek_rad[k] + 6);
+      fx_add(4, x, y - 8, 0, 0, 0.8, ek_gold[k]);
+      BREAK;
+    END
+    IF (dt > 0)
+      e_slow[s] -= dt;
+      f = 1;
+      IF (e_slow[s] > 0) f = e_slowf[s]; END
+      stp = ek_spd[k] * f * dt;
+      ox = x; oy = y; done = 0;
+      IF (k == 3)
+        d = fget_distance(x, y, bx, by);
+        IF (d <= stp)
+          done = 1;
+        ELSE
+          a = fget_angle(x, y, bx, by);
+          x += get_distx(a, stp); y += get_disty(a, stp);
+          angle = a;
+        END
+        e_prog[s] = (d0 - d) * plen * 32 / (d0 + 0.001);
+        ft += dt;
+        IF (int(ft * 6) % 2 == 0) graph = g_en[3]; ELSE graph = g_en[5]; END
+      ELSE
+        // walk from cell centre to cell centre, carrying the leftover
+        // step over each corner so the speed stays exact
+        WHILE (stp > 0 AND done == 0)
+          wx = cx_of(pth[i]); wy = cy_of(pth[i]);
+          d = fget_distance(x, y, wx, wy);
+          IF (d <= stp)
+            x = wx; y = wy; stp -= d; i++;
+            IF (i >= plen) done = 1; END
+          ELSE
+            a = fget_angle(x, y, wx, wy);
+            x += get_distx(a, stp); y += get_disty(a, stp);
+            stp = 0;
+            angle = lerp_angle(angle, a, 0.25);
+          END
+        END
+        IF (done == 0) e_prog[s] = i * 32 - fget_distance(x, y, cx_of(pth[i]), cy_of(pth[i])); END
+      END
+      e_vx[s] = e_vx[s] * 0.5 + (x - ox) / dt * 0.5;   // for the towers' lead
+      e_vy[s] = e_vy[s] * 0.5 + (y - oy) / dt * 0.5;
+      IF (done)                                  // reached the keep
+        IF (k == 4) lives -= 5; ELSE lives -= 1; END
+        IF (lives < 0) lives = 0; END
+        fx_add(0, x, y, 0, 0, 0.5, 20);
+        BREAK;
+      END
+    END
+    e_x[s] = x; e_y[s] = y;
+    IF ((e_hp[s] < e_max[s] OR k == 4) AND state == 1)   // health bar
+      w = ek_rad[k] * 2 + 4;
+      draw_rect(x - w / 2, y - ek_rad[k] - 7, w, 4, '#000000');
+      IF (e_slow[s] > 0) set_color('#70e0ff');
+      ELSE
+        IF (e_hp[s] * 2 > e_max[s]) set_color('#50e050'); ELSE set_color('#f0a020'); END
+      END
+      draw_rect(x - w / 2 + 1, y - ek_rad[k] - 6, max(0, (w - 2) * e_hp[s] / e_max[s]), 2);
+    END
+    FRAME;
+  END
+  e_used[s] = 0;
+  n_alive--;
+END
+
+FUNCTION max(a, b);
+BEGIN
+  IF (a > b) RETURN a; END
+  RETURN b;
+END
+
+// ---- Towers ----
+
+// Can tower s shoot enemy t (alive, in range, flyer only if allowed)?
+FUNCTION can_hit(s, t);
+BEGIN
+  IF (e_used[t] == 0 OR e_hp[t] <= 0) RETURN 0; END
+  IF (t_kind[s] == 1 AND e_kind[t] == 3) RETURN 0; END
+  RETURN fget_distance(t_x[s], t_y[s], e_x[t], e_y[t]) <= tk_rng[t_kind[s] * 3 + t_lv[s]];
+END
+
+// Target by the tower's mode: 0 first (furthest along), 1 strongest, 2 nearest
+FUNCTION pick(s);
+PRIVATE i, best, bv, v, d, r, m;
+BEGIN
+  best = -1; bv = -999999;
+  r = tk_rng[t_kind[s] * 3 + t_lv[s]]; m = t_mode[s];
+  FOR i = 0 TO 63
+    IF (e_used[i])
+      IF (abs(e_x[i] - t_x[s]) <= r AND abs(e_y[i] - t_y[s]) <= r)
+        IF (can_hit(s, i))
+          IF (m == 0) v = e_prog[i]; END
+          IF (m == 1) v = e_hp[i]; END
+          IF (m == 2) v = -fget_distance(t_x[s], t_y[s], e_x[i], e_y[i]); END
+          IF (v > bv) bv = v; best = i; END
+        END
+      END
+    END
+  END
+  RETURN best;
+END
+
+// Tesla: arc to the target, then jump to the nearest enemy not hit yet
+FUNCTION tesla(s, t, mx, my);
+PRIVATE j, n, i, m, best, bd, d, dmg, lx, ly, h, ok;
+BEGIN
+  n = tk_sp[12 + t_lv[s]]; dmg = tk_dmg[12 + t_lv[s]];
+  lx = mx; ly = my; h = 0;
+  FOR j = 0 TO n - 1
+    hurt(t, dmg);
+    fx_add(2, lx, ly, e_x[t], e_y[t], 0.18, 0);
+    chain[h] = t; h++;
+    lx = e_x[t]; ly = e_y[t];
+    dmg = dmg * 0.8;
+    best = -1; bd = 75;
+    FOR i = 0 TO 63
+      IF (e_used[i] AND e_hp[i] > 0 AND abs(e_x[i] - lx) < 75 AND abs(e_y[i] - ly) < 75)
+        ok = 1;
+        FOR m = 0 TO h - 1
+          IF (chain[m] == i) ok = 0; END
+        END
+        IF (ok)
+          d = fget_distance(lx, ly, e_x[i], e_y[i]);
+          IF (d < bd) bd = d; best = i; END
+        END
+      END
+    END
+    IF (best < 0) BREAK; END
+    t = best;
+  END
+  RETURN 0;
+END
+
+PROCESS tower(s);
+PRIVATE gen, k, i, t, a, ax, ay, tt, j, mx, my;
+BEGIN
+  gen = t_gen[s]; k = t_kind[s];
+  x = t_x[s]; y = t_y[s]; z = -2;
+  angle = rand(0, 3) * 90000;
+  LOOP
+    IF (t_used[s] == 0 OR t_gen[s] != gen) BREAK; END
+    i = k * 3 + t_lv[s];
+    graph = g_tur[i];
+    IF (dt > 0)
+      t_cd[s] -= dt; t_think[s] -= dt;
+      t = t_tgt[s];
+      IF (t >= 0)
+        IF (can_hit(s, t) == 0) t = -1; END
+      END
+      IF (t < 0 OR t_think[s] <= 0) t_think[s] = 0.16; t = pick(s); END  // look again 6 times a second
+      t_tgt[s] = t;
+      IF (t >= 0)
+        ax = e_x[t]; ay = e_y[t];
+        IF (tk_spd[k] > 0)                        // lead: aim where it will be
+          FOR j = 0 TO 1
+            tt = fget_distance(x, y, ax, ay) / (tk_spd[k] + 0.001);
+            ax = e_x[t] + e_vx[t] * tt; ay = e_y[t] + e_vy[t] * tt;
+          END
+        END
+        a = fget_angle(x, y, ax, ay);
+        angle = lerp_angle(angle, a, min(1, dt * 14));
+        IF (t_cd[s] <= 0 AND angle_diff(angle, a) < 7000)
+          t_cd[s] = tk_rate[i];
+          mx = x + get_distx(angle, 14); my = y + get_disty(angle, 14);
+          SWITCH (k)
+            CASE 0, 1, 2 shot_add(k, mx, my, ax, ay, tk_dmg[i], t_lv[s]);
+            CASE 3
+              hurt(t, tk_dmg[i]);
+              fx_add(1, mx, my, e_x[t], e_y[t], 0.25, 0);
+            CASE 4 tesla(s, t, mx, my);
+          END
+          IF (k != 2) fx_add(5, mx, my, 0, 0, 0.08, 2 + (k == 1) * 3); END
+        END
+      END
+    END
+    FRAME;
+  END
+END
+
+FUNCTION min(a, b);
+BEGIN
+  IF (a < b) RETURN a; END
+  RETURN b;
+END
+
+FUNCTION build(k, c);
+PRIVATE s, i;
+BEGIN
+  IF (money < tk_cost[k] OR tile[c] != 0 OR tw_at[c] != 0) RETURN -1; END
+  s = -1;
+  FOR i = 0 TO 47
+    IF (t_used[i] == 0) s = i; BREAK; END
+  END
+  IF (s < 0) RETURN -1; END
+  money -= tk_cost[k];
+  t_used[s] = 1; t_gen[s]++; t_kind[s] = k; t_lv[s] = 0; t_cell[s] = c;
+  t_x[s] = cx_of(c); t_y[s] = cy_of(c);
+  t_cd[s] = 0; t_think[s] = 0; t_tgt[s] = -1; t_mode[s] = 0; t_spent[s] = tk_cost[k];
+  tw_at[c] = s + 1;
+  paint_tower(s);
+  tower(s);
+  RETURN s;
+END
+
+FUNCTION upgrade(s);
+PRIVATE c;
+BEGIN
+  IF (t_lv[s] >= 2) RETURN 0; END
+  c = up_cost(s);
+  IF (money < c) RETURN 0; END
+  money -= c; t_spent[s] += c; t_lv[s]++;
+  paint_tower(s);
+  fx_add(3, t_x[s], t_y[s], 0, 0, 0.4, 22);
+  RETURN 1;
+END
+
+FUNCTION sell(s);
+BEGIN
+  money += int(t_spent[s] * 0.7);
+  fx_add(4, t_x[s], t_y[s] - 8, 0, 0, 0.8, int(t_spent[s] * 0.7));
+  t_used[s] = 0; tw_at[t_cell[s]] = 0;
+  paint_tile(t_cell[s]);
+  IF (sel_t == s) sel_t = -1; END
+  RETURN 0;
+END
+
+// ---- Waves ----
+
+// Wave n: 5 + 2n enemies with growing health. Runners from wave 2,
+// armour from wave 4, every third wave is mostly flyers, and every
+// fifth ends with a boss.
+FUNCTION start_wave();
+PRIVATE n, i, r, k, m, g, b;
+BEGIN
+  IF (wave > 0 AND paid == 0) money += 25 + wave * 5; END   // early call
+  wave++; paid = 0;
+  IF (wave > hi_wave) hi_wave = wave; END
+  hpmul = 1 + (wave - 1) * 0.16 + (wave - 1) * (wave - 1) * 0.012;
+  n = min(5 + wave * 2, 90);
+  FOR i = 0 TO n - 1
+    r = rand(0, 99); k = 1;
+    IF (wave >= 2 AND r < 30) k = 0; END
+    IF (wave >= 4 AND r >= 75) k = 2; END
+    IF (wave % 3 == 0 AND rand(0, 99) < 50) k = 3; END
+    IF (wave > 6 AND wave % 3 != 0 AND rand(0, 99) < 10) k = 3; END
+    wq[i] = k;
+  END
+  IF (wave % 5 == 0) wq[n] = 4; n++; END
+  wq_n = n; wq_i = 0; spawn_t = 0;
+  // announcement banner, coloured by what is coming
+  m = "WAVE " + wave; r = 255; g = 230; b = 120;
+  IF (wave % 3 == 0) m = m + " - FLYERS"; r = 210; g = 150; b = 255; END
+  IF (wave % 5 == 0) m = m + " - BOSS!"; r = 255; g = 90; b = 60; END
+  gfx_fill_rgba(g_msg, 0, 0, 0, 0);
+  gfx_text(g_msg, 2, 2, m, 0, 0, 0, 28);
+  gfx_text(g_msg, 0, 0, m, r, g, b, 28);
+  msg_t = 2.0;
+  RETURN 0;
+END
+
+FUNCTION wave_tick();
+PRIVATE k;
+BEGIN
+  IF (wq_i < wq_n)
+    spawn_t -= dt;
+    IF (spawn_t <= 0 AND n_alive < 64)
+      k = wq[wq_i]; wq_i++;
+      enemy(k, int(ek_hp[k] * hpmul));
+      spawn_t = 0.85 - min(wave, 12) * 0.03;
+      IF (k == 0) spawn_t = spawn_t * 0.6; END
+      IF (k == 4) spawn_t = 2.0; END
+    END
+  ELSE
+    IF (n_alive == 0)
+      IF (paid == 0) paid = 1; money += 25 + wave * 5; next_t = 10; END  // wave cleared: bonus
+      next_t -= dt;
+      IF (next_t <= 0) start_wave(); END
+    END
+  END
+  IF (lives <= 0) state = 2; END
+  RETURN 0;
+END
+
+// ---- Screen furniture and input ----
+PROCESS banner();
+BEGIN
+  x = 320; y = 200; z = -30;
+  LOOP
+    graph = 0; alpha = 100; y = 200;
+    IF (state == 0) graph = g_title; END
+    IF (state == 2) graph = g_over; END
+    IF (state == 1 AND msg_t > 0)
+      msg_t -= get_delta();
+      graph = g_msg; y = 120; alpha = min(100, msg_t * 150);
+    END
+    FRAME;
+  END
+END
+
+// Range ring: an outline graphic, redrawn only when the radius changes
+PROCESS ring();
+BEGIN
+  z = -9; graph = g_ring;
+  LOOP
+    IF (ring_on)
+      IF (ring_want != ring_r)
+        ring_r = ring_want;
+        gfx_fill_rgba(g_ring, 0, 0, 0, 0);
+        gfx_circle_outline(g_ring, 300, 300, ring_r, 255, 255, 255);
+        gfx_circle_outline(g_ring, 300, 300, ring_r - 1, 120, 120, 120);
+      END
+      graph = g_ring; x = ring_x; y = ring_y;
+    ELSE
+      graph = 0;
+    END
+    FRAME;
+  END
+END
+
+// Build preview: the turret, half transparent
+PROCESS ghost();
+BEGIN
+  z = -8; alpha = 60;
+  LOOP
+    graph = gh_g; x = gh_x; y = gh_y;
+    FRAME;
+  END
+END
+
+FUNCTION show_ring(px, py, r);
+BEGIN
+  ring_on = 1; ring_x = px; ring_y = py; ring_want = r;
+  set_color('rgba(255,255,255,0.08)');
+  circle(px, py, r);
+  RETURN 0;
+END
+
+FUNCTION next_ok();
+BEGIN
+  RETURN (state == 1 AND wq_i >= wq_n);
+END
+
+FUNCTION handle_input();
+PRIVATE mx, my, lb, rb, c, cx, cy, i, s;
+BEGIN
+  mx = mouse.x; my = mouse.y;
+  lb = mouse.left; rb = mouse.right;
+  IF (lb AND lprev == 0)
+    IF (mx >= PX)
+      FOR i = 0 TO 4
+        IF (inbox(mx, my, PX + 6, 78 + i * 44, 148, 40))
+          IF (build_sel == i) build_sel = -1; ELSE build_sel = i; sel_t = -1; END
+        END
+      END
+      IF (sel_t >= 0)
+        IF (inbox(mx, my, PX + 6, 352, 148, 22)) t_mode[sel_t] = (t_mode[sel_t] + 1) % 3; END
+        IF (inbox(mx, my, PX + 6, 380, 148, 22)) upgrade(sel_t); END
+        IF (inbox(mx, my, PX + 6, 408, 148, 22)) sell(sel_t); END
+      END
+      IF (inbox(mx, my, PX + 6, 448, 148, 30) AND next_ok()) start_wave(); END
+      IF (inbox(mx, my, PX + 6, 484, 148, 22)) gspd = 3 - gspd; END
+    ELSE
+      IF (my >= OY AND my < 600 AND mx >= 0)
+        c = ((my - OY) / 32) * MW + mx / 32;
+        IF (tw_at[c])
+          sel_t = tw_at[c] - 1; build_sel = -1;
+        ELSE
+          IF (build_sel >= 0) build(build_sel, c); ELSE sel_t = -1; END
+        END
+      END
+    END
+  END
+  IF ((rb AND rprev == 0) OR key_pressed(_esc)) build_sel = -1; sel_t = -1; END
+  i = -1;
+  IF (key_pressed(_1)) i = 0; END
+  IF (key_pressed(_2)) i = 1; END
+  IF (key_pressed(_3)) i = 2; END
+  IF (key_pressed(_4)) i = 3; END
+  IF (key_pressed(_5)) i = 4; END
+  IF (i >= 0) build_sel = i; sel_t = -1; END
+  IF (sel_t >= 0)
+    IF (key_pressed(_u)) upgrade(sel_t); END
+    IF (key_pressed(_t)) t_mode[sel_t] = (t_mode[sel_t] + 1) % 3; END
+    IF (key_pressed(_s)) sell(sel_t); END
+  END
+  IF (key_pressed(_n) AND next_ok()) start_wave(); END
+  IF (key_pressed(_f)) gspd = 3 - gspd; END
+  lprev = lb; rprev = rb;
+
+  // hover: ghost preview in build mode, range of the tower under the cursor
+  gh_g = 0;
+  IF (mx < PX AND my >= OY AND mx >= 0 AND my < 600)
+    cx = mx / 32; cy = (my - OY) / 32;
+    c = cy * MW + cx;
+    IF (build_sel >= 0)
+      gh_g = g_tur[build_sel * 3]; gh_x = cx * 32 + 16; gh_y = cy * 32 + 16 + OY;
+      IF (tile[c] == 0 AND tw_at[c] == 0 AND money >= tk_cost[build_sel])
+        draw_rect(cx * 32, cy * 32 + OY, 32, 32, 'rgba(60,255,60,0.35)');
+      ELSE
+        draw_rect(cx * 32, cy * 32 + OY, 32, 32, 'rgba(255,40,40,0.45)');
+      END
+      show_ring(gh_x, gh_y, tk_rng[build_sel * 3]);
+    ELSE
+      IF (tw_at[c])
+        s = tw_at[c] - 1;
+        show_ring(t_x[s], t_y[s], tk_rng[t_kind[s] * 3 + t_lv[s]]);
+      END
+    END
+  END
+  RETURN 0;
+END
+
+FUNCTION outline(bx, by, bw, bh, col);
+BEGIN
+  set_color(col);
+  draw_rect(bx, by, bw, 2); draw_rect(bx, by + bh - 2, bw, 2);
+  draw_rect(bx, by, 2, bh); draw_rect(bx + bw - 2, by, 2, bh);
+  RETURN 0;
+END
+
+FUNCTION draw_ui();
+PRIVATE i, s, k, lv, mx, my, left;
+BEGIN
+  mx = mouse.x; my = mouse.y;
+  FOR i = 0 TO 4
+    IF (money < tk_cost[i]) draw_rect(PX + 6, 78 + i * 44, 148, 40, 'rgba(0,0,0,0.5)'); END
+    IF (build_sel == i) outline(PX + 6, 78 + i * 44, 148, 40, '#ffe060'); END
+  END
+  IF (mx >= PX)                                   // hovered button
+    FOR i = 0 TO 4
+      IF (inbox(mx, my, PX + 6, 78 + i * 44, 148, 40)) outline(PX + 6, 78 + i * 44, 148, 40, 'rgba(255,255,255,0.5)'); END
+    END
+  END
+
+  // selected tower: stats and its three buttons
+  s = sel_t;
+  IF (s >= 0)
+    IF (t_used[s] == 0) s = -1; sel_t = -1; END
+  END
+  set_color('#e0e4ec');
+  IF (s >= 0)
+    k = t_kind[s]; lv = t_lv[s]; i = k * 3 + lv;
+    show_ring(t_x[s], t_y[s], tk_rng[i]);
+    outline(t_x[s] - 16, t_y[s] - 16, 32, 32, '#ffe060');
+    text(PX + 12, 306, tname(k) + "  LV " + (lv + 1));
+    set_color('#a8b0c0');
+    text(PX + 12, 320, "DMG " + tk_dmg[i] + "  RANGE " + tk_rng[i]);
+    text(PX + 12, 332, "RELOAD " + tk_rate[i] + " s");
+    set_color('#ffffff');
+    text(PX + 12, 359, "TARGET: " + mname(t_mode[s]) + "  (T)");
+    IF (lv < 2)
+      IF (money < up_cost(s)) set_color('#808080'); END
+      text(PX + 12, 387, "UPGRADE $" + up_cost(s) + "  (U)");
+    ELSE
+      set_color('#f0d060');
+      text(PX + 12, 387, "MAX LEVEL");
+    END
+    set_color('#ffffff');
+    text(PX + 12, 415, "SELL +$" + int(t_spent[s] * 0.7) + "  (S)");
+  ELSE
+    text(PX + 12, 306, "NO TOWER SELECTED");
+    set_color('#a8b0c0');
+    text(PX + 12, 322, "Click a tower on the map");
+    text(PX + 12, 334, "to upgrade or sell it.");
+    draw_rect(PX + 6, 352, 148, 78, 'rgba(40,43,52,0.8)');
+  END
+
+  // next wave / speed
+  set_color('#ffffff');
+  IF (next_ok())
+    text(PX + 12, 452, "NEXT WAVE  (N)");
+    IF (n_alive == 0)
+      text(PX + 12, 466, "auto in " + int(max(next_t, 0) + 1) + " s");
+    ELSE
+      text(PX + 12, 466, "early call: bonus now");
+    END
+  ELSE
+    draw_rect(PX + 6, 448, 148, 30, 'rgba(0,0,0,0.5)');
+    set_color('#a0a0a0');
+    text(PX + 12, 458, "WAVE IN PROGRESS");
+  END
+  set_color('#ffffff');
+  text(PX + 12, 491, "SPEED x" + gspd + "  (F)");
+
+  // top bar
+  left = n_alive + wq_n - wq_i;
+  set_color('#e0e4ec');
+  text(8, 8, "WAVE " + wave + "    ENEMIES LEFT " + left + "    TOWERS " + count_towers() + "    BEST WAVE " + hi_wave);
+  set_color('#8890a0');
+  text(460, 8, "MAP #" + seed);
+  RETURN 0;
+END
+
+FUNCTION count_towers();
+PRIVATE i, n;
+BEGIN
+  FOR i = 0 TO 47 n += t_used[i]; END
+  RETURN n;
+END
+
+FUNCTION panel_box(y0, n);
+BEGIN
+  draw_rect(120, y0, 400, n * 14 + 16, 'rgba(0,0,0,0.72)');
+  RETURN 0;
+END
+
+// Clears every game process and table and builds a new map
+FUNCTION new_game(next_state);
+PRIVATE i;
+BEGIN
+  signal(TYPE enemy, s_kill); signal(TYPE tower, s_kill); signal(TYPE builder, s_kill);
+  FOR i = 0 TO 63 e_used[i] = 0; END
+  FOR i = 0 TO 47 t_used[i] = 0; END
+  FOR i = 0 TO 95 p_used[i] = 0; END
+  FOR i = 0 TO 79 f_used[i] = 0; END
+  n_alive = 0; n_shots = 0; wq_n = 0; wq_i = 0; paid = 1;
+  money = 180; lives = 20; wave = 0; next_t = 25; gspd = 1;
+  build_sel = -1; sel_t = -1; msg_t = 0;
+  builder(next_state);
+  RETURN 0;
+END
+
+// ---- MAIN ----
+BEGIN
+  set_mode(800, 600);
+  set_fps(60, 0);
+  screen_color('#000000');
+  init_tables();
+  make_graphics();
+  put_screen(0, g_bg);
+  fxman(); shotman(); banner(); ring(); ghost();
+
+  // live HUD numbers: written once, OFFSET keeps them current
+  set_color('#ffe070');
+  write_int(0, PX + 60, 32, 0, OFFSET money);
+  set_color('#ff8070');
+  write_int(0, PX + 60, 47, 0, OFFSET lives);
+  set_color('#a0c8ff');
+  write_int(0, PX + 60, 62, 0, OFFSET wave);
+
+  new_game(0);
+  LOOP
+    dt = 0;
+    ring_on = 0;
+    IF (state == 1) dt = get_delta() * gspd; END
+    SWITCH (state)
+      CASE 0
+        panel_box(250, 7);
+        set_color('#ffffff');
+        text(140, 260, "Enemies march along the road to your keep.");
+        text(140, 274, "Build towers on the grass beside it: pick one in");
+        text(140, 288, "the panel, then click a tile. Click a tower to");
+        text(140, 302, "upgrade it, sell it or change its target.");
+        text(140, 316, "Cannons cannot hit flyers. Every 5th wave: a boss.");
+        set_color('#60ff60');
+        text(140, 340, "PRESS SPACE / ENTER OR CLICK TO START");
+        IF (key_pressed(_space) OR key_pressed(_enter) OR mouse.left) state = 1; lprev = 1; END
+      CASE 1
+        handle_input();
+        wave_tick();
+      CASE 2
+        panel_box(250, 4);
+        set_color('#ffffff');
+        text(140, 262, "The keep has fallen on wave " + wave + ".");
+        text(140, 278, "Best wave this session: " + hi_wave);
+        set_color('#60ff60');
+        text(140, 302, "SPACE / ENTER: new map");
+        IF (key_pressed(_space) OR key_pressed(_enter)) new_game(1); END
+      CASE 3
+        set_color('#ffffff');
+        text(260, 300, "Generating a new map...");
+    END
+    IF (state != 3) draw_ui(); END
+    FRAME;
+  END
+END

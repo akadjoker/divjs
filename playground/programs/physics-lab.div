@@ -1,0 +1,1034 @@
+PROGRAM physics_lab;
+
+// PHYSICS LAB - eight test scenes for the rigid-body physics (the phys_*
+// functions, on Planck.js). Each scene is a small experiment with its
+// numbers on screen, so it is a showcase and a test bench at once:
+//   1 Newton's cradle   2 dominoes   3 rope bridge   4 ragdoll
+//   5 catapult          6 marble run 7 materials     8 stress pile
+// Every scene is built by one "director" process: static terrain is made
+// of edges on the director's own body, and every body in the scene is a
+// descendant of it, so switching scenes is one signal(s_kill_tree). The
+// HUD shows the body count left over after each switch (it must be 0).
+// A kinematic "hand" follows the mouse in every scene: click on a body to
+// pin it to the hand and drag or throw it.
+
+GLOBAL
+  // ---- scene control
+  scene = 1;            // scene being shown (1-8)
+  director = 0;         // its director process
+  scene_t = 0;          // frames since the scene started
+  SEC = 0.0166667;      // seconds in a frame (a / b of whole numbers is an
+                        // integer division, so times are multiplied by this)
+  switches = 0;         // scene (re)starts so far
+  leftover = 0;         // bodies still alive right after the last switch
+  max_leftover = 0;     // worst leftover over all switches
+  bodies = 0; fps_now = 0;
+  grabbed = 0;          // process pinned to the mouse hand (0 none)
+
+  // ---- graphics (all drawn in code at start)
+  g_bg = 0; g_steel = 0; g_domino = 0; g_dball = 0; g_link = 0; g_crate = 0;
+  g_torso = 0; g_head = 0; g_uarm = 0; g_farm = 0; g_thigh = 0; g_shin = 0;
+  g_arm = 0; g_cw = 0; g_shot = 0; g_column = 0; g_beam = 0; g_wheel = 0;
+  g_seesaw = 0; g_marble[3]; g_block[2]; g_mball[2]; g_sbox[2]; g_sball[2];
+
+  // ---- 1 Newton's cradle
+  CR_L = 200; CR_R = 20; CR_TOP = 150; CR_LIFT = 45000;
+  cr_ax[4]; cr_anchor[4]; cr_ball[4];
+  cr_seq = 0; cr_lift_n = 1;          // lift requests (balls read them)
+  cr_drop = 0.0;                      // height the lifted ball falls from
+  cr_rise = 0.0;                      // highest the last ball rose since
+  cr_mid = 0.0;                       // most a middle ball moved sideways
+
+  // ---- 2 dominoes
+  dm_down[99]; dm_total = 0; dm_count = 0; dm_front = -1;
+  dm_t0 = 0; dm_t1 = 0; dm_done = 0;
+
+  // ---- 3 bridge
+  BR_N = 17; BR_PHI = 32380;          // links; angle of the end links
+  br_link[16]; br_left = 0; br_right = 0; br_ex = 0.0; br_ey = 0.0;
+  br_gap = 0.0; br_gap_max = 0.0; br_sag = 0.0; br_weights = 0; br_on = 0;
+
+  // ---- 4 ragdoll
+  rg_part[15]; rg_n = 0;
+  rg_ja[15]; rg_jb[15]; rg_jax[15]; rg_jay[15]; rg_jbx[15]; rg_jby[15]; rg_nj = 0;
+  rg_kick = 0; rg_err = 0.0; rg_err_max = 0.0; rg_hit = 0.0; rg_torso = 0;
+
+  // ---- 5 catapult
+  CT_PX = 200; CT_PY = 440;
+  ct_density = 10; ct_arm = 0; ct_pivot = 0; ct_latch = 0; ct_shot = 0;
+  ct_fired = 0; ct_hit = 0; ct_hit_t = 0; ct_speed = 0.0; ct_angle = 0; ct_top = 0.0; ct_moved = 0; ct_blocks = 0;
+
+  // ---- 6 marble run
+  MR_MAX = 60; mr_alive = 0; mr_spawned = 0; mr_removed = 0; mr_peak = 0;
+
+  // ---- 7 materials
+  MT_A = 20000;                       // ramp slope: 20 degrees
+  mt_fric[2]; mt_exp[2]; mt_acc[2]; mt_rest[2]; mt_b1[2]; mt_b2[2];
+  mt_seq = 0;
+
+  // ---- 8 stress
+  st_phase = 0; st_max = 0; st_peak = 0; st_low = 0; st_serial = 0; st_cut = 999999;
+
+// =====================================================================
+// Helpers
+
+// A number with one decimal, e.g. "12.5"
+FUNCTION fmt1(v);
+PRIVATE n;
+BEGIN
+  IF (v < 0) RETURN '-' + fmt1(-v); END
+  n = round(v * 10);
+  RETURN '' + (n / 10) + '.' + (n % 10);
+END
+
+FUNCTION fmax(a, b);
+BEGIN
+  IF (a > b) RETURN a; END
+  RETURN b;
+END
+
+FUNCTION fmin(a, b);
+BEGIN
+  IF (a < b) RETURN a; END
+  RETURN b;
+END
+
+// World position of a point given in a body's own frame (lx, ly), for
+// process p: DIV angles turn counter-clockwise on a y-down screen.
+FUNCTION wx(p, lx, ly);
+BEGIN
+  RETURN p.x + lx * cos(p.angle) + ly * sin(p.angle);
+END
+
+FUNCTION wy(p, lx, ly);
+BEGIN
+  RETURN p.y - lx * sin(p.angle) + ly * cos(p.angle);
+END
+
+// The background graphic, cleared to a blueprint grid for a new scene.
+FUNCTION bg_clear();
+PRIVATE i;
+BEGIN
+  gfx_fill(g_bg, 18, 22, 32);
+  FOR i = 0 TO 39 gfx_line(g_bg, i * 20, 0, i * 20, 599, 25, 30, 44); END
+  FOR i = 0 TO 29 gfx_line(g_bg, 0, i * 20, 799, i * 20, 25, 30, 44); END
+  RETURN 0;
+END
+
+// A 3-pixel line on the background.
+FUNCTION paint_line(x1, y1, x2, y2, r, g, b);
+BEGIN
+  gfx_line(g_bg, x1, y1, x2, y2, r, g, b);
+  gfx_line(g_bg, x1 + 1, y1, x2 + 1, y2, r, g, b);
+  gfx_line(g_bg, x1, y1 + 1, x2, y2 + 1, r, g, b);
+  gfx_line(g_bg, x1 - 1, y1, x2 - 1, y2, r, g, b);
+  gfx_line(g_bg, x1, y1 - 1, x2, y2 - 1, r, g, b);
+  RETURN 0;
+END
+
+// A static wall segment: a physics edge on the calling process's body
+// (the director, at 0, 0) and its drawing on the background.
+FUNCTION seg(x1, y1, x2, y2);
+BEGIN
+  phys_edge(x1, y1, x2, y2);
+  paint_line(x1, y1, x2, y2, 150, 170, 200);
+  RETURN 0;
+END
+
+// A rope or rod drawn as dots between two points (there is no line
+// primitive for the screen, only draw_rect).
+FUNCTION dots(x1, y1, x2, y2, step);
+PRIVATE i, n;
+BEGIN
+  n = int(fget_distance(x1, y1, x2, y2) / step);
+  FOR i = 0 TO n
+    draw_rect(x1 + (x2 - x1) * i / (n + 0.001) - 1, y1 + (y2 - y1) * i / (n + 0.001) - 1, 2, 2);
+  END
+  RETURN 0;
+END
+
+FUNCTION box_gfx(w, h, r, g, b);
+PRIVATE gr;
+BEGIN
+  gr = new_graphic(w, h);
+  gfx_fill(gr, r, g, b);
+  gfx_rect_outline(gr, 0, 0, w, h, r / 2, g / 2, b / 2);
+  RETURN gr;
+END
+
+// A disc with a highlight, so rolling shows.
+FUNCTION disc_gfx(rad, r, g, b);
+PRIVATE gr;
+BEGIN
+  gr = new_graphic(rad * 2, rad * 2);
+  gfx_fill_rgba(gr, 0, 0, 0, 0);
+  gfx_circle(gr, rad, rad, rad - 1, r / 2, g / 2, b / 2);
+  gfx_circle(gr, rad, rad, rad - 2, r, g, b);
+  gfx_circle(gr, rad * 2 / 3, rad * 2 / 3, rad / 4 + 1, 255, 255, 255);
+  RETURN gr;
+END
+
+FUNCTION make_graphics();
+PRIVATE i;
+BEGIN
+  g_bg = new_graphic(800, 600);
+  g_steel = disc_gfx(20, 170, 180, 200);
+  g_domino = box_gfx(8, 44, 235, 235, 225);
+  gfx_rect(g_domino, 2, 20, 4, 4, 30, 30, 30);
+  g_dball = disc_gfx(12, 230, 90, 60);
+  g_link = box_gfx(26, 8, 170, 120, 70);
+  g_crate = box_gfx(26, 26, 150, 98, 48);
+  gfx_line(g_crate, 2, 2, 23, 23, 100, 64, 30);
+  gfx_line(g_crate, 23, 2, 2, 23, 100, 64, 30);
+  g_torso = box_gfx(22, 48, 70, 130, 220);
+  g_head = disc_gfx(11, 240, 200, 160);
+  g_uarm = box_gfx(26, 8, 90, 150, 230);
+  g_farm = box_gfx(24, 7, 240, 200, 160);
+  g_thigh = box_gfx(9, 28, 60, 70, 110);
+  g_shin = box_gfx(8, 26, 70, 80, 120);
+  // The catapult arm, drawn around the body's centre: the bar, the cup at
+  // the left tip (the same boxes as its physics shapes).
+  g_arm = new_graphic(240, 24);
+  gfx_fill_rgba(g_arm, 0, 0, 0, 0);
+  gfx_rect(g_arm, 0, 9, 240, 6, 160, 110, 60);
+  gfx_rect(g_arm, 0, 0, 6, 15, 160, 110, 60);
+  gfx_rect(g_arm, 23, 6, 4, 6, 160, 110, 60);
+  g_cw = box_gfx(44, 44, 90, 90, 100);
+  gfx_text(g_cw, 10, 16, 'kg', 200, 200, 210, 12);
+  g_shot = disc_gfx(9, 220, 60, 60);
+  g_column = box_gfx(12, 50, 200, 170, 120);
+  g_beam = box_gfx(90, 10, 180, 140, 90);
+  // Marble-run wheel: two crossed bars.
+  g_wheel = new_graphic(120, 120);
+  gfx_fill_rgba(g_wheel, 0, 0, 0, 0);
+  gfx_rect(g_wheel, 0, 56, 120, 8, 230, 90, 90);
+  gfx_rect(g_wheel, 56, 0, 8, 120, 230, 90, 90);
+  gfx_circle(g_wheel, 60, 60, 6, 120, 40, 40);
+  g_seesaw = box_gfx(180, 8, 120, 190, 110);
+  g_marble[0] = disc_gfx(7, 250, 90, 90);
+  g_marble[1] = disc_gfx(7, 90, 200, 250);
+  g_marble[2] = disc_gfx(7, 250, 220, 80);
+  g_marble[3] = disc_gfx(7, 130, 240, 130);
+  g_block[0] = box_gfx(30, 18, 170, 220, 250);   // ice
+  g_block[1] = box_gfx(30, 18, 170, 120, 70);    // wood
+  g_block[2] = box_gfx(30, 18, 60, 60, 60);      // rubber
+  g_mball[0] = disc_gfx(12, 140, 140, 150);
+  g_mball[1] = disc_gfx(12, 90, 160, 240);
+  g_mball[2] = disc_gfx(12, 240, 100, 180);
+  FOR i = 0 TO 2
+    g_sbox[i] = box_gfx(10 + i * 4, 10 + i * 4, 120 + i * 50, 140, 220 - i * 50);
+    g_sball[i] = disc_gfx(5 + i * 2, 230, 150 + i * 30, 80);
+  END
+  RETURN 0;
+END
+
+// =====================================================================
+// Shared processes
+
+// The mouse hand: a small kinematic sensor at the cursor. A click pins
+// the body under it (phys_contact) to the hand; while carrying, the hand
+// follows the cursor by velocity, so the body is pulled smoothly and
+// keeps its speed when released (a throw).
+PROCESS hand();
+PRIVATE joint, prev;
+BEGIN
+  x = mouse.x; y = mouse.y;
+  z = -10;
+  phys_circle(4, phys_kinematic);
+  phys_sensor(1);
+  LOOP
+    IF (joint)
+      // carrying: reach the cursor in one 1/60 s step, at most 3000 px/s
+      phys_velocity(clamp((mouse.x - x) * 60, -3000, 3000), clamp((mouse.y - y) * 60, -3000, 3000));
+    ELSE
+      x = mouse.x; y = mouse.y;       // empty: jump there (moves the body)
+      phys_velocity(0, 0);
+    END
+    IF (mouse.left AND prev == 0 AND joint == 0)
+      grabbed = phys_contact(0);
+      IF (grabbed) joint = phys_pin(grabbed, x, y); END
+    END
+    IF (mouse.left == 0 AND joint)
+      phys_unjoin(joint);
+      joint = 0; grabbed = 0;
+    END
+    prev = mouse.left;
+    IF (joint) set_color('#ffe070'); circle(x, y, 5); ELSE set_color('#ffffff'); circle(mouse.x, mouse.y, 2); END
+    FRAME;
+  END
+END
+
+// A fixed point to hang or pin things to.
+PROCESS anchor(x, y);
+BEGIN
+  phys_circle(2, phys_static);
+  LOOP
+    set_color('#8090a8'); circle(x, y, 3);
+    FRAME;
+  END
+END
+
+// =====================================================================
+// 1 NEWTON'S CRADLE - five steel balls on rods (phys_rope) with
+// restitution 1 and no friction, hung 0.5 px apart. SPACE lifts one ball,
+// X lifts two; the measured rise of the last ball is compared with the
+// height the lifted ball fell from.
+
+PROCESS cradle_ball(i);
+PRIVATE seq, a;
+BEGIN
+  x = cr_ax[i]; y = CR_TOP + CR_L;
+  graph = g_steel;
+  phys_circle(CR_R);
+  phys_material(1, 0, 1);
+  phys_rope(cr_anchor[i]);
+  LOOP
+    IF (seq != cr_seq)                // a lift: back to rest, or raised
+      seq = cr_seq;
+      a = 0;
+      IF (i < cr_lift_n) a = CR_LIFT; END
+      x = cr_ax[i] - CR_L * sin(a);
+      y = CR_TOP + CR_L * cos(a);
+      angle = 0;
+      phys_velocity(0, 0);
+      phys_spin(0);
+    END
+    set_color('#a0a8b8');
+    dots(cr_ax[i], CR_TOP, x, y, 6);
+    FRAME;
+  END
+END
+
+PROCESS cradle_scene();
+PRIVATE i, t, b;
+BEGIN
+  bg_clear();
+  gfx_rect(g_bg, 290, 140, 220, 8, 110, 116, 130);        // the frame
+  gfx_rect(g_bg, 290, 140, 8, 440, 110, 116, 130);
+  gfx_rect(g_bg, 502, 140, 8, 440, 110, 116, 130);
+  seg(0, 580, 800, 580);
+  put_screen(0, g_bg);
+  FOR i = 0 TO 4
+    cr_ax[i] = 318.0 + i * (2 * CR_R + 0.5);
+    cr_anchor[i] = anchor(cr_ax[i], CR_TOP);
+    cr_ball[i] = cradle_ball(i);
+  END
+  hand();
+  cr_lift_n = 1; cr_seq++;
+  LOOP
+    IF (key_pressed(_space)) cr_lift_n = 1; cr_seq++; t = 0; END
+    IF (key_pressed(_x)) cr_lift_n = 2; cr_seq++; t = 0; END
+    IF (t == 0)                           // a new swing to measure
+      cr_drop = CR_L * (1 - cos(CR_LIFT));
+      cr_rise = 0; cr_mid = 0;
+    END
+    // one swing: the lifted ball falls, the far ball rises and stops
+    IF (t > 2 AND t < 140)
+      b = cr_ball[4];
+      cr_rise = fmax(cr_rise, CR_TOP + CR_L - b.y);
+      FOR i = cr_lift_n TO 5 - cr_lift_n - 1
+        b = cr_ball[i];
+        cr_mid = fmax(cr_mid, abs(b.x - cr_ax[i]));
+      END
+    END
+    t++;
+    set_color('#c8e0ff');
+    text(10, 40, 'lifted ' + cr_lift_n + ' ball(s): fell from ' + fmt1(cr_drop) + ' px    last ball rose to '
+      + fmt1(cr_rise) + ' px (' + round(cr_rise * 100 / cr_drop) + '%)    middle balls moved ' + fmt1(cr_mid) + ' px');
+    FRAME;
+  END
+END
+
+// =====================================================================
+// 2 DOMINOES - 78 dominoes in three rows on three shelves. A ball starts
+// the wave; at the end of a row the last domino pushes a ball that rolls
+// off, bounces down a slope and starts the next row the other way.
+
+PROCESS domino(i, x, y);
+BEGIN
+  graph = g_domino;
+  phys_box(8, 44);
+  phys_material(1, 0.6, 0.05);
+  LOOP
+    IF (dm_down[i] == 0 AND abs(angle) > 25000)       // it is falling
+      dm_down[i] = 1;
+      dm_count++;
+      IF (i > dm_front) dm_front = i; END
+      IF (dm_t0 == 0) dm_t0 = scene_t; END
+      IF (i == dm_total - 1) dm_t1 = scene_t; dm_done = 1; END
+    END
+    FRAME;
+  END
+END
+
+PROCESS dm_ball(x, y, vx);
+BEGIN
+  graph = g_dball;
+  phys_circle(12);
+  phys_material(0.6, 0, 0.05);         // light and slippery: a leaning
+                                       // domino pushes it (no jamming)
+  IF (vx != 0) FRAME(3000); phys_velocity(vx, 0); END     // wait 0.5 s, go
+  LOOP
+    IF (y > 640) BREAK; END
+    FRAME;
+  END
+END
+
+PROCESS domino_scene();
+PRIVATE i, n;
+BEGIN
+  bg_clear();
+  gfx_rect(g_bg, 30, 211, 690, 8, 60, 70, 90);             // shelves
+  gfx_rect(g_bg, 30, 351, 690, 8, 60, 70, 90);
+  gfx_rect(g_bg, 80, 491, 710, 8, 60, 70, 90);
+  seg(30, 210, 720, 210);                                  // shelf 1 ->
+  seg(795, 130, 795, 255); seg(795, 255, 720, 350);        // wall, slope
+  seg(720, 350, 30, 350);                                  // shelf 2 <-
+  seg(5, 280, 5, 390); seg(5, 390, 80, 490);               // wall, slope
+  seg(80, 490, 790, 490); seg(790, 490, 790, 400);         // shelf 3 ->
+  put_screen(0, g_bg);
+  FOR i = 0 TO 99 dm_down[i] = 0; END
+  dm_count = 0; dm_front = -1; dm_t0 = 0; dm_t1 = 0; dm_done = 0;
+  n = 0;
+  FOR i = 0 TO 25 domino(n, 90 + i * 23, 188); n++; END
+  FOR i = 0 TO 25 domino(n, 665 - i * 23, 328); n++; END
+  FOR i = 0 TO 25 domino(n, 135 + i * 23, 468); n++; END
+  dm_total = n;
+  dm_ball(684, 198, 0);                                    // row 1 -> 2
+  dm_ball(71, 338, 0);                                     // row 2 -> 3
+  dm_ball(45, 198, 260);                                   // the starter
+  hand();
+  LOOP
+    set_color('#c8e0ff');
+    IF (dm_t0 == 0)
+      text(10, 40, 'toppled 0/' + dm_total + '   waiting for the ball...');
+    ELSE
+      IF (dm_done)
+        text(10, 40, 'toppled ' + dm_count + '/' + dm_total + '   the wave reached the end in ' + fmt1((dm_t1 - dm_t0) * SEC)
+          + ' s   speed ' + fmt1(dm_total / ((dm_t1 - dm_t0) * SEC)) + ' dominoes/s');
+      ELSE
+        text(10, 40, 'toppled ' + dm_count + '/' + dm_total + '   wave front at domino ' + (dm_front + 1) + '   time '
+          + fmt1((scene_t - dm_t0) * SEC) + ' s');
+      END
+    END
+    FRAME;
+  END
+END
+
+// =====================================================================
+// 3 BRIDGE - 17 wooden links pinned end to end between two cliffs, built
+// sagging along an arc; crates fall on it. The HUD measures how far apart
+// the two halves of every pin are (a stretching joint shows a gap).
+
+PROCESS br_plank(i, x, y, ang, prev, px, py);
+BEGIN
+  graph = g_link;
+  angle = ang;
+  phys_box(25, 8);
+  phys_material(2, 0.8, 0);
+  phys_pin(prev, px, py);
+  IF (i == BR_N - 1) phys_pin(br_right, br_ex, br_ey); END
+  LOOP FRAME; END
+END
+
+PROCESS br_crate(x, y);
+BEGIN
+  graph = g_crate;
+  br_weights++;
+  phys_box(26, 26);
+  phys_material(1.2, 0.7, 0.05);
+  LOOP
+    IF (y > 640) BREAK; END
+    FRAME;
+  END
+  br_weights--;
+END
+
+PROCESS bridge_scene();
+PRIVATE i, a, px, py, nx, ny, prev, p, lx, ly, rx, ry, d, gap, sag, on;
+BEGIN
+  bg_clear();
+  gfx_rect(g_bg, 0, 360, 200, 240, 70, 60, 50);           // cliffs
+  gfx_rect(g_bg, 600, 360, 200, 240, 70, 60, 50);
+  seg(0, 360, 200, 360); seg(200, 360, 200, 600);
+  seg(600, 360, 800, 360); seg(600, 360, 600, 600);
+  put_screen(0, g_bg);
+  br_weights = 0; br_gap_max = 0;
+  // Links along an arc: the slope goes from +BR_PHI to -BR_PHI, so that
+  // 17 links of 25 px span the 400 px gap (the angle was solved offline).
+  // Dividing by BR_N - 0.99999 rather than 16: whole / whole is integer.
+  br_ex = 200; br_ey = 356;
+  FOR i = 0 TO BR_N - 1
+    a = BR_PHI * (BR_N - 1 - 2 * i) / (BR_N - 0.99999);
+    br_ex = br_ex + 25 * cos(a); br_ey = br_ey + 25 * sin(a);
+  END
+  br_left = anchor(200, 356);
+  br_right = anchor(br_ex, br_ey);
+  px = 200; py = 356; prev = br_left;
+  FOR i = 0 TO BR_N - 1
+    a = BR_PHI * (BR_N - 1 - 2 * i) / (BR_N - 0.99999);   // slope, y down
+    nx = px + 25 * cos(a); ny = py + 25 * sin(a);
+    br_link[i] = br_plank(i, (px + nx) * 0.5, (py + ny) * 0.5, -a, prev, px, py);
+    prev = br_link[i]; px = nx; py = ny;
+  END
+  hand();
+  LOOP
+    // four crates, then one per SPACE (at most 10 on the scene)
+    IF (scene_t == 60 OR scene_t == 100 OR scene_t == 140 OR scene_t == 180)
+      br_crate(280 + (scene_t - 60) * 2, 150);
+    END
+    IF (key_pressed(_space) AND br_weights < 10) br_crate(rand(240, 560), 120); END
+    // pin gaps: link i's left end against link i-1's right end
+    gap = 0; sag = 0; rx = 200; ry = 356;
+    FOR i = 0 TO BR_N - 1
+      p = br_link[i];
+      lx = wx(p, -12.5, 0); ly = wy(p, -12.5, 0);
+      gap = fmax(gap, fget_distance(lx, ly, rx, ry));
+      rx = wx(p, 12.5, 0); ry = wy(p, 12.5, 0);
+      sag = fmax(sag, p.y - 356);
+    END
+    gap = fmax(gap, fget_distance(rx, ry, br_ex, br_ey));
+    br_gap = gap; br_sag = sag;
+    IF (scene_t > 20 AND grabbed == 0) br_gap_max = fmax(br_gap_max, gap); END
+    set_color('#c8e0ff');
+    text(10, 40, 'crates ' + br_weights + '   sag ' + fmt1(sag) + ' px   widest pin gap now ' + fmt1(gap)
+      + ' px, worst ' + fmt1(br_gap_max) + ' px (not dragging)');
+    FRAME;
+  END
+END
+
+// =====================================================================
+// 4 RAGDOLL - ten bodies (head, torso, arms, legs) joined with phys_pin.
+// SPACE kicks it; drag it by any part. The HUD measures the joints: the
+// distance between the two bodies' copies of each pin point.
+
+PROCESS rg_bone(kind, x, y, parent, px, py);
+PRIVATE j, seq;
+BEGIN
+  SWITCH (kind)
+    // densities chosen so every part weighs about the same: joints
+    // between very unequal masses stretch more in the solver
+    CASE 0 graph = g_torso; phys_box(22, 48); phys_material(0.6, 0.6, 0.1);
+    CASE 1 graph = g_head; phys_circle(11); phys_material(1, 0.6, 0.1);
+    CASE 2 graph = g_uarm; phys_box(26, 8); phys_material(2, 0.6, 0.1);
+    CASE 3 graph = g_farm; phys_box(24, 7); phys_material(2.5, 0.6, 0.1);
+    CASE 4 graph = g_thigh; phys_box(9, 28); phys_material(1.8, 0.6, 0.1);
+    CASE 5 graph = g_shin; phys_box(8, 26); phys_material(2, 0.6, 0.1);
+  END
+  rg_part[rg_n] = id; rg_n++;
+  IF (parent)                          // the joint, in both bodies' frames
+    j = rg_nj; rg_nj++;
+    rg_ja[j] = id; rg_jax[j] = px - x; rg_jay[j] = py - y;
+    rg_jb[j] = parent; rg_jbx[j] = px - parent.x; rg_jby[j] = py - parent.y;
+    phys_pin(parent, px, py);
+  END
+  seq = rg_kick;
+  LOOP
+    IF (seq != rg_kick) seq = rg_kick; phys_velocity(200, -160); END
+    IF (kind == 0) rg_hit = fmax(rg_hit, phys_impact()); END
+    FRAME;
+  END
+END
+
+PROCESS ragdoll_scene();
+PRIVATE i, k, t, a, b, e, x0, y0;
+BEGIN
+  bg_clear();
+  seg(0, 580, 800, 580); seg(0, 0, 0, 580); seg(800, 0, 800, 580);
+  gfx_rect(g_bg, 0, 250, 240, 330, 50, 58, 74);
+  seg(0, 250, 240, 250); seg(240, 250, 240, 290);
+  FOR k = 0 TO 5                                            // stairs
+    gfx_rect(g_bg, 240 + k * 80, 290 + k * 50, 80, 290 - k * 50, 50, 58, 74);
+    seg(240 + k * 80, 290 + k * 50, 320 + k * 80, 290 + k * 50);
+    seg(320 + k * 80, 290 + k * 50, 320 + k * 80, fmin(340 + k * 50, 580));
+  END
+  put_screen(0, g_bg);
+  rg_n = 0; rg_nj = 0; rg_err_max = 0; rg_hit = 0;
+  x0 = 120; y0 = 171;
+  t = rg_bone(0, x0, y0, 0, 0, 0);                          // torso
+  rg_torso = t;
+  rg_bone(1, x0, y0 - 37, t, x0, y0 - 25);                  // head
+  FOR k = -1 TO 1 STEP 2                                    // left, right
+    a = rg_bone(2, x0 + k * 24, y0 - 18, t, x0 + k * 11, y0 - 18);   // upper arm
+    rg_bone(3, x0 + k * 49, y0 - 18, a, x0 + k * 37, y0 - 18);       // forearm
+    b = rg_bone(4, x0 + k * 6, y0 + 38, t, x0 + k * 6, y0 + 24);     // thigh
+    rg_bone(5, x0 + k * 6, y0 + 65, b, x0 + k * 6, y0 + 52);         // shin
+  END
+  hand();
+  LOOP
+    IF (scene_t == 60 OR key_pressed(_space)) rg_kick++; END
+    // joint error: where each body thinks the shared pin point is
+    e = 0;
+    FOR i = 0 TO rg_nj - 1
+      a = rg_ja[i]; b = rg_jb[i];
+      e = fmax(e, fget_distance(wx(a, rg_jax[i], rg_jay[i]), wy(a, rg_jax[i], rg_jay[i]),
+        wx(b, rg_jbx[i], rg_jby[i]), wy(b, rg_jbx[i], rg_jby[i])));
+    END
+    rg_err = e;
+    IF (grabbed == 0) rg_err_max = fmax(rg_err_max, e); END
+    set_color('#c8e0ff');
+    text(10, 40, rg_n + ' bodies, ' + rg_nj + ' pins   joint error now ' + fmt1(e) + ' px, worst ' + fmt1(rg_err_max)
+      + ' px (not dragging)   hardest hit on the torso ' + round(rg_hit) + ' px/s');
+    FRAME;
+  END
+END
+
+// =====================================================================
+// 5 CATAPULT - an arm pinned to a post, with a counterweight fixed to its
+// short end by two pins (two pins make a rigid weld) and a cup at its long
+// end. A latch holds it; SPACE removes the latch, the arm swings until it
+// hits a stop and the shot flies on towards the tower.
+// UP / DOWN change the counterweight's density (and reload).
+
+PROCESS ct_arm_body(x, y);
+BEGIN
+  graph = g_arm;
+  phys_box(240, 6);
+  phys_add_box(-117, -6, 6, 12);        // cup: outer wall at the tip
+  phys_add_box(-95, -6, 4, 6);          // and a low inner lip
+  phys_material(1, 0.4, 0);
+  phys_pin(ct_pivot, CT_PX, CT_PY);
+  LOOP FRAME; END
+END
+
+PROCESS ct_weight(x, y);
+BEGIN
+  graph = g_cw;
+  phys_box(44, 44);
+  phys_material(ct_density, 0.5, 0);
+  phys_pin(ct_arm, CT_PX + 45, CT_PY);
+  phys_pin(ct_arm, CT_PX + 70, CT_PY);
+  LOOP FRAME; END
+END
+
+// A static box: the latch and the stop.
+PROCESS ct_peg(x, y);
+BEGIN
+  phys_box(10, 10, phys_static);
+  LOOP
+    draw_rect(x - 5, y - 5, 10, 10, '#d0a040');
+    FRAME;
+  END
+END
+
+PROCESS ct_ball(x, y);
+PRIVATE flying;
+BEGIN
+  graph = g_shot;
+  phys_circle(9);
+  phys_material(2, 0.4, 0.2);
+  phys_bullet(1);
+  LOOP
+    IF (ct_fired AND flying == 0 AND x > CT_PX)     // passing over the pivot
+      flying = 1;
+      ct_speed = fget_distance(0, 0, phys_vx(), phys_vy());
+      ct_angle = fget_angle(0, 0, phys_vx(), phys_vy());
+      ct_top = y;
+    END
+    IF (flying AND ct_hit == 0)
+      ct_top = fmin(ct_top, y);
+      IF (phys_contact(TYPE ct_block)) ct_hit = 1; ct_hit_t = scene_t; END
+    END
+    FRAME;
+  END
+END
+
+PROCESS ct_block(x, y, kind);
+PRIVATE x0, y0, moved;
+BEGIN
+  IF (kind == 0) graph = g_column; phys_box(12, 50); ELSE graph = g_beam; phys_box(90, 10); END
+  phys_material(0.6, 0.7, 0.05);
+  x0 = x; y0 = y;
+  ct_blocks++;
+  LOOP
+    IF (moved == 0 AND (fget_distance(x, y, x0, y0) > 8 OR abs(angle) > 15000))
+      moved = 1; ct_moved++;
+    END
+    FRAME;
+  END
+END
+
+PROCESS catapult_scene();
+PRIVATE k, by;
+BEGIN
+  bg_clear();
+  seg(0, 580, 800, 580); seg(0, 0, 0, 580); seg(800, 0, 800, 580);
+  paint_line(CT_PX, CT_PY, CT_PX - 60, 580, 110, 90, 70);  // the frame
+  paint_line(CT_PX, CT_PY, CT_PX, 580, 110, 90, 70);
+  put_screen(0, g_bg);
+  ct_fired = 0; ct_hit = 0; ct_hit_t = 0; ct_speed = 0; ct_angle = 0; ct_top = 0; ct_moved = 0; ct_blocks = 0;
+  ct_pivot = anchor(CT_PX, CT_PY);
+  ct_arm = ct_arm_body(CT_PX - 50, CT_PY);
+  ct_weight(CT_PX + 60, CT_PY);
+  ct_latch = ct_peg(CT_PX - 90, CT_PY - 8);
+  ct_peg(CT_PX + 80 * cos(119000) + 4, CT_PY - 80 * sin(119000));   // the stop
+  ct_shot = ct_ball(CT_PX - 156, CT_PY - 12);
+  FOR k = 0 TO 2                                            // the tower
+    by = 580 - k * 60;
+    ct_block(575, by - 25, 0); ct_block(645, by - 25, 0);
+    ct_block(610, by - 55, 1);
+  END
+  ct_block(610, 375, 0);
+  hand();
+  LOOP
+    IF ((scene_t == 60 OR key_pressed(_space)) AND ct_fired == 0)
+      signal(ct_latch, s_kill); ct_fired = scene_t;
+    END
+    set_color('#c8e0ff');
+    text(10, 40, 'counterweight density ' + ct_density + ' (UP/DOWN)   shot at ' + round(ct_speed) + ' px/s, '
+      + round(ct_angle / 1000) + ' deg, highest y ' + round(ct_top) + '   blocks moved ' + ct_moved + '/' + ct_blocks);
+    IF (ct_hit) text(10, 52, 'HIT: the shot reached the tower ' + fmt1((ct_hit_t - ct_fired) * SEC) + ' s after release'); END
+    FRAME;
+  END
+END
+
+// =====================================================================
+// 6 MARBLE RUN - marbles roll down ramps into a funnel, over a spinning
+// kinematic wheel and onto a see-saw, and are removed when they leave the
+// bottom of the screen; at most MR_MAX are alive at once.
+
+PROCESS marble(x, y);
+PRIVATE age;
+BEGIN
+  graph = g_marble[rand(0, 3)];
+  phys_circle(7);
+  phys_material(1, 0.3, 0.3);
+  mr_alive++; mr_spawned++;
+  LOOP
+    age++;
+    IF (y > 620 OR age > 2400) BREAK; END      // out, or stuck for 40 s
+    FRAME;
+  END
+  mr_alive--; mr_removed++;
+END
+
+PROCESS mr_wheel(x, y);
+BEGIN
+  graph = g_wheel;
+  phys_box(120, 8, phys_kinematic);
+  phys_add_box(0, 0, 8, 120);
+  phys_spin(-120000);                            // clockwise
+  LOOP FRAME; END
+END
+
+PROCESS mr_seesaw(x, y);
+BEGIN
+  graph = g_seesaw;
+  phys_box(180, 8);
+  phys_material(1, 0.5, 0.1);
+  phys_pin(father, x, y);            // the director's static body
+  LOOP FRAME; END
+END
+
+PROCESS marble_scene();
+BEGIN
+  bg_clear();
+  seg(20, 60, 20, 90); seg(20, 90, 320, 160);              // ramp A
+  seg(280, 185, 385, 255); seg(520, 185, 415, 255);        // funnel
+  seg(790, 150, 790, 380); seg(790, 380, 205, 480);        // ramp B
+  seg(95, 568, 115, 568); seg(265, 568, 285, 568);         // see-saw rests
+  put_screen(0, g_bg);
+  mr_alive = 0; mr_spawned = 0; mr_removed = 0; mr_peak = 0;
+  mr_wheel(400, 335);
+  mr_seesaw(190, 535);
+  hand();
+  LOOP
+    IF (scene_t % 12 == 0 AND mr_alive < MR_MAX) marble(50 + rand(-4, 4), 80); END
+    mr_peak = fmax(mr_peak, mr_alive);
+    set_color('#c8e0ff');
+    text(10, 40, 'marbles alive ' + mr_alive + ' (at most ' + MR_MAX + ')   peak ' + mr_peak + '   spawned ' + mr_spawned
+      + '   removed ' + mr_removed);
+    FRAME;
+  END
+END
+
+// =====================================================================
+// 7 MATERIALS - left: three blocks on 20 degree ramps with friction 0.02
+// (ice), 0.3 (wood) and 0.9 (rubber); the measured acceleration after one
+// second against g (sin a - u cos a). Right: balls with restitution 0,
+// 0.5 and 0.9 dropped from 300 px; the measured bounces against e^2 h
+// and e^4 h. Box2D mixes friction as sqrt(f1 f2) and restitution as the
+// larger one, so each ramp has its block's friction and the floor has 0.
+// SPACE runs it again.
+
+PROCESS mt_ramp(k);
+BEGIN
+  phys_edge(20, 100 + k * 150, 420, 100 + k * 150 + 400 * tan(MT_A));
+  phys_edge(420, 70 + k * 150 + 400 * tan(MT_A), 420, 100 + k * 150 + 400 * tan(MT_A));
+  phys_material(1, mt_fric[k], 0);
+  LOOP FRAME; END
+END
+
+PROCESS mt_block(k);
+PRIVATE seq, x0, y0, t, s;
+BEGIN
+  graph = g_block[k];
+  // 40 px down the ramp, lifted by half its height along the normal
+  x0 = 20 + 40 * cos(MT_A) + 9 * sin(MT_A);
+  y0 = 100 + k * 150 + 40 * sin(MT_A) - 9 * cos(MT_A);
+  x = x0; y = y0; angle = -MT_A;
+  phys_box(30, 18);
+  phys_material(1, mt_fric[k], 0);
+  seq = mt_seq;
+  LOOP
+    IF (seq != mt_seq)
+      seq = mt_seq; x = x0; y = y0; angle = -MT_A; t = 0;
+      phys_velocity(0, 0); phys_spin(0);
+    END
+    t++;
+    IF (t == 60)                      // one second: s = a t^2 / 2
+      s = (x - x0) * cos(MT_A) + (y - y0) * sin(MT_A);
+      mt_acc[k] = 2 * s;
+    END
+    FRAME;
+  END
+END
+
+PROCESS mt_ball(k, x);
+PRIVATE seq, phase, top, t;
+BEGIN
+  graph = g_mball[k];
+  y = 248;                           // bottom 300 px above the floor
+  phys_circle(12);
+  phys_material(1, 0.5, mt_rest[k]);
+  seq = -1;
+  LOOP
+    IF (seq != mt_seq)
+      seq = mt_seq; y = 248; phase = 0; t = 0;
+      mt_b1[k] = 0; mt_b2[k] = 0;
+      phys_velocity(0, 0); phys_spin(0);
+    END
+    t++;
+    // phase 0 falling, 1 rising after bounce 1, 2 falling, 3 rising...
+    IF (phase == 0 OR phase == 2)
+      IF (phys_vy() < -1 AND t > 5) phase++; top = y; END
+    ELSE
+      IF (phase < 4)
+        top = fmin(top, y);
+        IF (phys_vy() >= 0)
+          IF (phase == 1) mt_b1[k] = 548 - top; ELSE mt_b2[k] = 548 - top; END
+          phase++;
+        END
+      END
+    END
+    FRAME;
+  END
+END
+
+FUNCTION mt_name(k);
+BEGIN
+  IF (k == 0) RETURN 'ICE friction 0.02'; END
+  IF (k == 1) RETURN 'WOOD friction 0.3'; END
+  RETURN 'RUBBER friction 0.9';
+END
+
+PROCESS materials_scene();
+PRIVATE k, fl;
+BEGIN
+  bg_clear();
+  FOR k = 0 TO 2
+    paint_line(20, 100 + k * 150, 420, 100 + k * 150 + 400 * tan(MT_A), 150, 170, 200);
+    paint_line(420, 70 + k * 150 + 400 * tan(MT_A), 420, 100 + k * 150 + 400 * tan(MT_A), 150, 170, 200);
+  END
+  paint_line(440, 560, 790, 560, 150, 170, 200);
+  gfx_line(g_bg, 450, 248, 790, 248, 80, 90, 110);          // drop height
+  put_screen(0, g_bg);
+  mt_fric[0] = 0.02; mt_fric[1] = 0.3; mt_fric[2] = 0.9;
+  mt_rest[0] = 0; mt_rest[1] = 0.5; mt_rest[2] = 0.9;
+  FOR k = 0 TO 2
+    mt_exp[k] = fmax(0, 600 * (sin(MT_A) - mt_fric[k] * cos(MT_A)));
+    mt_acc[k] = 0;
+    mt_ramp(k);
+    mt_block(k);
+    mt_ball(k, 510 + k * 110);
+  END
+  fl = mt_floor();
+  hand();
+  LOOP
+    IF (key_pressed(_space)) mt_seq++; END
+    FOR k = 0 TO 2
+      set_color('#c8e0ff');
+      text(30, 72 + k * 150, mt_name(k) + '   a expected ' + round(mt_exp[k])
+        + ', measured ' + round(mt_acc[k]) + ' px/s2');
+      text(460 + k * 110, 575, 'e ' + fmt1(mt_rest[k]));
+      text(460 + k * 110, 90, '1st ' + round(mt_b1[k]) + '/' + round(300 * mt_rest[k] * mt_rest[k]));
+      text(460 + k * 110, 104, '2nd ' + round(mt_b2[k]) + '/' + round(300 * pow(mt_rest[k], 4)));
+    END
+    text(460, 72, 'bounce height, measured/expected px');
+    text(640, 236, 'dropped from 300 px');
+    FRAME;
+  END
+END
+
+PROCESS mt_floor();
+BEGIN
+  phys_edge(440, 560, 790, 560);
+  phys_material(1, 0.5, 0);
+  LOOP FRAME; END
+END
+
+// =====================================================================
+// 8 STRESS - boxes and balls rain into a bin, two a frame, until the frame
+// rate stays under 55 fps for 3/4 of a second (the peak). Then the newest
+// bodies are removed, 20 at a time, until the settled pile runs at 55+ fps
+// again for two seconds: that count is the result, the largest pile this
+// machine keeps at speed. SPACE starts adding again.
+
+PROCESS st_body(x, y, kind);
+PRIVATE serial;
+BEGIN
+  st_serial++; serial = st_serial;
+  IF (kind < 3)
+    graph = g_sbox[kind]; phys_box(10 + kind * 4, 10 + kind * 4);
+  ELSE
+    graph = g_sball[kind - 3]; phys_circle(5 + (kind - 3) * 2);
+  END
+  phys_material(1, 0.5, 0.1);
+  angle = rand(0, 90000);
+  LOOP
+    IF (y > 700 OR serial > st_cut) BREAK; END
+    FRAME;
+  END
+END
+
+PROCESS stress_scene();
+PRIVATE wait, slow;
+BEGIN
+  bg_clear();
+  seg(20, 90, 20, 580); seg(20, 580, 780, 580); seg(780, 580, 780, 90);
+  put_screen(0, g_bg);
+  st_phase = 0; st_max = 0; st_peak = 0; st_low = 0; st_serial = 0; st_cut = 999999;
+  hand();
+  LOOP
+    IF (key_pressed(_space)) st_phase = 0; st_low = 0; st_cut = 999999; END
+    IF (scene_t > 30)
+      SWITCH (st_phase)
+        CASE 0                                  // adding
+          st_body(rand(40, 760), rand(100, 130), rand(0, 5));
+          st_body(rand(40, 760), rand(100, 130), rand(0, 5));
+          IF (get_fps() < 55) st_low++; ELSE st_low = 0; END
+          IF (st_low >= 45 OR phys_bodies() > 3000)
+            st_phase = 1; st_cut = st_serial; wait = 0; slow = 0; st_low = 0;
+          END
+        CASE 1                                  // trimming back
+          wait++;
+          IF (get_fps() >= 55) st_low++; ELSE st_low = 0; slow++; END
+          IF (st_low >= 120)
+            st_phase = 2; st_max = phys_bodies();
+          END
+          IF (wait == 30)                       // mostly slow for half a second
+            IF (slow >= 20) st_cut = st_cut - 20; END
+            wait = 0; slow = 0;
+          END
+      END
+    END
+    st_peak = fmax(st_peak, phys_bodies());
+    set_color('#c8e0ff');
+    SWITCH (st_phase)
+      CASE 0 text(10, 40, 'adding 2 bodies a frame...   bodies ' + phys_bodies() + '   fps ' + round(get_fps()));
+      CASE 1 text(10, 40, 'peak ' + st_peak + ' bodies, fps under 55: removing the newest until it holds 55+ fps...   bodies '
+        + phys_bodies() + '   fps ' + round(get_fps()));
+      CASE 2 text(10, 40, 'RESULT: ' + st_max + ' bodies settled at 55+ fps (peak ' + st_peak + ' while falling)   fps '
+        + round(get_fps()));
+    END
+    FRAME;
+  END
+END
+
+// =====================================================================
+// Scene switching and the HUD
+
+FUNCTION scene_title(n);
+BEGIN
+  SWITCH (n)
+    CASE 1 RETURN "NEWTON'S CRADLE";
+    CASE 2 RETURN 'DOMINOES';
+    CASE 3 RETURN 'ROPE BRIDGE';
+    CASE 4 RETURN 'RAGDOLL';
+    CASE 5 RETURN 'CATAPULT';
+    CASE 6 RETURN 'MARBLE RUN';
+    CASE 7 RETURN 'MATERIALS';
+  END
+  RETURN 'STRESS PILE';
+END
+
+FUNCTION scene_help(n);
+BEGIN
+  SWITCH (n)
+    CASE 1 RETURN 'Elastic balls on rods (phys_rope): the momentum of the lifted ball goes through to the last one. SPACE lift 1, X lift 2.';
+    CASE 2 RETURN 'A wave of 78 dominoes over three shelves; balls carry it from one row to the next.';
+    CASE 3 RETURN 'Planks pinned end to end (phys_pin) between two cliffs, with crates falling on it. SPACE drops a crate.';
+    CASE 4 RETURN 'Ten bodies joined with phys_pin tumble down the stairs. SPACE kicks it; drag it by a limb.';
+    CASE 5 RETURN 'A counterweight arm flings a ball at a tower. SPACE fires, UP/DOWN counterweight, R reloads.';
+    CASE 6 RETURN 'Edges, a spinning kinematic wheel and a pinned see-saw; marbles are removed at the bottom.';
+    CASE 7 RETURN 'Friction on 20 degree ramps and restitution of dropped balls, measured against theory. SPACE again.';
+  END
+  RETURN 'Bodies keep falling in until the frame rate drops under 55 fps. SPACE adds more.';
+END
+
+// Kills the running scene (and every body in it) and starts scene n.
+FUNCTION start_scene(n);
+BEGIN
+  IF (director) signal(director, s_kill_tree); END
+  grabbed = 0;
+  FRAME;                      // the next physics step drops their bodies
+  leftover = phys_bodies();
+  max_leftover = fmax(max_leftover, leftover);
+  phys_clear();
+  switches++;
+  scene = n; scene_t = 0;
+  SWITCH (n)
+    CASE 1 director = cradle_scene();
+    CASE 2 director = domino_scene();
+    CASE 3 director = bridge_scene();
+    CASE 4 director = ragdoll_scene();
+    CASE 5 director = catapult_scene();
+    CASE 6 director = marble_scene();
+    CASE 7 director = materials_scene();
+    CASE 8 director = stress_scene();
+  END
+  RETURN 0;
+END
+
+FUNCTION hud();
+BEGIN
+  draw_rect(0, 0, 800, 64, 'rgba(8, 10, 16, 0.75)');
+  set_color('#ffd070');
+  text(10, 8, 'PHYSICS LAB  ' + scene + '/8  ' + scene_title(scene));
+  set_color('#e0e6f0');
+  text(10, 22, scene_help(scene));
+  set_color('#90a0b8');
+  text(560, 8, 'fps ' + round(fps_now) + '  bodies ' + bodies + '  left over ' + leftover);
+  text(10, 588, '1-8 scene   R restart   D shapes   drag bodies with the mouse');
+  RETURN 0;
+END
+
+BEGIN
+  set_mode(800, 600);
+  set_fps(60, 0);
+  screen_color('#12161f');
+  make_graphics();
+  phys_gravity(0, 600);
+  start_scene(1);
+  LOOP
+    IF (key_pressed(_1)) start_scene(1); END
+    IF (key_pressed(_2)) start_scene(2); END
+    IF (key_pressed(_3)) start_scene(3); END
+    IF (key_pressed(_4)) start_scene(4); END
+    IF (key_pressed(_5)) start_scene(5); END
+    IF (key_pressed(_6)) start_scene(6); END
+    IF (key_pressed(_7)) start_scene(7); END
+    IF (key_pressed(_8)) start_scene(8); END
+    IF (key_pressed(_r)) start_scene(scene); END
+    IF (key_pressed(_d)) set_debug(); END
+    IF (scene == 5)
+      IF (key_pressed(_up)) ct_density = fmin(ct_density + 2, 30); start_scene(5); END
+      IF (key_pressed(_down)) ct_density = fmax(ct_density - 2, 2); start_scene(5); END
+    END
+    bodies = phys_bodies();
+    fps_now = get_fps();
+    scene_t++;
+    hud();
+    FRAME;
+  END
+END

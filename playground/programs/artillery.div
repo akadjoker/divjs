@@ -1,0 +1,885 @@
+PROGRAM artillery;
+
+// ARTILLERY - a turn-based duel in the style of Worms / Scorched Earth.
+// Every match is played on a new island. A 1D value noise (four octaves
+// of random knots joined with smoothstep) gives the hills, a few random
+// "worms" dig caves and some ellipses float as islands. The land lives in
+// two places: a solid map of 2x2-pixel cells used for collision and a
+// 640x480 graphic (sky included) shown with put_screen. Explosions carve
+// circles out of both, so soldiers standing there fall (fall damage) and
+// anything below the waterline drowns. A BUILDER process spreads the
+// generation and painting over many frames.
+// The CPU aims by simulating shots with the very same physics function
+// the real shells use (a coarse grid of angles/powers, then a finer one
+// around the best), a few simulations per frame, and then misses by a
+// random error that shrinks as its level goes up.
+
+GLOBAL
+  CW = 320; CH = 240;              // solid map size in 2x2-pixel cells
+  WATER = 440;                     // y of the water surface (pixels)
+  GRAV_SHELL = 0.15;                  // gravity on shells, pixels/frame^2
+  GRAV_MAN = 0.2;                    // gravity on soldiers
+  PWR = 0.12;                      // launch speed per point of power
+  WIND_K = 0.0032;                 // wind acceleration per wind point
+
+  // The solid map packs 16 cells in each number (there are no bit
+  // operators, so bits are read with / and %): cell (i, j) is bit i % 16
+  // of sol[j * 20 + i / 16]. 4800 numbers instead of 76800.
+  sol[4799];
+  pw[15];                          // powers of two
+  wmin[19]; wmax[19];              // lowest/highest hill top per word
+  hgt[319];                        // ground top of every column (cells)
+  knot[199];                       // value-noise knots, 50 per octave
+  cr = 0; cg = 0; cb = 0;          // colour returned by sky_rgb()
+
+  // soldiers: slots 0-3 are the player's (team 0), 4-7 the CPU's (team 1)
+  s_team[7]; s_hp[7]; s_alive[7]; s_x[7]; s_y[7];
+  s_vx[7]; s_vy[7]; s_air[7]; s_face[7];
+  last_of[1];                      // last soldier each team played
+
+  // graphics
+  g_map = 0; g_man[1]; g_shell[3];
+
+  // game state
+  state = 4;                       // 0 title, 1 playing, 2 over, 4 building
+  gen_pct = 0; seed = 0; demo = 0; level = 1; winner = 0;
+  phase = 0;                       // 0 aim/move, 1 shells flying, 2 settling
+  turn_team = 1; cur = 0; cpu_turn = 0; turn_t = 0; settle_t = 0;
+  wind = 0; weapon = 0; aim = 45000; power = 0; charging = 0;
+  walk_dir = 0; walk_left = 0; jump_req = 0;
+  n_shells = 0; n_booms = 0;
+  last_mx = 0; last_my = 0; prev_rb = 0;
+  // projectile scratch shared by step_proj() callers
+  p_x = 0.0; p_y = 0.0; p_vx = 0.0; p_vy = 0.0;
+  // CPU bookkeeping (also read by the test page)
+  ai_state = 0; ai_tx = 0; ai_ty = 0; ai_miss = 0; hit_x = 0; hit_y = 0;
+  shot_x = 0; shot_y = 0;
+  shots = 0; turns = 0;
+  sim_cost = 0;                    // simulated steps since the last FRAME
+
+// =====================================================================
+// Terrain helpers
+// =====================================================================
+
+// Is the pixel (px, py) solid? Off the sides is air, below the map rock.
+FUNCTION solid(px, py);
+BEGIN
+  IF (px < 0 OR px >= 640 OR py < 0) RETURN 0; END
+  IF (py >= 480) RETURN 1; END
+  px = int(px * 0.5); py = int(py * 0.5);
+  RETURN (sol[py * 20 + px / 16] / pw[px % 16]) % 2;
+END
+
+// Same test in cell coordinates (whole numbers).
+FUNCTION cell(i, j);
+BEGIN
+  IF (i < 0 OR i >= CW OR j < 0) RETURN 0; END
+  IF (j >= CH) RETURN 1; END
+  RETURN (sol[j * 20 + i / 16] / pw[i % 16]) % 2;
+END
+
+// Set (v = 1) or clear (v = 0) the cells i0..i1 of row j: whole words at
+// once, bit by bit at the two ends.
+FUNCTION set_span(j, i0, i1, v);
+PRIVATE wi, lo, hi, i, n, b;
+BEGIN
+  FOR wi = i0 / 16 TO i1 / 16
+    n = j * 20 + wi;
+    lo = max(i0, wi * 16); hi = min(i1, wi * 16 + 15);
+    IF (lo == wi * 16 AND hi == wi * 16 + 15)
+      sol[n] = v * 65535;
+    ELSE
+      FOR i = lo TO hi
+        b = pw[i % 16];
+        IF ((sol[n] / b) % 2 != v) sol[n] = sol[n] + b * (2 * v - 1); END
+      END
+    END
+  END
+  RETURN 0;
+END
+
+// Colour of an empty cell of row j: sky gradient, or water below WATER.
+FUNCTION sky_rgb(j);
+BEGIN
+  IF (j * 2 >= WATER)
+    cr = 20; cg = 70 - (j - 220); cb = 140 - (j - 220) * 2;
+  ELSE
+    cr = 60 + j * 0.55; cg = 110 + j * 0.45; cb = 190 + j * 0.2;
+  END
+  RETURN 0;
+END
+
+// One octave of value noise at column i: knots every sp cells.
+FUNCTION noise(o, i, sp);
+PRIVATE k, t;
+BEGIN
+  k = i / sp;                                    // integer division
+  t = (i % sp) / (sp + 0.001);
+  t = t * t * (3 - 2 * t);                       // smoothstep
+  RETURN lerp(knot[o * 50 + k], knot[o * 50 + k + 1], t);
+END
+
+// Blow a hole of radius r (pixels) into the solid map AND the graphic.
+// Rows of the circle are erased with one sky-coloured rect each; then a
+// ring of dark dots scorches the rock left around the crater.
+FUNCTION carve(cx, cy, r, scorch);
+PRIVATE ci, cj, rc, dj, j, w, i0, i1, i, a, px, py;
+BEGIN
+  ci = int(cx * 0.5); cj = int(cy * 0.5); rc = r * 0.5;
+  FOR dj = -int(rc) TO int(rc)
+    j = cj + dj;
+    IF (j >= 0 AND j < CH)
+      w = int(sqrt(rc * rc - dj * dj));
+      i0 = clamp(ci - w, 0, CW - 1); i1 = clamp(ci + w, 0, CW - 1);
+      set_span(j, i0, i1, 0);
+      sky_rgb(j);
+      gfx_rect(g_map, i0 * 2, j * 2, (i1 - i0 + 1) * 2, 2, cr, cg, cb);
+    END
+  END
+  IF (scorch == 0) RETURN 0; END
+  FOR a = 0 TO 59
+    px = cx + get_distx(a * 6000, r + 2);
+    py = cy + get_disty(a * 6000, r + 2);
+    IF (solid(px, py)) gfx_rect(g_map, px - 1, py - 1, 3, 3, 70, 45, 30); END
+  END
+  RETURN 0;
+END
+
+// =====================================================================
+// Graphics
+// =====================================================================
+
+// Soldier 10x16 facing right: boots, body in team colour, helmet, gun.
+FUNCTION make_man(t, r, g, b);
+PRIVATE gr;
+BEGIN
+  gr = new_graphic(10, 16);
+  gfx_fill_rgba(gr, 0, 0, 0, 0);
+  gfx_rect(gr, 2, 13, 2, 3, 40, 30, 20);          // legs
+  gfx_rect(gr, 6, 13, 2, 3, 40, 30, 20);
+  gfx_rect(gr, 2, 6, 6, 7, r, g, b);               // body
+  gfx_rect(gr, 3, 7, 2, 5, r * 0.7, g * 0.7, b * 0.7);
+  gfx_circle(gr, 5, 4, 3, 250, 210, 170);          // head
+  gfx_rect(gr, 1, 0, 8, 3, r * 0.6, g * 0.6, b * 0.6);   // helmet
+  gfx_pixel(gr, 7, 4, 0, 0, 0);                    // eye
+  gfx_rect(gr, 5, 8, 5, 2, 50, 50, 50);            // gun
+  g_man[t] = gr;
+  RETURN 0;
+END
+
+FUNCTION make_graphics();
+PRIVATE g;
+BEGIN
+  make_man(0, 70, 140, 255);
+  make_man(1, 230, 70, 60);
+  g = new_graphic(10, 4); gfx_fill_rgba(g, 0, 0, 0, 0);       // rocket
+  gfx_rect(g, 0, 0, 8, 4, 90, 100, 80); gfx_rect(g, 7, 1, 3, 2, 220, 60, 40);
+  gfx_rect(g, 0, 0, 2, 4, 255, 180, 60); g_shell[0] = g;
+  g = new_graphic(6, 6); gfx_fill_rgba(g, 0, 0, 0, 0);        // grenade
+  gfx_circle(g, 3, 3, 3, 40, 110, 40); gfx_rect(g, 2, 0, 2, 2, 200, 200, 200);
+  g_shell[1] = g;
+  g = new_graphic(7, 7); gfx_fill_rgba(g, 0, 0, 0, 0);        // cluster
+  gfx_circle(g, 3, 3, 3, 160, 160, 170); gfx_circle(g, 3, 3, 1, 230, 60, 40);
+  g_shell[2] = g;
+  g = new_graphic(3, 3); gfx_fill(g, 240, 200, 60); g_shell[3] = g;   // bomblet
+  g_map = new_graphic(640, 480);
+  RETURN 0;
+END
+
+// =====================================================================
+// Map builder: runs over many frames so no frame does too much work
+// =====================================================================
+PROCESS builder(next_state);
+PRIVATE i, j, k, n, h, base, top, bot, cx, cy, rx, ry, dx, a, w, sh, ph, band, j2;
+BEGIN
+  state = 4; gen_pct = 0;
+  put_screen(0, 0);
+  FRAME;
+  FOR i = 0 TO 199 knot[i] = rand(-100, 100); END
+  // 1. hills: four octaves of value noise, plus a random overall tilt
+  base = rand(125, 160); k = rand(-30, 30);
+  FOR i = 0 TO CW - 1
+    h = base + noise(0, i, 80) * 0.55 + noise(1, i, 40) * 0.28
+        + noise(2, i, 16) * 0.12 + noise(3, i, 7) * 0.05 + k * (i - 160) / 160;
+    hgt[i] = int(clamp(h, 55, 214));
+  END
+  // 2. solid map from the heights, word by word: a word is all rock
+  // below its highest hill top and all air above its lowest one
+  FOR k = 0 TO 19
+    wmin[k] = 999; wmax[k] = 0;
+    FOR i = k * 16 TO k * 16 + 15
+      wmin[k] = min(wmin[k], hgt[i]); wmax[k] = max(wmax[k], hgt[i]);
+    END
+  END
+  FOR j = 0 TO CH - 1
+    FOR k = 0 TO 19
+      IF (j >= wmax[k]) sol[j * 20 + k] = 65535;
+      ELSE
+        IF (j < wmin[k]) sol[j * 20 + k] = 0;
+        ELSE
+          h = 0;
+          FOR i = 0 TO 15 IF (j >= hgt[k * 16 + i]) h += pw[i]; END END
+          sol[j * 20 + k] = h;
+        END
+      END
+    END
+    IF (j % 10 == 9) gen_pct = j * 20 / CH; FRAME; END
+  END
+  // 3. floating islands: thin on top, deeper underneath
+  n = rand(1, 3);
+  FOR k = 1 TO n
+    cx = rand(50, 270); rx = rand(14, 28); ry = rand(8, 14);
+    cy = 240;
+    FOR i = cx - rx TO cx + rx cy = min(cy, hgt[i]); END
+    cy = cy - rand(38, 70);
+    IF (cy > 30)
+      FOR dx = -rx TO rx
+        w = sqrt(1 - (dx * dx) / (rx * rx + 0.001));
+        top = cy - int(ry * 0.35 * w); bot = cy + int(ry * w * (0.7 + rand(0, 30) * 0.01));
+        FOR j = top TO bot set_span(j, cx + dx, cx + dx, 1); END
+      END
+    END
+    FRAME;
+  END
+  FRAME;
+  // 4. caves: random walkers that dig round tunnels under the surface
+  n = rand(1, 3);
+  FOR k = 1 TO n
+    cx = rand(30, 290); cy = hgt[cx] + rand(12, 30); a = rand(0, 359999);
+    FOR i = 0 TO 40
+      carve(cx * 2, cy * 2, rand(6, 10), 0);
+      a = a + rand(-30000, 30000);
+      cx = clamp(cx + get_distx(a, 2), 6, CW - 7);
+      cy = clamp(cy + get_disty(a, 1.2), 70, CH - 8);
+      cx = int(cx); cy = int(cy);
+      IF (i % 10 == 9) FRAME; END
+    END
+  END
+  gen_pct = 45;
+  // 5. paint: sky and water rows, then every column's runs of rock with
+  // a grass top, a lighter topsoil and wavy darker strata below
+  FOR j = 0 TO CH - 1 sky_rgb(j); gfx_rect(g_map, 0, j * 2, 640, 2, cr, cg, cb); END
+  ph = rand(0, 359999);
+  FOR i = 0 TO CW - 1
+    sh = rand(-8, 8);
+    n = i / 16; dx = pw[i % 16];                   // word and bit of column i
+    w = int(sin(i * 3000 + ph) * 4);               // strata wobble
+    j = 0;
+    WHILE (j < CH)
+      IF ((sol[j * 20 + n] / dx) % 2 == 0) j++; CONTINUE; END
+      top = j;                                     // a run of rock starts
+      WHILE (j < CH AND (sol[j * 20 + n] / dx) % 2) j++; END
+      bot = j - 1;
+      j2 = top;
+      WHILE (j2 <= bot)
+        band = (j2 + w + 400) / 9;                 // integer division
+        k = min(bot, band * 9 + 8 - w - 400);      // last row of the band
+        IF (band % 2 == 0)
+          gfx_rect(g_map, i * 2, j2 * 2, 2, (k - j2 + 1) * 2, 120 + sh, 82 + sh, 50);
+        ELSE
+          gfx_rect(g_map, i * 2, j2 * 2, 2, (k - j2 + 1) * 2, 100 + sh, 66 + sh, 42);
+        END
+        j2 = k + 1;
+      END
+      IF (top > 0)
+        gfx_rect(g_map, i * 2, top * 2 + 5, 2, 6, 150 + sh, 110 + sh, 70);   // topsoil
+        gfx_rect(g_map, i * 2, top * 2, 2, 5 + rand(0, 2), 60 + sh, 170 + sh * 2, 60);
+      END
+      IF (bot < CH - 1) gfx_rect(g_map, i * 2, bot * 2, 2, 2, 70, 50, 35); END
+    END
+    IF (rand(0, 3) == 0) gfx_rect(g_map, i * 2, hgt[i] * 2 + rand(14, 60), 3, 2, 80, 70, 65); END
+    IF (i % 6 == 5) gen_pct = 45 + i * 50 / CW; FRAME; END
+  END
+  put_screen(0, g_map);
+  // 6. soldiers: team 0 on the left half, team 1 on the right
+  signal(TYPE soldier, s_kill);
+  FOR k = 0 TO 7
+    s_team[k] = k / 4; s_hp[k] = 100; s_alive[k] = 1;
+    s_vx[k] = 0; s_vy[k] = 0; s_air[k] = 0;
+    FOR n = 0 TO 40                               // find a dry spot
+      i = rand(12, 148) + s_team[k] * 160;
+      j = 0;
+      WHILE (j < CH AND cell(i, j) == 0) j++; END
+      h = 1;
+      FOR a = 0 TO k - 1 IF (abs(s_x[a] - i * 2) < 30) h = 0; END END
+      IF (j < 212 AND j > 10 AND h) BREAK; END
+    END
+    s_x[k] = i * 2 + 1; s_y[k] = j * 2 - 8;
+    s_face[k] = 1 - 2 * s_team[k];
+    soldier(k);
+    FRAME;
+  END
+  last_of[0] = 3; last_of[1] = 7;
+  gen_pct = 100;
+  state = next_state;
+  IF (state == 1) turn_team = rand(0, 1); next_turn(); END
+END
+
+FUNCTION min(a, b);
+BEGIN
+  IF (a < b) RETURN a; END
+  RETURN b;
+END
+
+// =====================================================================
+// Soldiers
+// =====================================================================
+PROCESS soldier(k);
+PRIVATE i, nx, land, step;
+BEGIN
+  graph = g_man[s_team[k]]; z = -5;
+  LOOP
+    IF (s_alive[k] == 0) BREAK; END
+    IF (s_air[k])
+      // flying (jump, blast or ground gone): gravity, then move
+      s_vy[k] = min(s_vy[k] + GRAV_MAN, 9);
+      nx = s_x[k] + s_vx[k];
+      IF (solid(nx, s_y[k]) OR solid(nx, s_y[k] - 6)) s_vx[k] = -s_vx[k] * 0.3;
+      ELSE s_x[k] = nx; END
+      IF (s_vy[k] < 0)
+        IF (solid(s_x[k], s_y[k] - 8 + s_vy[k])) s_vy[k] = 0;
+        ELSE s_y[k] = s_y[k] + s_vy[k]; END
+      ELSE
+        // fall pixel by pixel so the feet stop on the first solid row
+        land = 0; step = s_vy[k];
+        WHILE (step > 0 AND land == 0)
+          IF (solid(s_x[k], s_y[k] + 8)) land = 1;
+          ELSE s_y[k] = s_y[k] + min(step, 1); step = step - 1; END
+        END
+        IF (land OR solid(s_x[k], s_y[k] + 8))
+          IF (s_vy[k] > 5.2)                        // fall damage
+            i = int((s_vy[k] - 5.2) * 9);
+            s_hp[k] = s_hp[k] - i; popup(s_x[k], s_y[k] - 20, "-" + i);
+          END
+          s_air[k] = 0; s_vx[k] = 0; s_vy[k] = 0;
+        END
+      END
+    ELSE
+      // standing: step out of rock that fell on us, fall if nothing below
+      i = 0;
+      WHILE (solid(s_x[k], s_y[k] + 7) AND i < 4) s_y[k] = s_y[k] - 1; i++; END
+      IF (solid(s_x[k], s_y[k] + 8) == 0)
+        IF (solid(s_x[k], s_y[k] + 9) OR solid(s_x[k], s_y[k] + 10))
+          s_y[k] = s_y[k] + 1;                      // small step down a slope
+        ELSE
+          s_air[k] = 1; s_vy[k] = 0;
+        END
+      END
+      // the soldier whose turn it is walks and jumps
+      IF (k == cur AND phase == 0 AND state == 1)
+        IF (walk_dir != 0 AND walk_left > 0)
+          s_face[k] = walk_dir;
+          nx = s_x[k] + walk_dir * 0.8;
+          i = 0;                                    // climb up to 4 pixels
+          WHILE (solid(nx, s_y[k] + 7 - i) AND i <= 4) i++; END
+          IF (i <= 4 AND solid(nx, s_y[k] - 7 - i) == 0)
+            s_x[k] = nx; s_y[k] = s_y[k] - i; walk_left = walk_left - 0.8;
+          END
+        END
+        IF (jump_req)
+          s_air[k] = 1; s_vy[k] = -3.4; s_vx[k] = s_face[k] * 1.7;
+          jump_req = 0;
+        END
+      END
+    END
+    IF (s_y[k] > WATER + 6)                        // drowned
+      s_hp[k] = 0; s_alive[k] = 0; boom(s_x[k], WATER, 10, 1);
+      BREAK;
+    END
+    x = s_x[k]; y = s_y[k];
+    flags = (s_face[k] < 0);
+    FRAME;
+  END
+END
+
+// Floating text (damage numbers).
+PROCESS popup(px, py, msg);
+PRIVATE t;
+BEGIN
+  FOR t = 0 TO 59
+    set_color('#ffffff'); text(px - 6, py - t * 0.4, msg);
+    FRAME;
+  END
+END
+
+// Explosion flash: an orange disc that shrinks, with a yellow core.
+PROCESS boom(bx, by, r, wet);
+PRIVATE t;
+BEGIN
+  n_booms++;
+  FOR t = 0 TO 17
+    IF (wet)
+      set_color('#cfe8ff'); circle(bx, by - t, r * (1 - t * 0.05));
+    ELSE
+      set_color('#ff7a20'); circle(bx, by, r * (1.1 - t * 0.055));
+      set_color('#ffe070'); circle(bx, by, r * (0.7 - t * 0.04));
+    END
+    FRAME;
+  END
+  n_booms--;
+END
+
+// Carve the crater, then hurt and throw every soldier near the blast.
+FUNCTION explode(ex, ey, r, dmg);
+PRIVATE k, d, f, a, hurt;
+BEGIN
+  carve(ex, ey, r, 1);
+  boom(ex, ey, r, 0);
+  hit_x = ex; hit_y = ey;
+  FOR k = 0 TO 7
+    IF (s_alive[k])
+      d = distance(ex, ey, s_x[k], s_y[k]);
+      IF (d < r * 1.6)
+        f = 1 - d / (r * 1.6);
+        hurt = int(dmg * f + 0.5);
+        IF (hurt > 0)
+          s_hp[k] = s_hp[k] - hurt;
+          popup(s_x[k], s_y[k] - 22, "-" + hurt);
+        END
+        a = fget_angle(ex, ey, s_x[k], s_y[k] - 4);
+        s_vx[k] = s_vx[k] + get_distx(a, 4.5 * f);
+        s_vy[k] = s_vy[k] + get_disty(a, 4.5 * f) - 2 * f;
+        s_air[k] = 1; s_y[k] = s_y[k] - 1;
+      END
+    END
+  END
+  RETURN 0;
+END
+
+// =====================================================================
+// Projectiles
+// =====================================================================
+
+// Advance the projectile in p_x/p_y/p_vx/p_vy by one frame, in small
+// sub-steps. Returns 0 still flying, 1 hit rock, 2 hit a soldier,
+// 3 gone (water or off the sides). `only` >= 0 limits the soldier test to
+// that slot (the CPU's simulation); `owner` is not hit on the way out.
+FUNCTION step_proj(owner, age, only, windy);
+PRIVATE n, k, inv, s;
+BEGIN
+  p_vy = p_vy + GRAV_SHELL;
+  IF (windy) p_vx = p_vx + wind * WIND_K; END
+  n = int(max(abs(p_vx), abs(p_vy)) * 0.5) + 1;
+  inv = 1 / (n + 0.0001);
+  FOR k = 1 TO n
+    p_x = p_x + p_vx * inv; p_y = p_y + p_vy * inv;
+    IF (solid(p_x, p_y)) RETURN 1; END
+    IF (only >= 0)
+      IF (abs(p_x - s_x[only]) < 5 AND abs(p_y - s_y[only]) < 8) RETURN 2; END
+    ELSE
+      FOR s = 0 TO 7
+        IF (s_alive[s] AND (s != owner OR age > 25))
+          IF (abs(p_x - s_x[s]) < 5 AND abs(p_y - s_y[s]) < 8) RETURN 2; END
+        END
+      END
+    END
+  END
+  IF (p_y > WATER OR p_x < -80 OR p_x > 720) RETURN 3; END
+  RETURN 0;
+END
+
+FUNCTION max(a, b);
+BEGIN
+  IF (a > b) RETURN a; END
+  RETURN b;
+END
+
+// kind: 0 bazooka, 1 grenade (bounces, 3 s fuse), 2 cluster, 3 bomblet
+PROCESS shell(kind, fx, fy, fvx, fvy, owner);
+PRIVATE age, hit, fuse, tx, ty, n, k, inv, i;
+BEGIN
+  n_shells++;
+  graph = g_shell[kind]; z = -8; x = fx; y = fy;
+  fuse = 180;
+  LOOP
+    age++;
+    p_x = fx; p_y = fy; p_vx = fvx; p_vy = fvy;
+    IF (kind == 1)
+      // grenade: no wind; on contact reflect the blocked axis and lose speed
+      hit = 0;
+      p_vy = p_vy + GRAV_SHELL;
+      n = int(max(abs(p_vx), abs(p_vy)) * 0.5) + 1;
+      inv = 1 / (n + 0.0001);
+      FOR k = 1 TO n
+        tx = p_x + p_vx * inv; ty = p_y + p_vy * inv;
+        IF (solid(tx, ty))
+          i = 0;
+          IF (solid(tx, p_y)) p_vx = -p_vx * 0.5; i = 1; END
+          IF (solid(p_x, ty)) p_vy = -p_vy * 0.45; p_vx = p_vx * 0.8; i = 1; END
+          IF (i == 0) p_vx = -p_vx * 0.5; p_vy = -p_vy * 0.45; END
+          BREAK;
+        END
+        p_x = tx; p_y = ty;
+      END
+      IF (p_y > WATER OR p_x < -80 OR p_x > 720) hit = 3; END
+      fuse--;
+      IF (fuse <= 0) hit = 1; END
+      angle = angle - p_vx * 9000;
+      set_color('#ffffff'); text(p_x - 3, p_y - 16, "" + (fuse / 60 + 1));
+    ELSE
+      hit = step_proj(owner, age, -1, kind != 3);
+      angle = fget_angle(0, 0, p_vx, p_vy);
+    END
+    fx = p_x; fy = p_y; fvx = p_vx; fvy = p_vy;
+    x = fx; y = fy;
+    IF (hit) BREAK; END
+    FRAME;
+  END
+  IF (kind < 3) shot_x = fx; shot_y = fy; END     // where the shot ended
+  IF (hit == 3)
+    IF (fy > WATER - 20) boom(fx, WATER, 8, 1); END
+  ELSE
+    SWITCH (kind)
+      CASE 0
+        explode(fx, fy, 26, 48);
+      CASE 1
+        explode(fx, fy, 30, 52);
+      CASE 2                                      // cluster: 5 bomblets
+        explode(fx, fy, 18, 25);
+        FOR i = 0 TO 4
+          shell(3, fx, fy - 6, rand(-25, 25) * 0.1, -2.2 - rand(0, 15) * 0.1, -1);
+        END
+      CASE 3
+        explode(fx, fy, 14, 20);
+    END
+  END
+  n_shells--;
+END
+
+// Launch the current weapon from the current soldier.
+FUNCTION fire();
+PRIVATE sx, sy;
+BEGIN
+  sx = s_x[cur] + get_distx(aim, 9); sy = s_y[cur] - 2 + get_disty(aim, 9);
+  shell(weapon, sx, sy, get_distx(aim, power * PWR), get_disty(aim, power * PWR), cur);
+  charging = 0; phase = 1; shots++;
+  RETURN 0;
+END
+
+// =====================================================================
+// CPU player
+// =====================================================================
+
+// Where would a shot at angle a / power pw land? Returns the miss distance
+// to the target soldier t (impacts next to the shooter count as bad).
+FUNCTION simulate(a, pw, t);
+PRIVATE age, h;
+BEGIN
+  p_x = s_x[cur] + get_distx(a, 9); p_y = s_y[cur] - 2 + get_disty(a, 9);
+  p_vx = get_distx(a, pw * PWR); p_vy = get_disty(a, pw * PWR);
+  FOR age = 1 TO 320
+    h = step_proj(cur, age, t, 1);
+    IF (h) BREAK; END
+  END
+  sim_cost += age;
+  IF (h == 2) RETURN 0; END
+  IF (h == 3 OR h == 0) RETURN 9000 + abs(p_x - s_x[t]); END
+  IF (distance(p_x, p_y, s_x[cur], s_y[cur]) < 40) RETURN 5000; END
+  RETURN distance(p_x, p_y, s_x[t], s_y[t]);
+END
+
+PROCESS ai_brain();
+PRIVATE t, k, d, best, ba, bp, a0, p0, ia, ip, e, want_a, want_p, dir;
+BEGIN
+  ai_state = 1;
+  // target: the closest enemy, sometimes the weakest one instead
+  t = -1; best = 99999;
+  FOR k = 0 TO 7
+    IF (s_alive[k] AND s_team[k] != s_team[cur])
+      d = abs(s_x[k] - s_x[cur]);
+      IF (rand(0, 2) == 0) d = s_hp[k] * 4; END
+      IF (d < best) best = d; t = k; END
+    END
+  END
+  IF (t < 0) ai_state = 0; RETURN; END
+  ai_tx = s_x[t]; ai_ty = s_y[t];
+  IF (s_x[t] > s_x[cur]) dir = 1; ELSE dir = -1; END
+  weapon = 0;
+  IF (rand(0, 3) == 0) weapon = 2; END
+  FRAME(300);
+  sim_cost = 0;
+  // coarse search: 8 angles x 8 powers, two simulations per frame
+  best = 99999;
+  FOR ia = 0 TO 7
+    FOR ip = 0 TO 7
+      a0 = 10000 + ia * 10000;
+      IF (dir < 0) a0 = 180000 - a0; END
+      p0 = 30 + ip * 10;
+      IF (sim_cost > 50) sim_cost = 0; FRAME; END
+      e = simulate(a0, p0, t);
+      IF (e < best) best = e; ba = a0; bp = p0; END
+    END
+  END
+  // fine search around the best one
+  a0 = ba; p0 = bp;
+  FOR ia = -2 TO 2
+    FOR ip = -2 TO 2
+      IF (sim_cost > 50) sim_cost = 0; FRAME; END
+      e = simulate(a0 + ia * 2500, clamp(p0 + ip * 2.5, 10, 100), t);
+      IF (e < best) best = e; ba = a0 + ia * 2500; bp = clamp(p0 + ip * 2.5, 10, 100); END
+    END
+  END
+  ai_miss = best;
+  // the error shrinks with the CPU level
+  want_a = ba + rand(-2200, 2200) / level;
+  want_p = clamp(bp + rand(-25, 25) * 0.1 / level, 10, 100);
+  ai_state = 2;
+  // turn the gun, then hold "fire" up to the chosen power
+  s_face[cur] = dir;
+  WHILE (abs(aim - want_a) > 1200)
+    aim = aim + sign(want_a - aim) * 1200;
+    FRAME;
+  END
+  aim = want_a;
+  charging = 1; power = 0;
+  WHILE (power < want_p) power = min(power + 1.2, want_p); FRAME; END
+  ai_state = 0;
+  fire();
+END
+
+// =====================================================================
+// Turns
+// =====================================================================
+
+FUNCTION team_alive(t);
+PRIVATE k, n;
+BEGIN
+  n = 0;
+  FOR k = t * 4 TO t * 4 + 3 IF (s_alive[k]) n++; END END
+  RETURN n;
+END
+
+FUNCTION next_turn();
+PRIVATE k, i;
+BEGIN
+  turn_team = 1 - turn_team;
+  IF (team_alive(turn_team) == 0) turn_team = 1 - turn_team; END
+  k = last_of[turn_team];
+  FOR i = 1 TO 4                                  // next living soldier
+    k = turn_team * 4 + (k + 1) % 4;
+    IF (s_alive[k]) BREAK; END
+  END
+  last_of[turn_team] = k; cur = k;
+  wind = rand(-10, 10);
+  IF (s_face[k] > 0) aim = 45000; ELSE aim = 135000; END
+  power = 0; charging = 0; walk_left = 110; walk_dir = 0; jump_req = 0;
+  turn_t = 30 * 60; phase = 0; turns++;
+  cpu_turn = (turn_team == 1 OR demo);
+  IF (cpu_turn) ai_brain(); END
+  RETURN 0;
+END
+
+// Player controls for one frame (keyboard and mouse).
+FUNCTION player_input();
+PRIVATE up, fire_held, rb;
+BEGIN
+  walk_dir = 0;
+  IF (charging == 0)
+    IF (key(_left) OR key(_a)) walk_dir = -1; END
+    IF (key(_right) OR key(_d)) walk_dir = 1; END
+    IF (key_pressed(_enter) AND s_air[cur] == 0) jump_req = 1; END
+  END
+  IF (key_pressed(_1)) weapon = 0; END
+  IF (key_pressed(_2)) weapon = 1; END
+  IF (key_pressed(_3)) weapon = 2; END
+  rb = mouse.right;
+  IF (rb AND prev_rb == 0) weapon = (weapon + 1) % 3; END
+  prev_rb = rb;
+  // walking turns the aim round to the new side
+  IF (walk_dir != 0 AND walk_dir != s_face[cur] AND walk_left > 0) aim = 180000 - aim; END
+  up = key(_up) OR key(_w);
+  IF (up OR key(_down) OR key(_s))
+    IF (up == 0) up = -1; END
+    IF (s_face[cur] > 0) aim = clamp(aim + up * 1500, -80000, 88000);
+    ELSE aim = clamp(aim - up * 1500, 92000, 260000); END
+  END
+  // the mouse aims when it moves (last_mx/last_my are updated by MAIN)
+  IF (mouse.x != last_mx OR mouse.y != last_my)
+    IF (mouse.y > 22)
+      aim = fget_angle(s_x[cur], s_y[cur] - 2, mouse.x, mouse.y);
+      IF (aim > 180000) aim = aim - 360000; END
+      IF (mouse.x >= s_x[cur]) s_face[cur] = 1; ELSE s_face[cur] = -1; END
+      IF (s_face[cur] < 0 AND aim < -90000) aim = aim + 360000; END
+    END
+  END
+  // hold SPACE (or the left button) to charge, release to fire
+  fire_held = key(_space) OR mouse.left;
+  IF (fire_held) charging = 1; power = min(power + 1.2, 100); END
+  IF (charging AND (fire_held == 0 OR power >= 100)) fire(); END
+  RETURN 0;
+END
+
+// Everybody still? Dead soldiers blow up (which may start more falls).
+FUNCTION settle();
+PRIVATE k, still;
+BEGIN
+  settle_t++;
+  IF (n_shells > 0 OR n_booms > 0) RETURN 0; END
+  still = 1;
+  FOR k = 0 TO 7 IF (s_alive[k] AND s_air[k]) still = 0; END END
+  IF (still == 0 AND settle_t < 480) RETURN 0; END
+  FOR k = 0 TO 7
+    IF (s_alive[k] AND s_hp[k] <= 0)
+      s_alive[k] = 0; s_hp[k] = 0;
+      explode(s_x[k], s_y[k], 12, 10);
+      RETURN 0;
+    END
+  END
+  IF (settle_t < 40) RETURN 0; END
+  IF (team_alive(0) == 0 OR team_alive(1) == 0)
+    state = 2; winner = 2;
+    IF (team_alive(0)) winner = 0; level += (demo == 0); END
+    IF (team_alive(1)) winner = 1; END
+    RETURN 0;
+  END
+  next_turn();
+  RETURN 0;
+END
+
+// =====================================================================
+// HUD
+// =====================================================================
+FUNCTION draw_hud();
+PRIVATE k, t, hp0, hp1, wx, ax, ay, bob;
+BEGIN
+  hp0 = 0; hp1 = 0;
+  FOR k = 0 TO 7
+    IF (s_alive[k])
+      IF (s_team[k] == 0) hp0 += max(s_hp[k], 0); set_color('#9cc8ff');
+      ELSE hp1 += max(s_hp[k], 0); set_color('#ffa090'); END
+      text(s_x[k] - 7, s_y[k] - 20, "" + max(s_hp[k], 0));
+    END
+  END
+  draw_rect(0, 0, 640, 20, 'rgba(0,0,0,0.55)');
+  draw_rect(6, 13, hp0 / 3, 4, '#4a90ff');
+  draw_rect(634 - hp1 / 3, 13, hp1 / 3, 4, '#e84a3a');
+  set_color('#ffffff');
+  text(6, 3, "YOU " + team_alive(0));
+  text(560, 3, "CPU L" + level + " " + team_alive(1));
+  // wind: an arrow bar from the centre
+  text(236, 3, "WIND");
+  wx = wind * 6;
+  IF (wx > 0) draw_rect(320, 8, wx, 5, '#c0f0ff'); draw_rect(320 + wx, 6, 3, 9, '#c0f0ff'); END
+  IF (wx < 0) draw_rect(320 + wx, 8, -wx, 5, '#c0f0ff'); draw_rect(317 + wx, 6, 3, 9, '#c0f0ff'); END
+  draw_rect(319, 4, 2, 13, '#ffffff');
+  IF (state != 1) RETURN 0; END
+  // weapons and timer
+  IF (weapon == 0) set_color('#ffe070'); ELSE set_color('#a0a0a0'); END
+  text(90, 3, "1 BAZOOKA");
+  IF (weapon == 1) set_color('#ffe070'); ELSE set_color('#a0a0a0'); END
+  text(160, 3, "2 GRENADE");
+  IF (weapon == 2) set_color('#ffe070'); ELSE set_color('#a0a0a0'); END
+  text(390, 3, "3 CLUSTER");
+  set_color('#ffffff');
+  IF (phase == 0)
+    text(460, 3, "TIME " + (turn_t / 60));
+    // marker over the active soldier, crosshair and power bar
+    k = cur; bob = sin(get_time() * 500000) * 2;
+    draw_rect(s_x[k] - 3, s_y[k] - 32 + bob, 7, 3, '#ffff60');
+    draw_rect(s_x[k] - 1, s_y[k] - 29 + bob, 3, 3, '#ffff60');
+    ax = s_x[k] + get_distx(aim, 34); ay = s_y[k] - 2 + get_disty(aim, 34);
+    set_color('#ffffff'); circle(ax, ay, 3);
+    set_color('#ff3030'); circle(ax, ay, 1);
+    IF (charging)
+      draw_rect(s_x[k] - 16, s_y[k] + 12, 32, 5, '#202020');
+      draw_rect(s_x[k] - 16, s_y[k] + 12, power * 0.32, 5, '#ff8030');
+    END
+    IF (cpu_turn)
+      set_color('#ffe0e0');
+      IF (ai_state == 1) text(s_x[k] - 20, s_y[k] - 44, "thinking..."); END
+    ELSE
+      draw_rect(8, 24, walk_left * 0.5, 3, '#80ff80');
+    END
+  END
+  RETURN 0;
+END
+
+// Water: a translucent band with a moving line of crests on top.
+FUNCTION draw_water();
+PRIVATE i, t;
+BEGIN
+  t = get_time() * 60;
+  draw_rect(0, WATER, 640, 40, 'rgba(20,80,170,0.55)');
+  FOR i = 0 TO 15
+    draw_rect(i * 40 + (t % 40), WATER - 1 + sin(i * 50000 + t * 4000) * 1.5, 22, 2, '#a8d8ff');
+  END
+  RETURN 0;
+END
+
+FUNCTION panel(y0, h);
+BEGIN
+  draw_rect(150, y0, 340, h, 'rgba(0,0,0,0.7)');
+  RETURN 0;
+END
+
+// =====================================================================
+// MAIN
+// =====================================================================
+PRIVATE i;
+BEGIN
+  set_mode(640, 480);
+  set_fps(60, 0);
+  screen_color('#3c6ebe');
+  make_graphics();
+  pw[0] = 1;
+  FOR i = 1 TO 15 pw[i] = pw[i - 1] * 2; END
+  set_color('#d0d8e0');
+  write(0, 320, 470, 4, "ARROWS/AD walk  UP/DOWN aim  hold SPACE fire  ENTER jump  1-3 weapon  (mouse too)");
+  builder(0);
+  LOOP
+    draw_water();
+    draw_hud();
+    SWITCH (state)
+      CASE 0
+        panel(130, 200);
+        set_color('#ffe070'); text(282, 146, "A R T I L L E R Y");
+        set_color('#ffffff');
+        text(172, 176, "Blue team (you) against the red CPU team.");
+        text(172, 192, "Walk, aim and hold SPACE to charge a shot.");
+        text(172, 208, "Bazooka and cluster drift with the WIND,");
+        text(172, 224, "grenades bounce and burst after 3 seconds.");
+        text(172, 240, "Craters drop soldiers; water drowns them.");
+        set_color('#80ff80'); text(206, 274, "SPACE / ENTER: play    D: watch CPU vs CPU");
+        IF (key_pressed(_space) OR key_pressed(_enter) OR key_pressed(_d))
+          demo = key_pressed(_d);
+          state = 1; turn_team = rand(0, 1); next_turn();
+        END
+      CASE 1
+        IF (phase == 0)
+          IF (cpu_turn == 0) player_input(); END
+          last_mx = mouse.x; last_my = mouse.y;
+          turn_t--;
+          IF (turn_t <= 0 AND charging == 0) signal(TYPE ai_brain, s_kill); phase = 2; END
+          IF (turn_t <= 0 AND charging) fire(); END
+          IF (phase != 0) settle_t = 0; END
+        ELSE
+          IF (phase == 1 AND n_shells == 0) phase = 2; settle_t = 0; END
+          IF (phase == 2) settle(); END
+        END
+      CASE 2
+        panel(170, 110);
+        IF (demo)
+          set_color('#ffe070');
+          IF (winner == 0) text(254, 190, "DEMO OVER - BLUE WINS"); END
+          IF (winner == 1) text(258, 190, "DEMO OVER - RED WINS"); END
+        ELSE
+          IF (winner == 0) set_color('#80ff80'); text(250, 190, "VICTORY - the red team is gone"); END
+          IF (winner == 1) set_color('#ff8080'); text(250, 190, "DEFEAT - your team is wiped out"); END
+        END
+        IF (winner == 2) set_color('#ffffff'); text(270, 190, "DRAW - nobody is left"); END
+        set_color('#ffffff');
+        text(236, 216, "shots " + shots + "   turns " + turns + "   CPU level " + level);
+        set_color('#80ff80'); text(186, 246, "SPACE / ENTER: new battlefield   D: demo");
+        IF (key_pressed(_space) OR key_pressed(_enter) OR key_pressed(_d))
+          demo = key_pressed(_d);
+          signal(TYPE shell, s_kill); signal(TYPE ai_brain, s_kill);
+          n_shells = 0; shots = 0; turns = 0; phase = 0;
+          builder(1);
+        END
+      CASE 4
+        panel(210, 50);
+        set_color('#ffffff'); text(236, 230, "Generating terrain... " + gen_pct + "%");
+    END
+    FRAME;
+  END
+END

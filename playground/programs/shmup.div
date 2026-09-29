@@ -1,0 +1,302 @@
+PROGRAM shmup;
+
+GLOBAL g_bg      = 0;
+GLOBAL g_ship    = 0;
+GLOBAL g_bullet  = 0;
+GLOBAL g_ebullet = 0;
+GLOBAL g_enemy1  = 0;
+GLOBAL g_enemy2  = 0;
+GLOBAL g_boom    = 0;
+
+GLOBAL score   = 0;
+GLOBAL lives   = 3;
+GLOBAL wave    = 0;
+
+FUNCTION make_graphics();
+BEGIN
+  -- Starfield background tile
+  g_bg = new_graphic(360, 520);
+  gfx_fill(g_bg, 2, 4, 12);
+  FOR i = 0 TO 149
+    gfx_pixel(g_bg, rand(360), rand(520),
+              rand(180) + 75, rand(180) + 75, rand(200) + 55);
+  END
+  gfx_pixel(g_bg, rand(360), rand(520), 255, 255, 200);
+  gfx_pixel(g_bg, rand(360), rand(520), 200, 255, 255);
+
+  -- Player ship
+  g_ship = new_graphic(28, 32);
+  gfx_fill_rgba(g_ship, 0, 0, 0, 0);
+  gfx_rect(g_ship, 11, 20, 6, 12, 80, 160, 255);
+  gfx_rect(g_ship, 4, 22, 20, 8, 60, 120, 220);
+  gfx_line(g_ship, 14, 0, 4, 22, 100, 200, 255);
+  gfx_line(g_ship, 14, 0, 24, 22, 100, 200, 255);
+  gfx_line(g_ship, 4, 22, 24, 22, 100, 200, 255);
+  gfx_circle(g_ship, 14, 10, 4, 160, 220, 255);
+  gfx_rect(g_ship, 0, 24, 5, 6, 255, 140, 60);
+  gfx_rect(g_ship, 23, 24, 5, 6, 255, 140, 60);
+
+  -- Player bullet
+  g_bullet = new_graphic(4, 12);
+  gfx_fill_rgba(g_bullet, 0, 0, 0, 0);
+  gfx_rect(g_bullet, 1, 0, 2, 12, 255, 255, 100);
+  gfx_rect(g_bullet, 0, 2, 4, 6, 200, 255, 200);
+
+  -- Enemy bullet
+  g_ebullet = new_graphic(6, 6);
+  gfx_fill_rgba(g_ebullet, 0, 0, 0, 0);
+  gfx_circle(g_ebullet, 3, 3, 2, 255, 80, 80);
+
+  -- Enemy type 1 (basic)
+  g_enemy1 = new_graphic(28, 24);
+  gfx_fill_rgba(g_enemy1, 0, 0, 0, 0);
+  gfx_rect(g_enemy1, 4, 8, 20, 12, 80, 200, 80);
+  gfx_rect(g_enemy1, 8, 4, 12, 16, 60, 180, 60);
+  gfx_line(g_enemy1, 14, 0, 4, 8, 80, 200, 80);
+  gfx_line(g_enemy1, 14, 0, 24, 8, 80, 200, 80);
+  gfx_circle(g_enemy1, 14, 12, 4, 200, 255, 100);
+  gfx_rect(g_enemy1, 0, 14, 5, 6, 200, 100, 60);
+  gfx_rect(g_enemy1, 23, 14, 5, 6, 200, 100, 60);
+
+  -- Enemy type 2 (harder, red)
+  g_enemy2 = new_graphic(32, 28);
+  gfx_fill_rgba(g_enemy2, 0, 0, 0, 0);
+  gfx_rect(g_enemy2, 4, 10, 24, 14, 200, 60, 60);
+  gfx_rect(g_enemy2, 10, 4, 12, 20, 180, 50, 50);
+  gfx_line(g_enemy2, 16, 0, 4, 10, 220, 80, 80);
+  gfx_line(g_enemy2, 16, 0, 28, 10, 220, 80, 80);
+  gfx_circle(g_enemy2, 16, 14, 5, 255, 160, 60);
+  gfx_rect(g_enemy2, 0, 16, 6, 8, 255, 80, 60);
+  gfx_rect(g_enemy2, 26, 16, 6, 8, 255, 80, 60);
+
+  -- Explosion flash
+  g_boom = new_graphic(40, 40);
+  gfx_fill_rgba(g_boom, 0, 0, 0, 0);
+  gfx_circle(g_boom, 20, 20, 18, 255, 220, 80);
+  gfx_circle(g_boom, 20, 20, 12, 255, 160, 60);
+  gfx_circle(g_boom, 20, 20, 6, 255, 240, 200);
+
+  RETURN 0;
+END
+
+PROCESS bgscroll(yoff);
+BEGIN
+  x = 180; y = yoff;
+  width = 360; height = 520;
+  graph = g_bg;
+  z = 1000;
+  LOOP
+    y = y + 1;
+    IF (y > 780) y = y - 1040; END
+    FRAME;
+  END
+END
+
+PROCESS explosion(ex, ey, sz);
+PRIVATE life = 12;
+BEGIN
+  x = ex; y = ey;
+  width = sz; height = sz;
+  graph = g_boom;
+  LOOP
+    life = life - 1;
+    alpha = life * 8;
+    IF (life <= 0) BREAK; END
+    FRAME;
+  END
+END
+
+PROCESS enemy_bullet(bx, by, spd);
+BEGIN
+  x = bx; y = by;
+  width = 6; height = 6;
+  graph = g_ebullet;
+  LOOP
+    y = y + spd;
+    IF (y > 540) BREAK; END
+    IF (collision_circle(TYPE player))
+     // lives = lives - 1;
+      explosion(x, y, 30);
+      BREAK;
+    END
+    FRAME;
+  END
+END
+
+PROCESS player_bullet(bx, by);
+BEGIN
+  x = bx; y = by;
+  width = 4; height = 12;
+  graph = g_bullet;
+  LOOP
+    y = y - 10;
+    IF (y < -10) BREAK; END
+    FRAME;
+  END
+END
+
+PROCESS enemy1(ex, ey);
+PRIVATE tick = 0; hp = 1; shoot_t = rand(60) + 30;
+BEGIN
+  x = ex; y = -20;
+  width = 28; height = 24;
+  graph = g_enemy1;
+  LOOP
+    IF (y < ey) y = y + 2; END
+    tick = tick + 1;
+    x = ex + sin(tick * 2000) * 40 / 100000;
+    shoot_t = shoot_t - 1;
+    IF (shoot_t <= 0)
+      enemy_bullet(x, y + 14, 4);
+      shoot_t = rand(80) + 40;
+    END
+    IF (collision_circle(TYPE player_bullet))
+      hp = hp - 1;
+      red = 255; green = 60; blue = 60;
+    ELSE
+      red = 255; green = 255; blue = 255;
+    END
+    IF (hp <= 0)
+      explosion(x, y, 40);
+      score = score + 100;
+      BREAK;
+    END
+    IF (y > 560) BREAK; END
+    FRAME;
+  END
+END
+
+PROCESS enemy2(ex, ey);
+PRIVATE tick = 0; hp = 3; shoot_t = rand(40) + 20;
+BEGIN
+  x = ex; y = -30;
+  width = 32; height = 28;
+  graph = g_enemy2;
+  LOOP
+    IF (y < ey) y = y + 1; END
+    tick = tick + 1;
+    x = ex + sin(tick * 1500) * 60 / 100000;
+    shoot_t = shoot_t - 1;
+    IF (shoot_t <= 0)
+      enemy_bullet(x - 8, y + 16, 3);
+      enemy_bullet(x + 8, y + 16, 3);
+      shoot_t = rand(50) + 25;
+    END
+    IF (collision_circle(TYPE player_bullet))
+      hp = hp - 1;
+      red = 255; green = 60; blue = 60;
+    ELSE
+      IF (hp <= 1) red = 255; green = 120; blue = 60;
+      ELSE         red = 255; green = 255; blue = 255;
+      END
+    END
+    IF (hp <= 0)
+      explosion(x, y, 60);
+      score = score + 300;
+      BREAK;
+    END
+    IF (y > 560) BREAK; END
+    FRAME;
+  END
+END
+
+PROCESS spawner();
+PRIVATE delay = 60; pattern = 0;
+BEGIN
+  LOOP
+    delay = delay - 1;
+    IF (delay <= 0)
+      pattern = pattern + 1;
+      IF (pattern <= 10)
+        enemy1(rand(280) + 40, rand(120) + 40);
+        delay = 50;
+      ELSE
+        IF (pattern <= 18)
+          enemy2(rand(260) + 50, rand(100) + 40);
+          delay = 70;
+        ELSE
+          enemy1(rand(280) + 40, rand(100) + 40);
+          enemy1(rand(280) + 40, rand(100) + 40);
+          delay = 40;
+          IF (pattern > 22) pattern = 0; END
+        END
+      END
+    END
+    FRAME;
+  END
+END
+
+PROCESS player();
+PRIVATE spd = 4; cooldown = 0; inv = 0;
+BEGIN
+  x = 180; y = 430;
+  width = 28; height = 32;
+  graph = g_ship;
+  LOOP
+    IF (key(_left)  OR key(_a)) x = x - spd; END
+    IF (key(_right) OR key(_d)) x = x + spd; END
+    IF (key(_up)    OR key(_w)) y = y - spd; END
+    IF (key(_down)  OR key(_s)) y = y + spd; END
+    IF (x < 14)  x = 14;  END
+    IF (x > 346) x = 346; END
+    IF (y < 50)  y = 50;  END
+    IF (y > 490) y = 490; END
+    cooldown = cooldown - 1;
+    IF ((key(_z) OR key(_space)) AND cooldown <= 0)
+      player_bullet(x, y - 16);
+      cooldown = 10;
+    END
+    inv = inv - 1;
+    IF (inv < 0) inv = 0; END
+    IF (inv > 0)
+      alpha = 50 + sin(inv * 20000) * 40 / 100000;
+    ELSE
+      alpha = 100;
+      red = 255; green = 255; blue = 255;
+    END
+    //IF (lives <= 0) BREAK; END
+    FRAME;
+  END
+END
+
+PROCESS hud();
+BEGIN
+  // Written once: WRITE texts persist, OFFSET keeps the values live.
+  set_color('#fff');
+  write(0, 8, 8, 0, "SCR");
+  write_int(0, 40, 8, 0, OFFSET score);
+  write(0, 290, 8, 0, "LIV");
+  write_int(0, 322, 8, 0, OFFSET lives);
+  LOOP
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(360, 520);
+  set_fps(60, 0);  // written for 60 fps (DIV's default is 18)
+  screen_color('#020408');
+  make_graphics();
+
+  bgscroll(260);
+  bgscroll(260 - 520);
+
+  spawner();
+  player();
+  hud();
+
+  fade_off(100);
+  fade_on(4);
+
+  LOOP
+    IF (lives <= 0)
+      fade_off(3);
+      WHILE (is_fading()) FRAME; END
+      set_color('#f88');
+      text(0, 180, 240, "GAME OVER");
+      write_int(0, 180, 260, 4, score);
+      LOOP FRAME; END
+    END
+    FRAME;
+  END
+END

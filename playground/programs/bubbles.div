@@ -1,0 +1,1172 @@
+PROGRAM bubbles;
+
+// BUBBLE DINO - a Puzzle Bobble / Bust-a-Move style bubble shooter.
+// Aim the launcher (Left/Right or the mouse), fire (Space, Up or click) and
+// swap with the next bubble (Down, X or right click). Three or more bubbles
+// of a colour pop; whatever no longer hangs from the ceiling falls, and the
+// bonus doubles with every falling bubble. Every few shots the ceiling
+// presses down (the board shakes first); a bubble below the line loses.
+//
+// Every round is generated from its number (rand_seed): a symmetric pattern,
+// the colours, stones (they never pop, they only fall) and the ceiling
+// timing. Special bubbles are earned with big combos: the rainbow takes the
+// colour that pops the most, the bomb blows up everything around it.
+// VS CPU mode: two boards; popping and dropping sends garbage to the rival.
+//
+// The board is an offset-row hex grid kept in one array per player (even
+// rows 8 cells, odd rows 7 shifted half a bubble). The flight is plain
+// integer-free arithmetic in 8 pixel steps shared by the aim line and the
+// real shot, so the dotted line always shows exactly where the bubble lands.
+// Every graphic is drawn at start-up with gfx_* circles and lines.
+
+GLOBAL
+  // ---- geometry: cell centre = (fx + 16 + c*32 + (r%2)*16, FY + 16 + (r + drop)*28)
+  FY = 20; LY = 424; RH = 28;
+  // ---- boards: 2 players x 13 rows x 8 columns; 0 empty, 1-7 colour, 8 stone
+  gb[207];
+  mk[103]; stk[103]; lst[103]; stamp = 0;
+  ccnt[15];                       // bubbles of each colour on each board (p*8 + colour)
+  // ---- per player (index 0 = you, 1 = CPU)
+  fx[1]; drop[1]; voff[1]; shk[1]; ang[1]; cur[1]; nxt[1]; fcol[1]; ph[1]; pt[1];
+  sx[1]; sy[1]; svx[1]; svy[1]; low_y[1]; shots[1]; ceil_n[1]; gar[1]; spec[1];
+  aim_k[1]; aim_a[1]; bv[1]; aim_bv[1]; sc[1]; wins[1]; happy[1]; lost[1];
+  dtx[139]; dty[139]; ndot[1];    // aim line dots (70 per player)
+  // CPU brain: angle being tried, best angle, value, use next bubble
+  ai_i[1]; ai_best[1]; ai_v[1]; ai_sw[1]; ai_wait[1]; ai_k[1];
+  // ---- game
+  state = 0;     // 0 title, 1 round intro, 2 playing, 3 round clear, 4 game over,
+                 // 5 building a round, 6 VS result
+  bstep = 0;
+  mode = 0;      // 0 puzzle, 1 VS CPU
+  menu = 0; level = 1; score = 0; hi = 5000; ncol = 3; pattern = 0; st_t = 0.0;
+  lvl_t = 0.0; bonus = 0; vs_round = 1; msg_on = 0; click = 0; rclick = 0; lprev = 0; rprev = 0;
+  // statistics read by the tests
+  n_shots = 0; n_bounce_shots = 0; n_mismatch = 0; last_k = -1; last_x = 0; last_y = 0;
+  n_pops = 0; n_drops = 0; n_ceil = 0; n_clears = 0; n_losses = 0; n_garbage = 0;
+  cells_left = 0; gen_sig = 0; fps_now = 0; r_pop = 0; r_drop = 0; n_special = 0; n_stone_drop = 0;
+  // ---- graphics
+  g_bub[11]; g_arrow = 0; g_dino[3]; g_bg = 0; g_title = 0; g_msg = 0; g_hud = 0; g_ghost = 0;
+  cr[7]; cg[7]; cb[7]; css[8]; pnames[5]; pnl[5]; perm[6];
+  // ---- effects: bubble sprites (pop / fall), particles, floating texts
+  fe_m[47]; fe_x[47]; fe_y[47]; fe_vx[47]; fe_vy[47]; fe_c[47]; fe_d[47]; fe_t[47]; fe_next = 0;
+  pa_t[159]; pa_x[159]; pa_y[159]; pa_vx[159]; pa_vy[159]; pa_c[159]; pa_next = 0;
+  ft_t[5]; ft_x[5]; ft_y[5]; ft_s[5]; ft_next = 0;
+
+// =====================================================================
+// Small helpers and the hex grid
+// =====================================================================
+
+FUNCTION imin(a, b); BEGIN IF (a < b) RETURN a; END RETURN b; END
+FUNCTION imax(a, b); BEGIN IF (a > b) RETURN a; END RETURN b; END
+FUNCTION cxp(p, i); BEGIN RETURN fx[p] + 16 + (i % 8) * 32 + ((i / 8) % 2) * 16; END
+FUNCTION cyp(p, i); BEGIN RETURN FY + 16 + (i / 8 + drop[p]) * RH; END
+FUNCTION rowlen(r); BEGIN RETURN 8 - r % 2; END
+FUNCTION ndig(n);                     // characters needed to print n
+PRIVATE d;
+BEGIN
+  d = 1;
+  WHILE (n >= 10) n = n / 10; d++; END
+  RETURN d;
+END
+
+// Neighbour d (0-5) of cell i, or -1: left, right, two above, two below.
+// Odd rows sit half a bubble to the right, so their diagonal neighbours
+// are c and c+1 on the even rows, and an even row's are c-1 and c.
+FUNCTION nb(i, d);
+PRIVATE r, c, o;
+BEGIN
+  r = i / 8; c = i % 8; o = r % 2;
+  SWITCH (d)
+    CASE 0 c--;
+    CASE 1 c++;
+    CASE 2 r--; c += o - 1;
+    CASE 3 r--; c += o;
+    CASE 4 r++; c += o - 1;
+    CASE 5 r++; c += o;
+  END
+  IF (r < 0 OR r > 12 OR c < 0 OR c >= 8 - r % 2) RETURN -1; END
+  RETURN r * 8 + c;
+END
+
+// A free cell may take a bubble when it touches the ceiling or a bubble
+FUNCTION attached(p, i);
+PRIVATE d, j;
+BEGIN
+  IF (i < 8) RETURN 1; END
+  FOR d = 0 TO 5
+    j = nb(i, d);
+    IF (j >= 0) IF (gb[p * 104 + j] > 0) RETURN 1; END END
+  END
+  RETURN 0;
+END
+
+// Flood fill of the group of colour col around cell i into lst[]; size
+FUNCTION group(p, i, col);
+PRIVATE n, sp, j, d, e;
+BEGIN
+  stamp++; n = 0; sp = 0;
+  stk[0] = i; sp = 1; mk[i] = stamp;
+  WHILE (sp > 0)
+    sp--; j = stk[sp]; lst[n] = j; n++;
+    FOR d = 0 TO 5
+      e = nb(j, d);
+      IF (e >= 0)
+        IF (mk[e] != stamp AND gb[p * 104 + e] == col) mk[e] = stamp; stk[sp] = e; sp++; END
+      END
+    END
+  END
+  RETURN n;
+END
+
+// Marks (mk == stamp) every bubble that still hangs from the ceiling
+FUNCTION connect(p);
+PRIVATE sp, j, d, e;
+BEGIN
+  stamp++; sp = 0;
+  FOR j = 0 TO 7
+    IF (gb[p * 104 + j] > 0) mk[j] = stamp; stk[sp] = j; sp++; END
+  END
+  WHILE (sp > 0)
+    sp--; j = stk[sp];
+    FOR d = 0 TO 5
+      e = nb(j, d);
+      IF (e >= 0)
+        IF (mk[e] != stamp AND gb[p * 104 + e] > 0) mk[e] = stamp; stk[sp] = e; sp++; END
+      END
+    END
+  END
+  RETURN stamp;
+END
+
+FUNCTION count_colours(p);
+PRIVATE i, n;
+BEGIN
+  FOR i = 0 TO 7 ccnt[p * 8 + i] = 0; END
+  n = 0;
+  FOR i = 0 TO 103
+    IF (gb[p * 104 + i] > 0) ccnt[p * 8 + gb[p * 104 + i] % 8]++; n++; END
+  END
+  IF (p == 0) cells_left = n; END
+  RETURN n;
+END
+
+// A colour still on the board (only those are dealt); specials when earned
+FUNCTION pick_colour(p);
+PRIVATE k, n, c;
+BEGIN
+  n = 0;
+  FOR c = 1 TO 7 IF (ccnt[p * 8 + c] > 0) n++; END END
+  IF (n == 0) RETURN rand(1, ncol); END
+  k = rand(1, n);
+  FOR c = 1 TO 7
+    IF (ccnt[p * 8 + c] > 0) k--; IF (k == 0) RETURN c; END END
+  END
+  RETURN 1;
+END
+
+FUNCTION deal(p);
+PRIVATE k;
+BEGIN
+  IF (spec[p] > 0) k = spec[p]; spec[p] = 0; RETURN k; END
+  RETURN pick_colour(p);
+END
+
+// =====================================================================
+// Flight: one step of 8 pixels, shared by the aim line and the real shot
+// =====================================================================
+
+// Lowest bubble of the board: below it a step needs no bubble tests
+FUNCTION find_low(p);
+PRIVATE i;
+BEGIN
+  low_y[p] = FY + 16 + drop[p] * RH;
+  FOR i = 0 TO 103
+    IF (gb[p * 104 + i] > 0) low_y[p] = imax(low_y[p], cyp(p, i) + 28); END
+  END
+  RETURN 0;
+END
+
+// 1 when a bubble at (px, py) touches the ceiling or another bubble
+FUNCTION hit_test(p, px, py);
+PRIVATE top, r, c, r0, c0, dx, dy, k;
+BEGIN
+  top = FY + drop[p] * RH;
+  IF (py <= top + 16) RETURN 1; END
+  IF (py > low_y[p]) RETURN 0; END
+  r0 = int((py - top - 16) / RH);
+  FOR r = imax(0, r0 - 1) TO imin(12, r0 + 1)
+    c0 = int((px - fx[p] - 16 - (r % 2) * 16) / 32 + 0.5);
+    FOR c = imax(0, c0 - 1) TO imin(7 - r % 2, c0 + 1)
+      k = r * 8 + c;
+      IF (gb[p * 104 + k] > 0)
+        dx = px - cxp(p, k); dy = py - cyp(p, k);
+        IF (dx * dx + dy * dy < 676) RETURN 1; END     // closer than 26 px
+      END
+    END
+  END
+  RETURN 0;
+END
+
+// Moves the shot of player p one step, bouncing off the side walls.
+// Returns 1 on contact, 2 on a bounce, 0 otherwise.
+FUNCTION adv(p);
+PRIVATE b;
+BEGIN
+  sx[p] += svx[p]; sy[p] += svy[p]; b = 0;
+  IF (sx[p] < fx[p] + 16) sx[p] = 2 * (fx[p] + 16) - sx[p]; svx[p] = -svx[p]; b = 2; END
+  IF (sx[p] > fx[p] + 240) sx[p] = 2 * (fx[p] + 240) - sx[p]; svx[p] = -svx[p]; b = 2; END
+  IF (hit_test(p, sx[p], sy[p])) RETURN 1; END
+  RETURN b;
+END
+
+// The free, attached cell nearest to where the shot stopped
+FUNCTION snap(p, px, py);
+PRIVATE r, c, r0, k, best, bd, dx, dy, d;
+BEGIN
+  best = -1; bd = 999999;
+  r0 = int((py - FY - drop[p] * RH - 16) / RH + 0.5);
+  r0 = imax(0, imin(12, r0));
+  FOR r = imax(0, r0 - 1) TO imin(12, r0 + 1)
+    FOR c = 0 TO 7 - r % 2
+      k = r * 8 + c;
+      IF (gb[p * 104 + k] == 0 AND attached(p, k))
+        dx = px - cxp(p, k); dy = py - cyp(p, k); d = dx * dx + dy * dy;
+        IF (d < bd) bd = d; best = k; END
+      END
+    END
+  END
+  IF (best < 0)                                 // never expected: any free attached cell
+    FOR k = 0 TO 103
+      IF (k % 8 < rowlen(k / 8) AND gb[p * 104 + k] == 0 AND best < 0)
+        IF (attached(p, k)) best = k; END
+      END
+    END
+  END
+  RETURN best;
+END
+
+FUNCTION launch(p, a);
+BEGIN
+  sx[p] = fx[p] + 128; sy[p] = LY;
+  svx[p] = get_distx(a, 8); svy[p] = get_disty(a, 8);
+  RETURN 0;
+END
+
+// Simulates a shot at angle a; returns the landing cell. With rec it
+// stores a dot every 16 px for the aim line, up to the second bounce.
+FUNCTION sim_path(p, a, rec);
+PRIVATE n, s, b;
+BEGIN
+  find_low(p); launch(p, a);
+  IF (rec) ndot[p] = 0; END
+  b = 0;
+  FOR n = 1 TO 400
+    s = adv(p);
+    IF (s == 1) RETURN snap(p, sx[p], sy[p]); END
+    IF (s == 2) b++; END
+    IF (rec AND b < 2 AND n % 2 == 0 AND ndot[p] < 70)
+      dtx[p * 70 + ndot[p]] = sx[p]; dty[p * 70 + ndot[p]] = sy[p]; ndot[p]++;
+    END
+  END
+  RETURN -1;
+END
+
+// =====================================================================
+// Effects
+// =====================================================================
+
+FUNCTION particle(px, py, c);
+PRIVATE i;
+BEGIN
+  i = pa_next; pa_next = (pa_next + 1) % 160;
+  pa_t[i] = rand(35, 60) * 0.01; pa_x[i] = px; pa_y[i] = py;
+  pa_vx[i] = rand(-160, 160); pa_vy[i] = rand(-220, 60); pa_c[i] = c;
+  RETURN 0;
+END
+
+// A bubble sprite that pops (mode 1, after delay dl) or falls (mode 2)
+FUNCTION fx_bub(m, px, py, c, dl);
+PRIVATE i;
+BEGIN
+  i = fe_next; fe_next = (fe_next + 1) % 48;
+  fe_m[i] = m; fe_x[i] = px; fe_y[i] = py; fe_c[i] = c; fe_d[i] = dl; fe_t[i] = 0;
+  fe_vx[i] = rand(-60, 60); fe_vy[i] = rand(-160, -40);
+  RETURN 0;
+END
+
+FUNCTION float_text(px, py, s);
+BEGIN
+  ft_t[ft_next] = 1.2; ft_x[ft_next] = px; ft_y[ft_next] = py; ft_s[ft_next] = s;
+  ft_next = (ft_next + 1) % 6;
+  RETURN 0;
+END
+
+PROCESS fx_sprite(i);
+PRIVATE dt, k;
+BEGIN
+  z = -5;
+  LOOP
+    graph = 0; dt = imin(get_delta(), 0.05);
+    IF (fe_m[i] == 1)                           // pop: wait, swell and fade
+      fe_t[i] += dt; x = fe_x[i]; y = fe_y[i]; graph = g_bub[fe_c[i]]; size = 100; alpha = 100;
+      IF (fe_t[i] > fe_d[i])
+        k = (fe_t[i] - fe_d[i]) * 6;
+        size = 100 + k * 70; alpha = imax(0, 100 - k * 100);
+        IF (fe_d[i] >= 0)                       // burst of particles once
+          fe_d[i] = -fe_d[i] - 0.001; fe_t[i] = -fe_d[i];
+          FOR k = 1 TO 6 particle(x, y, fe_c[i]); END
+        END
+        IF (alpha <= 0) fe_m[i] = 0; graph = 0; END
+      END
+    END
+    IF (fe_m[i] == 2)                           // fall with gravity
+      fe_vy[i] += 1400 * dt; fe_x[i] += fe_vx[i] * dt; fe_y[i] += fe_vy[i] * dt;
+      x = fe_x[i]; y = fe_y[i]; graph = g_bub[fe_c[i]]; size = 100; alpha = 100;
+      IF (y > 500) fe_m[i] = 0; graph = 0; END
+    END
+    FRAME;
+  END
+END
+
+PROCESS fxman();
+PRIVATE i, dt;
+BEGIN
+  LOOP
+    dt = imin(get_delta(), 0.05);
+    FOR i = 0 TO 159
+      IF (pa_t[i] > 0)
+        pa_t[i] -= dt; pa_vy[i] += 600 * dt;
+        pa_x[i] += pa_vx[i] * dt; pa_y[i] += pa_vy[i] * dt;
+        set_color(css[pa_c[i] % 8]); circle(pa_x[i], pa_y[i], 1 + pa_t[i] * 6);
+      END
+    END
+    FOR i = 0 TO 5
+      IF (ft_t[i] > 0)
+        ft_t[i] -= dt; ft_y[i] -= 30 * dt;
+        set_color('#402000'); text(ft_x[i] + 1, ft_y[i] + 1, ft_s[i]);
+        set_color('#fff060'); text(ft_x[i], ft_y[i], ft_s[i]);
+      END
+    END
+    FRAME;
+  END
+END
+
+// =====================================================================
+// Resolving a landed shot: pops, bombs, rainbows and falling bubbles
+// =====================================================================
+
+FUNCTION pop_cell(p, i, dl);
+BEGIN
+  fx_bub(1, cxp(p, i) + shk[p], cyp(p, i), gb[p * 104 + i], dl);
+  gb[p * 104 + i] = 0;
+  RETURN 0;
+END
+
+// Rainbow: takes the neighbouring colour that makes the biggest group
+FUNCTION rainbow(p, i);
+PRIVATE d, j, c, n, bn, bc;
+BEGIN
+  bn = 0; bc = rand(1, ncol);
+  FOR d = 0 TO 5
+    j = nb(i, d);
+    IF (j >= 0)
+      c = gb[p * 104 + j];
+      IF (c >= 1 AND c <= 7)
+        gb[p * 104 + i] = c; n = group(p, i, c);
+        IF (n > bn) bn = n; bc = c; END
+      END
+    END
+  END
+  RETURN bc;
+END
+
+// Places colour col in cell i and plays the consequences; returns how
+// many bubbles went (pops + drops), which is what VS sends as garbage
+FUNCTION resolve(p, i, col);
+PRIVATE n, k, j, dr, px, py, pts, dx, dy, st;
+BEGIN
+  n = 0; r_pop = 0; r_drop = 0;
+  IF (col >= 9 AND p == 0) n_special++; END
+  IF (col == 9) col = rainbow(p, i); END
+  IF (col == 10)                                  // bomb: clears a ring of about 2 cells
+    px = cxp(p, i); py = cyp(p, i);
+    FOR k = 0 TO 103
+      IF (gb[p * 104 + k] > 0)
+        dx = cxp(p, k) - px; dy = cyp(p, k) - py;
+        IF (dx * dx + dy * dy <= 3364) pop_cell(p, k, n * 0.02); n++; END
+      END
+    END
+    fx_bub(1, px, py, 10, 0);
+    FOR k = 1 TO 12 particle(px, py, 0); particle(px, py, 2); END
+  ELSE
+    gb[p * 104 + i] = col;
+    k = group(p, i, col);
+    IF (k >= 3)
+      FOR j = 0 TO k - 1 pop_cell(p, lst[j], j * 0.035); END
+      n = k;
+    END
+  END
+  dr = 0;
+  IF (n > 0)                                      // whatever lost the ceiling falls
+    st = connect(p);
+    FOR k = 0 TO 103
+      IF (gb[p * 104 + k] > 0 AND mk[k] != st)
+        fx_bub(2, cxp(p, k) + shk[p], cyp(p, k), gb[p * 104 + k], 0);
+        IF (gb[p * 104 + k] == 8 AND p == 0) n_stone_drop++; END
+        gb[p * 104 + k] = 0; dr++;
+      END
+    END
+    pts = n * 10;
+    IF (dr > 0) pts += 10 * pow(2, imin(dr, 12)); END
+    sc[p] += pts; n_pops += n; n_drops += dr; r_pop = n; r_drop = dr;
+    float_text(cxp(p, i) - 12, cyp(p, i) - 20, "+" + pts);
+    IF (n + dr >= 8 AND spec[p] == 0) spec[p] = rand(9, 10); END   // earned a special
+    happy[p] = 1.0;
+  END
+  bv[p]++;
+  count_colours(p);
+  // colours that left the board are no longer dealt
+  IF (cur[p] >= 1 AND cur[p] <= 7) IF (ccnt[p * 8 + cur[p]] == 0) cur[p] = deal(p); END END
+  IF (nxt[p] >= 1 AND nxt[p] <= 7) IF (ccnt[p * 8 + nxt[p]] == 0) nxt[p] = deal(p); END END
+  RETURN n + dr;
+END
+
+// Garbage from the rival: one bubble flies straight up from below a random
+// half-column (same flight code as a shot) and sticks where it hits
+FUNCTION garbage_one(p);
+PRIVATE n, k;
+BEGIN
+  find_low(p);
+  sx[p] = fx[p] + 16 + rand(0, 14) * 16; sy[p] = LY; svx[p] = 0; svy[p] = -8;
+  FOR n = 1 TO 60
+    IF (adv(p) == 1)
+      k = snap(p, sx[p], sy[p]);
+      IF (k >= 0)
+        gb[p * 104 + k] = pick_colour(p); n_garbage++;
+        particle(cxp(p, k), cyp(p, k), 0); particle(cxp(p, k), cyp(p, k), 0);
+      END
+      n = 99;
+    END
+  END
+  bv[p]++; count_colours(p);
+  RETURN 0;
+END
+
+FUNCTION crossed(p);
+PRIVATE i;
+BEGIN
+  FOR i = 0 TO 103
+    IF (gb[p * 104 + i] > 0 AND i / 8 + drop[p] >= 12) RETURN 1; END
+  END
+  RETURN 0;
+END
+
+// =====================================================================
+// Round generation: symmetric patterns from the round number
+// =====================================================================
+
+// Distance from the board's centre line in half-cells (0-7), same for mirrors
+FUNCTION dxc(i); BEGIN RETURN abs(2 * (i % 8) + (i / 8) % 2 - 7); END
+FUNCTION mirror(i); BEGIN RETURN (i / 8) * 8 + rowlen(i / 8) - 1 - i % 8; END
+
+FUNCTION gen_board(p, lv);
+PRIVATE i, r, d, nr, keep, k, c, t, st, ns, tries;
+BEGIN
+  rand_seed(lv * 7919 + 13 + mode * 101);
+  FOR i = 0 TO 103 gb[p * 104 + i] = 0; END
+  ncol = imin(3 + (lv - 1) / 2, 7);
+  IF (mode == 1) ncol = imin(4 + (lv - 1) / 3, 6); END
+  nr = imin(5 + lv / 3, 8);
+  pattern = (lv - 1) % 6;
+  FOR i = 0 TO 6 perm[i] = i + 1; END           // which colours this round uses
+  FROM i = 6 TO 1; k = rand(0, i); t = perm[i]; perm[i] = perm[k]; perm[k] = t; END
+  t = rand(0, 2);                               // colouring style
+  FOR i = 0 TO nr * 8 - 1
+    r = i / 8; c = i % 8; d = dxc(i);
+    IF (c < rowlen(r) AND c * 2 + r % 2 <= 7)    // left half and centre; mirrored below
+      SWITCH (pattern)
+        CASE 0 keep = 1;                                       // block
+        CASE 1 keep = (d <= 8 - r);                            // funnel
+        CASE 2 keep = ((d + r) % 4 != 3 OR r == 0);            // lattice with holes
+        CASE 3 keep = ((d / 2) % 2 == 0 OR r < 2);             // hanging columns
+        CASE 4 keep = (r < 2 OR d >= 4);                       // bowl
+        CASE 5 keep = (rand(0, 99) < 78 OR r == 0);            // random lace
+      END
+      IF (keep)
+        SWITCH (t)
+          CASE 0 k = (r / 2 + d / 3) % ncol;                   // bands
+          CASE 1 k = (d / 2 + r) % ncol;                       // diagonals
+          CASE 2 k = rand(0, ncol - 1);                        // confetti
+        END
+        IF (rand(0, 99) < 20) k = rand(0, ncol - 1); END
+        gb[p * 104 + i] = perm[k]; gb[p * 104 + mirror(i)] = perm[k];
+      END
+    END
+  END
+  st = connect(p);                              // no floating bubbles to start with
+  FOR i = 0 TO 103 IF (gb[p * 104 + i] > 0 AND mk[i] != st) gb[p * 104 + i] = 0; END END
+  count_colours(p);
+  FOR k = 0 TO ncol - 1                         // every dealt colour is on the board
+    IF (ccnt[p * 8 + perm[k]] == 0)
+      FOR tries = 1 TO 200                    // recolour a pair whose colour can spare it
+        i = rand(0, nr * 8 - 1); c = gb[p * 104 + i];
+        IF (c > 0 AND c < 8)
+          IF (ccnt[p * 8 + c] > 2)
+            gb[p * 104 + i] = perm[k]; gb[p * 104 + mirror(i)] = perm[k]; tries = 999;
+            count_colours(p);
+          END
+        END
+      END
+    END
+  END
+  ns = 0;                                       // stones from round 4, never on the top row
+  IF (lv >= 4)
+    FOR k = 1 TO imin(1 + (lv - 4) / 3, 4)
+      i = rand(8, nr * 8 - 1);
+      IF (gb[p * 104 + i] > 0 AND ccnt[p * 8 + gb[p * 104 + i]] > 4)
+        gb[p * 104 + i] = 8; gb[p * 104 + mirror(i)] = 8; ns++;
+      END
+      count_colours(p);
+    END
+  END
+  gen_sig = 0;                                  // fingerprint, to tell rounds apart
+  FOR i = 0 TO 103 gen_sig = (gen_sig * 7 + gb[p * 104 + i] + i) % 1000003; END
+  ceil_n[p] = imax(4, 10 - lv / 2);
+  IF (mode == 1) ceil_n[p] = 9; END
+  rand_seed();
+  RETURN 0;
+END
+
+// Resets a player for a new round
+FUNCTION reset_player(p);
+BEGIN
+  drop[p] = 0; voff[p] = 0; shk[p] = 0; ang[p] = 90000; ph[p] = 0; pt[p] = 0;
+  shots[p] = 0; gar[p] = 0; spec[p] = 0; bv[p]++; lost[p] = 0; ndot[p] = 0; happy[p] = 0;
+  ai_i[p] = -1; ai_wait[p] = 0;
+  count_colours(p);
+  cur[p] = deal(p); nxt[p] = deal(p);
+  RETURN 0;
+END
+
+// =====================================================================
+// Graphics, all generated
+// =====================================================================
+
+// A shiny bubble: dark rim, rings getting lighter towards the upper left,
+// a big soft highlight and a small glint
+FUNCTION draw_bubble(gr, cx, cy, rad, r, g, b);
+PRIVATE i, t, k;
+BEGIN
+  gfx_circle(gr, cx, cy, rad, r * 0.35, g * 0.35, b * 0.35);
+  FOR i = 0 TO 7
+    t = i * 0.14;
+    k = rad * (0.92 - i * 0.09);
+    gfx_circle(gr, cx - rad * i * 0.035, cy - rad * i * 0.045, k,
+               imin(255, r * (0.72 + t * 0.55) + t * 40), imin(255, g * (0.72 + t * 0.55) + t * 40),
+               imin(255, b * (0.72 + t * 0.55) + t * 40));
+  END
+  gfx_circle(gr, cx - rad * 0.33, cy - rad * 0.38, rad * 0.3, imin(255, r + 150), imin(255, g + 150), imin(255, b + 150));
+  gfx_circle(gr, cx - rad * 0.38, cy - rad * 0.42, rad * 0.15, 255, 255, 255);
+  gfx_circle(gr, cx + rad * 0.45, cy + rad * 0.42, rad * 0.1, imin(255, r + 90), imin(255, g + 90), imin(255, b + 90));
+  RETURN 0;
+END
+
+// The dinosaur (facing left, towards the launcher); happy = arms up, mouth open
+FUNCTION draw_dino(gr, ox, oy, s, r, g, b, hp);
+PRIVATE i;
+BEGIN
+  FOR i = 0 TO 4                                            // back spikes
+    gfx_circle(gr, ox + (22 + i * 5) * s, oy + (16 + i * 2) * s, 3 * s, 255, 170, 60);
+  END
+  gfx_line(gr, ox + 36 * s, oy + 34 * s, ox + 47 * s, oy + 40 * s, r * 0.6, g * 0.6, b * 0.6);   // tail
+  gfx_circle(gr, ox + 42 * s, oy + 38 * s, 4 * s, r * 0.8, g * 0.8, b * 0.8);
+  gfx_circle(gr, ox + 27 * s, oy + 31 * s, 14 * s, r * 0.6, g * 0.6, b * 0.6);   // body
+  gfx_circle(gr, ox + 27 * s, oy + 30 * s, 13 * s, r, g, b);
+  gfx_circle(gr, ox + 24 * s, oy + 34 * s, 8 * s, 255, 240, 190);               // belly
+  gfx_rect(gr, ox + 18 * s, oy + 42 * s, 7 * s, 5 * s, r * 0.6, g * 0.6, b * 0.6);   // feet
+  gfx_rect(gr, ox + 30 * s, oy + 42 * s, 7 * s, 5 * s, r * 0.6, g * 0.6, b * 0.6);
+  gfx_circle(gr, ox + 17 * s, oy + 14 * s, 11 * s, r, g, b);                    // head
+  gfx_circle(gr, ox + 9 * s, oy + 18 * s, 7 * s, imin(255, r + 30), imin(255, g + 30), imin(255, b + 30));
+  gfx_circle(gr, ox + 17 * s, oy + 10 * s, 5 * s, 255, 255, 255);               // eye
+  gfx_circle(gr, ox + 15 * s, oy + 10 * s, 3 * s, 20, 20, 40);
+  gfx_circle(gr, ox + 14 * s, oy + 9 * s, 1 * s, 255, 255, 255);
+  gfx_circle(gr, ox + 6 * s, oy + 16 * s, 1 * s, 30, 60, 30);                   // nostril
+  gfx_circle(gr, ox + 20 * s, oy + 19 * s, 2 * s, 255, 150, 170);               // cheek
+  IF (hp)
+    gfx_circle(gr, ox + 9 * s, oy + 22 * s, 3 * s, 120, 20, 40);                // open mouth
+    gfx_line(gr, ox + 18 * s, oy + 28 * s, ox + 10 * s, oy + 20 * s, r * 0.6, g * 0.6, b * 0.6);   // arm up
+    gfx_line(gr, ox + 19 * s, oy + 29 * s, ox + 11 * s, oy + 21 * s, r * 0.6, g * 0.6, b * 0.6);
+  ELSE
+    gfx_line(gr, ox + 5 * s, oy + 21 * s, ox + 12 * s, oy + 22 * s, 30, 60, 30);   // smile
+    gfx_line(gr, ox + 18 * s, oy + 30 * s, ox + 13 * s, oy + 34 * s, r * 0.6, g * 0.6, b * 0.6);   // arm down
+  END
+  RETURN 0;
+END
+
+FUNCTION make_graphics();
+PRIVATE i, gr;
+BEGIN
+  FOR i = 1 TO 7
+    g_bub[i] = new_graphic(32, 32); draw_bubble(g_bub[i], 16, 16, 15, cr[i - 1], cg[i - 1], cb[i - 1]);
+  END
+  gr = new_graphic(32, 32); g_bub[8] = gr;                   // stone: grey with cracks
+  gfx_circle(gr, 16, 16, 15, 50, 50, 60); gfx_circle(gr, 16, 16, 14, 120, 120, 130);
+  gfx_circle(gr, 14, 14, 11, 150, 150, 160); gfx_circle(gr, 11, 10, 4, 200, 200, 210);
+  gfx_line(gr, 8, 20, 15, 16, 60, 60, 70); gfx_line(gr, 15, 16, 14, 25, 60, 60, 70);
+  gfx_line(gr, 15, 16, 24, 12, 60, 60, 70); gfx_line(gr, 20, 26, 25, 20, 80, 80, 90);
+  gr = new_graphic(32, 32); g_bub[9] = gr;                   // rainbow: rings of every colour
+  gfx_circle(gr, 16, 16, 15, 60, 40, 80);
+  FOR i = 0 TO 6 gfx_circle(gr, 16, 16, 14 - i * 2, cr[i], cg[i], cb[i]); END
+  gfx_circle(gr, 11, 10, 4, 255, 255, 255);
+  gr = new_graphic(32, 32); g_bub[10] = gr;                  // bomb with a lit fuse
+  gfx_circle(gr, 16, 18, 13, 20, 20, 30); gfx_circle(gr, 15, 17, 11, 60, 60, 80);
+  gfx_circle(gr, 11, 13, 4, 160, 160, 190); gfx_rect(gr, 13, 3, 6, 4, 90, 90, 100);
+  gfx_line(gr, 16, 3, 21, 0, 200, 160, 80);
+  gfx_circle(gr, 22, 2, 2, 255, 220, 40); gfx_circle(gr, 22, 2, 1, 255, 255, 255);
+  g_ghost = new_graphic(32, 32);                             // landing marker
+  gfx_circle_outline(g_ghost, 16, 16, 14, 255, 255, 255); gfx_circle_outline(g_ghost, 16, 16, 13, 120, 120, 160);
+  // launcher arrow, drawn facing right; the pivot is the launcher centre
+  g_arrow = new_graphic(76, 20);
+  gfx_rect(g_arrow, 20, 7, 40, 6, 90, 70, 60); gfx_rect(g_arrow, 20, 8, 40, 3, 250, 220, 120);
+  FOR i = 0 TO 9 gfx_line(g_arrow, 58 + i, 1 + i * 0.9, 58 + i, 19 - i * 0.9, 250, 90 + i * 12, 60); END
+  set_point(0, g_arrow, 0, 10, 10);
+  g_dino[0] = new_graphic(48, 48); draw_dino(g_dino[0], 0, 0, 1, 90, 200, 80, 0);
+  g_dino[1] = new_graphic(48, 48); draw_dino(g_dino[1], 0, 0, 1, 90, 200, 80, 1);
+  g_dino[2] = new_graphic(48, 48); draw_dino(g_dino[2], 0, 0, 1, 170, 110, 220, 0);
+  g_dino[3] = new_graphic(48, 48); draw_dino(g_dino[3], 0, 0, 1, 170, 110, 220, 1);
+  g_bg = new_graphic(640, 480); g_title = new_graphic(640, 480);
+  g_msg = new_graphic(360, 170); g_hud = new_graphic(170, 300);
+  RETURN 0;
+END
+
+// The playfield of player p: dark box, striped walls, deadline, launcher base
+FUNCTION paint_field(p);
+PRIVATE f, i, top;
+BEGIN
+  f = fx[p];
+  gfx_rect(g_bg, f - 10, FY - 10, 276, 470 - FY, 40, 30, 60);
+  gfx_rect(g_bg, f, FY, 256, 460 - FY, 22, 26, 52);
+  FOR i = 0 TO 13                                            // faint hex dots
+    gfx_rect(g_bg, f + 16 + (i % 2) * 16, FY + 16 + i * 28, 224, 1, 30, 36, 66);
+  END
+  FOR i = 0 TO 22                                            // striped walls
+    gfx_rect(g_bg, f - 8, FY + i * 20, 7, 10, 120, 110, 160);
+    gfx_rect(g_bg, f + 257, FY + i * 20, 7, 10, 120, 110, 160);
+  END
+  gfx_rect(g_bg, f - 10, FY - 8, 276, 8, 150, 140, 190);
+  top = FY + 12 * RH + 1;                                    // the deadline
+  FOR i = 0 TO 31 gfx_rect(g_bg, f + i * 8, top, 5, 2, 255, 80, 90); END
+  gfx_circle(g_bg, f + 128, LY + 8, 34, 60, 50, 80);         // launcher base with bolts
+  gfx_circle(g_bg, f + 128, LY + 8, 30, 140, 130, 170);
+  gfx_circle(g_bg, f + 128, LY + 8, 22, 90, 80, 120);
+  FOR i = 0 TO 7
+    gfx_circle(g_bg, f + 128 + get_distx(i * 45000, 26), LY + 8 + get_disty(i * 45000, 26), 3, 220, 210, 240);
+  END
+  gfx_rect(g_bg, f + 80, LY + 30, 96, 16, 70, 60, 90);
+  gfx_circle(g_bg, f + 40, LY + 26, 19, 60, 50, 80);        // next-bubble holder
+  gfx_circle(g_bg, f + 40, LY + 26, 17, 30, 30, 50);
+  gfx_text(g_bg, f + 26, LY + 2, "NEXT", 200, 190, 230, 10);
+  RETURN 0;
+END
+
+// Puzzle mode: a legend of the special bubbles and the controls on the right
+FUNCTION paint_help();
+PRIVATE i;
+BEGIN
+  gfx_rect(g_bg, 466, 30, 164, 300, 50, 30, 90); gfx_rect(g_bg, 469, 33, 158, 294, 30, 30, 70);
+  gfx_text(g_bg, 480, 42, "SPECIALS", 255, 230, 120, 16);
+  FOR i = 0 TO 6 gfx_circle(g_bg, 494, 84, 12 - i * 2, cr[i], cg[i], cb[i]); END     // rainbow
+  gfx_text(g_bg, 514, 70, "rainbow: takes", 220, 220, 250, 11);
+  gfx_text(g_bg, 514, 84, "the best colour", 220, 220, 250, 11);
+  gfx_circle(g_bg, 494, 124, 12, 20, 20, 30); gfx_circle(g_bg, 490, 120, 4, 160, 160, 190);   // bomb
+  gfx_circle(g_bg, 500, 111, 2, 255, 220, 40);
+  gfx_text(g_bg, 514, 110, "bomb: blasts", 220, 220, 250, 11);
+  gfx_text(g_bg, 514, 124, "everything near", 220, 220, 250, 11);
+  gfx_circle(g_bg, 494, 164, 12, 120, 120, 130); gfx_line(g_bg, 488, 168, 496, 158, 60, 60, 70);   // stone
+  gfx_text(g_bg, 514, 150, "stone: never", 220, 220, 250, 11);
+  gfx_text(g_bg, 514, 164, "pops, only falls", 220, 220, 250, 11);
+  gfx_text(g_bg, 480, 192, "Pop 8+ at once", 255, 200, 150, 11);
+  gfx_text(g_bg, 480, 206, "to earn a special", 255, 200, 150, 11);
+  gfx_text(g_bg, 480, 236, "CONTROLS", 255, 230, 120, 16);
+  gfx_text(g_bg, 480, 262, "Left/Right, mouse", 220, 220, 250, 11);
+  gfx_text(g_bg, 480, 276, "Space/Up/click fire", 220, 220, 250, 11);
+  gfx_text(g_bg, 480, 290, "Down/X/right: swap", 220, 220, 250, 11);
+  gfx_text(g_bg, 480, 304, "Esc: title", 220, 220, 250, 11);
+  RETURN 0;
+END
+
+FUNCTION paint_bg(seed);
+PRIVATE yy, t, r1, g1, b1;
+BEGIN
+  rand_seed(seed);
+  r1 = rand(40, 200); g1 = rand(40, 160); b1 = rand(120, 230);
+  FOR yy = 0 TO 119
+    t = yy * 0.006;
+    gfx_rect(g_bg, 0, yy * 4, 640, 4, r1 * (1 - t), g1 * (1 - t), b1 * (1 - t * 0.5));
+  END
+  FOR yy = 0 TO 40                                          // soft background bubbles
+    t = rand(4, 24);
+    gfx_circle_outline(g_bg, rand(0, 640), rand(0, 480), t, imin(255, r1 + 60), imin(255, g1 + 60), 255);
+  END
+  rand_seed();
+  paint_field(0);
+  IF (mode == 1) paint_field(1); ELSE paint_help(); END
+  RETURN 0;
+END
+
+// Text with a shadow on a generated graphic; centred at cx (monospace)
+FUNCTION ctext(gr, cx, py, s, n, r, g, b, sz);
+PRIVATE w;
+BEGIN
+  w = n * sz * 0.6;
+  gfx_text(gr, cx - w / 2 + 2, py + 2, s, 20, 10, 40, sz);
+  gfx_text(gr, cx - w / 2, py, s, r, g, b, sz);
+  RETURN 0;
+END
+
+FUNCTION banner(t1, n1, t2, n2, t3, n3, r, g, b);
+BEGIN
+  gfx_fill_rgba(g_msg, 0, 0, 0, 0);
+  gfx_rect(g_msg, 0, 0, 360, 170, 60, 30, 90);
+  gfx_rect(g_msg, 4, 4, 352, 162, 250, 200, 90);
+  gfx_rect(g_msg, 8, 8, 344, 154, 40, 40, 100);
+  ctext(g_msg, 180, 22, t1, n1, r, g, b, 34);
+  ctext(g_msg, 180, 80, t2, n2, 255, 255, 255, 16);
+  ctext(g_msg, 180, 120, t3, n3, 200, 220, 255, 14);
+  msg_on = 1;
+  RETURN 0;
+END
+
+FUNCTION paint_title();
+PRIVATE i, gr;
+BEGIN
+  gr = g_title;
+  FOR i = 0 TO 119 gfx_rect(gr, 0, i * 4, 640, 4, 60 + i, 40 + i / 2, 140 - i / 3); END
+  rand_seed(3);
+  FOR i = 0 TO 22
+    draw_bubble(gr, rand(10, 630), rand(250, 470), rand(10, 26), cr[i % 7], cg[i % 7], cb[i % 7]);
+  END
+  rand_seed();
+  FOR i = 0 TO 10                                           // bubble letters behind the logo
+    draw_bubble(gr, 90 + i * 46, 92 + (i % 2) * 10, 30, cr[i % 7], cg[i % 7], cb[i % 7]);
+  END
+  FOR i = 0 TO 8 ctext(gr, 317 + (i % 3) * 3, 67 + (i / 3) * 3, "BUBBLE DINO", 11, 40, 20, 70, 60); END   // outline
+  ctext(gr, 320, 70, "BUBBLE DINO", 11, 255, 255, 255, 60);
+  draw_dino(gr, 440, 170, 3, 90, 200, 80, 1);
+  ctext(gr, 220, 190, "Pop 3 or more of a colour!", 26, 255, 240, 170, 18);
+  ctext(gr, 220, 262, "1 PLAYER PUZZLE", 15, 255, 255, 255, 20);
+  ctext(gr, 220, 302, "VS CPU", 6, 255, 255, 255, 20);
+  ctext(gr, 220, 380, "Left/Right or mouse: aim", 24, 230, 230, 255, 14);
+  ctext(gr, 220, 400, "Space/Up/click: fire  Down/X/right click: swap", 45, 230, 230, 255, 12);
+  RETURN 0;
+END
+
+// =====================================================================
+// Sprites of the launchers, shots and dinosaurs
+// =====================================================================
+
+FUNCTION on_board(p); BEGIN RETURN (state >= 1 AND (mode == 1 OR p == 0)); END
+
+PROCESS slot(k);
+PRIVATE p, i, r;
+BEGIN
+  p = k / 104; i = k % 104; r = i / 8; z = 0;
+  LOOP
+    graph = 0;
+    IF (gb[k] > 0 AND on_board(p))
+      graph = g_bub[gb[k]];
+      IF (lost[p] > 0 AND r < lost[p] * 14) graph = g_bub[8]; END   // the board turns to stone
+      x = fx[p] + 16 + (i % 8) * 32 + (r % 2) * 16 + shk[p];
+      y = FY + 16 + (r + drop[p]) * RH + voff[p];
+    END
+    FRAME;
+  END
+END
+
+PROCESS launcher(p);
+BEGIN
+  z = -2; y = LY;
+  LOOP
+    graph = 0;
+    IF (on_board(p)) graph = g_arrow; x = fx[p] + 128; angle = ang[p]; END
+    FRAME;
+  END
+END
+
+// kind 0: the loaded bubble (or the one flying), 1: the next one
+PROCESS shot_sprite(p, kind);
+BEGIN
+  z = -3;
+  LOOP
+    graph = 0; size = 100;
+    IF (on_board(p) AND lost[p] == 0)
+      IF (kind == 0)
+        graph = g_bub[cur[p]]; x = fx[p] + 128; y = LY;
+        IF (ph[p] == 1) graph = g_bub[fcol[p]]; x = sx[p]; y = sy[p]; END
+      ELSE
+        graph = g_bub[nxt[p]]; x = fx[p] + 40; y = LY + 26; size = 90;
+      END
+    END
+    FRAME;
+  END
+END
+
+PROCESS dino(p);
+PRIVATE t;
+BEGIN
+  z = -2;
+  LOOP
+    graph = 0;
+    IF (on_board(p))
+      t = get_time() * 4 + p;
+      happy[p] = imax(0, happy[p] - get_delta());
+      graph = g_dino[p * 2 + (happy[p] > 0)];
+      x = fx[p] + 212; y = LY + 18 - abs(sin(t * 90000)) * (2 + happy[p] * 8);
+    END
+    FRAME;
+  END
+END
+
+PROCESS overlay();
+BEGIN
+  z = -50; y = 200;
+  LOOP
+    graph = 0;
+    IF (msg_on) graph = g_msg; x = 320; END
+    FRAME;
+  END
+END
+
+PROCESS hud_sprite();
+PRIVATE ls, ll, lh, lt, lc, t, i;
+BEGIN
+  z = -1; x = 96; y = 180; ls = -1;
+  LOOP
+    graph = 0;
+    IF (mode == 0 AND state >= 1 AND state <= 5)
+      graph = g_hud; t = int(lvl_t); i = ceil_n[0] - shots[0];
+      IF (ls != sc[0] OR ll != level OR lh != hi OR lt != t OR lc != i)
+        ls = sc[0]; ll = level; lh = hi; lt = t; lc = i;
+        gfx_fill_rgba(g_hud, 0, 0, 0, 0);
+        gfx_rect(g_hud, 0, 0, 170, 300, 50, 30, 90); gfx_rect(g_hud, 3, 3, 164, 294, 30, 30, 70);
+        ctext(g_hud, 85, 12, "ROUND " + level, 6 + ndig(level), 255, 230, 120, 24);
+        gfx_text(g_hud, 12, 56, "SCORE", 190, 180, 230, 12);
+        ctext(g_hud, 85, 72, "" + sc[0], ndig(sc[0]), 255, 255, 255, 26);
+        gfx_text(g_hud, 12, 112, "HIGH SCORE", 190, 180, 230, 12);
+        ctext(g_hud, 85, 128, "" + hi, ndig(hi), 255, 200, 120, 20);
+        gfx_text(g_hud, 12, 164, "TIME", 190, 180, 230, 12);
+        ctext(g_hud, 85, 180, "" + t + " s", ndig(t) + 2, 255, 255, 255, 20);
+        gfx_text(g_hud, 12, 216, "CEILING DROPS IN", 190, 180, 230, 12);
+        FOR t = 0 TO ceil_n[0] - 1                       // one lamp per shot left
+          IF (t < i AND i <= 2) gfx_circle(g_hud, 20 + t * 15, 246, 6, 255, 80, 80);
+          END
+          IF (t < i AND i > 2) gfx_circle(g_hud, 20 + t * 15, 246, 6, 250, 230, 90); END
+          IF (t >= i) gfx_circle(g_hud, 20 + t * 15, 246, 6, 70, 60, 90); END
+        END
+        gfx_text(g_hud, 12, 268, "Colours: " + ncol, 190, 180, 230, 12);
+      END
+    END
+    FRAME;
+  END
+END
+
+// =====================================================================
+// The player: aiming (human or CPU), flight and the turn's aftermath
+// =====================================================================
+
+// The CPU tries one angle per frame and remembers the best landing; it
+// also scores the next bubble to know whether swapping pays off
+FUNCTION ai_value(p, k, col);
+PRIVATE v, n, st, j, c, dr;
+BEGIN
+  IF (k < 0) RETURN -99999; END
+  IF (k / 8 + drop[p] >= 11) RETURN -50000; END
+  v = -(k / 8) * 4 + rand(0, 6);
+  IF (col == 10 OR col == 9) RETURN v + 200 + (k / 8) * 20; END
+  gb[p * 104 + k] = col; n = group(p, k, col);
+  IF (n >= 3)
+    FOR j = 0 TO n - 1 gb[p * 104 + lst[j]] = 0; END
+    st = connect(p); dr = 0;
+    FOR j = 0 TO 103 IF (gb[p * 104 + j] > 0 AND mk[j] != st) dr++; END END
+    FOR j = 0 TO n - 1 gb[p * 104 + lst[j]] = col; END
+    v += 100 * n + 160 * dr;
+  ELSE
+    v += 35 * (n - 1);
+  END
+  gb[p * 104 + k] = 0;
+  RETURN v;
+END
+
+FUNCTION cpu_aim(p);
+PRIVATE a, k, v, sp;
+BEGIN
+  IF (ai_i[p] < 0) ai_i[p] = 0; ai_v[p] = -999999; ai_best[p] = 90000; ai_sw[p] = 0; END
+  IF (ai_i[p] <= 81)                             // thinking: angles 10 to 170 degrees,
+    a = 10000 + (ai_i[p] / 2) * 4000;            // the loaded bubble then the next one
+    IF (ai_i[p] % 2 == 0)
+      ai_k[p] = sim_path(p, a, 0);
+      v = ai_value(p, ai_k[p], cur[p]);
+      IF (v > ai_v[p]) ai_v[p] = v; ai_best[p] = a; ai_sw[p] = 0; END
+    ELSE
+      v = ai_value(p, ai_k[p], nxt[p]) - 10;
+      IF (v > ai_v[p]) ai_v[p] = v; ai_best[p] = a; ai_sw[p] = 1; END
+    END
+    ai_i[p]++;
+    RETURN 0;
+  END
+  IF (ai_sw[p]) k = cur[p]; cur[p] = nxt[p]; nxt[p] = k; ai_sw[p] = 0; END
+  sp = 1500 + vs_round * 300;                    // turn the launcher, then fire
+  IF (abs(ai_best[p] - ang[p]) <= sp)
+    ang[p] = ai_best[p]; ai_wait[p] += get_delta();
+    IF (ai_wait[p] > 0.25 - imin(vs_round, 4) * 0.04) ai_i[p] = -1; ai_wait[p] = 0; RETURN 1; END
+  ELSE
+    IF (ai_best[p] > ang[p]) ang[p] += sp; ELSE ang[p] -= sp; END
+  END
+  RETURN 0;
+END
+
+PROCESS player(p);
+PRIVATE fire, t, k, n, hold, lmx, lmy, s, i, amp;
+BEGIN
+  LOOP
+    IF (state == 2 AND (mode == 1 OR p == 0) AND lost[p] == 0)
+      SWITCH (ph[p])
+        CASE 0                                      // aiming
+          fire = 0;
+          IF (p == 0)
+            IF (key(_left) OR key(_right))          // keys, faster while held
+              hold++; s = 500 + imin(hold, 30) * 70;
+              IF (key(_left)) ang[p] += s; ELSE ang[p] -= s; END
+            ELSE
+              hold = 0;
+            END
+            IF ((mouse.x != lmx OR mouse.y != lmy) AND mouse.y < LY - 8)
+              ang[p] = fget_angle(fx[p] + 128, LY, mouse.x, mouse.y);
+              IF (ang[p] < -90000) ang[p] += 360000; END
+            END
+            lmx = mouse.x; lmy = mouse.y;
+            IF (key_pressed(_space) OR key_pressed(_up) OR click) fire = 1; END
+            IF (key_pressed(_down) OR key_pressed(_x) OR rclick)
+              k = cur[p]; cur[p] = nxt[p]; nxt[p] = k;
+            END
+          ELSE
+            fire = cpu_aim(p);
+          END
+          IF (ang[p] < 0) ang[p] = 170000; END       // straight down wraps to the nearest side
+          ang[p] = imax(10000, imin(170000, ang[p]));
+          IF (p == 0 AND (ang[p] != aim_a[p] OR bv[p] != aim_bv[p]))   // new aim: simulate the path
+            aim_k[p] = sim_path(p, ang[p], 1); aim_a[p] = ang[p]; aim_bv[p] = bv[p];
+          END
+          IF (p == 0)                              // dotted aim line and landing ring
+            set_color('#ffffff');
+            FOR i = 0 TO ndot[p] - 1
+              circle(dtx[i] + shk[p], dty[i], 2.5 - (i % 2) * 0.8);
+            END
+          END
+          IF (fire)
+            fcol[p] = cur[p]; cur[p] = nxt[p]; nxt[p] = deal(p);
+            find_low(p); launch(p, ang[p]); ph[p] = 1; pt[p] = 0; n = 0;
+            IF (p == 0) n_shots++; END
+          END
+        CASE 1                                      // flying: 2 steps of 8 px a frame
+          FOR t = 1 TO 2
+            IF (ph[p] == 1)
+              s = adv(p);
+              IF (s == 2) n = 1; END
+              IF (s == 1)
+                k = snap(p, sx[p], sy[p]);
+                IF (p == 0)
+                  last_k = k; last_x = cxp(p, k); last_y = cyp(p, k);
+                  IF (k != aim_k[p]) n_mismatch++; END
+                  IF (n) n_bounce_shots++; END
+                END
+                n = resolve(p, k, fcol[p]);
+                // VS: drops, and pops beyond three, go to the rival as garbage
+                IF (mode == 1) gar[1 - p] += imin(r_drop + imax(0, r_pop - 3), 10); END
+
+                shots[p]++; ph[p] = 2; pt[p] = 0;
+              END
+            END
+          END
+        CASE 2                                      // aftermath: ceiling, garbage, win / lose
+          pt[p] += get_delta();
+          IF (pt[p] > 0.12)
+            IF (shots[p] >= ceil_n[p])
+              drop[p]++; voff[p] = -RH; shots[p] = 0; bv[p]++; n_ceil++;
+            END
+            IF (gar[p] > 0)                         // incoming garbage, one bubble a frame
+              garbage_one(p); gar[p]--;
+            ELSE
+              ph[p] = 0;
+            END
+            IF (crossed(p)) lost[p] = 0.01; n_losses++; END
+            IF (count_colours(p) == 0 AND mode == 1) lost[1 - p] = 0.01; END
+            IF (count_colours(p) == 0 AND mode == 0)
+              state = 3; st_t = 0; n_clears++;
+              bonus = imax(0, 60 - int(lvl_t)) * 100; sc[0] += bonus;
+              banner("ROUND CLEAR!", 12, "Time " + int(lvl_t) + " s   bonus +" + bonus, 17 + ndig(int(lvl_t)) + ndig(bonus),
+                     "Space / click: next round", 25, 140, 255, 140);
+            END
+          END
+      END
+      // ceiling warning: the board shakes during the last two shots
+      amp = 0;
+      IF (ceil_n[p] - shots[p] <= 2 AND ph[p] == 0) amp = 3 - (ceil_n[p] - shots[p]); END
+      shk[p] = amp * sin(get_time() * 2400000);
+    ELSE
+      shk[p] = 0;
+    END
+    IF (voff[p] < 0) voff[p] = imin(0, voff[p] + 150 * get_delta()); END   // ceiling slides down
+    IF (lost[p] > 0 AND lost[p] < 1) lost[p] = imin(1, lost[p] + get_delta()); END
+    IF (on_board(p) AND drop[p] > 0)                // the pressing ceiling plate
+      draw_rect(fx[p] + shk[p], FY, 256, drop[p] * RH + voff[p], '#8078a0');
+      draw_rect(fx[p] + shk[p], FY + drop[p] * RH + voff[p] - 6, 256, 6, '#d0c8f0');
+    END
+    FRAME;
+  END
+END
+
+// =====================================================================
+// Screens
+// =====================================================================
+
+// Builds a round over a few frames (state 5), one heavy step per frame
+FUNCTION start_round();
+BEGIN
+  state = 5; bstep = 0; msg_on = 0;
+  RETURN 0;
+END
+
+FUNCTION build_step();
+BEGIN
+  bstep++;
+  IF (mode == 0)
+    fx[0] = 192;
+    IF (bstep == 1) gen_board(0, level); reset_player(0); RETURN 0; END
+    IF (bstep == 2) paint_bg(level * 17); RETURN 0; END
+    banner("ROUND " + level, 6 + ndig(level), pnames[pattern] + "   " + ncol + " colours", pnl[pattern] + 11,
+           "Ceiling drops every " + ceil_n[0] + " shots", 26 + ndig(ceil_n[0]), 255, 230, 120);
+  ELSE
+    fx[0] = 24; fx[1] = 360;
+    IF (bstep == 1) gen_board(0, vs_round); reset_player(0); RETURN 0; END
+    IF (bstep == 2) gen_board(1, vs_round); reset_player(1); RETURN 0; END
+    IF (bstep == 3) paint_bg(vs_round * 29 + 5); RETURN 0; END
+    banner("VS ROUND " + vs_round, 9 + ndig(vs_round), "YOU " + wins[0] + "  -  " + wins[1] + " CPU", 15, "Pop and drop to send garbage!", 29, 255, 150, 200);
+  END
+  put_screen(0, g_bg);
+  state = 1; st_t = 0; lvl_t = 0;
+  RETURN 0;
+END
+
+FUNCTION go_title();
+BEGIN
+  state = 0; msg_on = 0; put_screen(0, g_title);
+  RETURN 0;
+END
+
+FUNCTION title_frame();
+BEGIN
+  IF (key_pressed(_up) OR key_pressed(_down)) menu = 1 - menu; END
+  IF (key_pressed(_1)) menu = 0; END
+  IF (key_pressed(_2)) menu = 1; END
+  IF (mouse.x > 60 AND mouse.x < 380 AND mouse.y > 250 AND mouse.y < 330)
+    menu = (mouse.y > 290);
+  END
+  draw_rect(64, 254 + menu * 40, 312, 32, 'rgba(255,255,255,0.3)');
+  set_color('#ffe080');
+  text(180, 340, "HIGH SCORE " + hi);
+  IF (key_pressed(_space) OR key_pressed(_enter) OR click)
+    mode = menu; level = 1; vs_round = 1; sc[0] = 0; sc[1] = 0; wins[0] = 0; wins[1] = 0;
+    start_round();
+  END
+  RETURN 0;
+END
+
+FUNCTION play_frame();
+PRIVATE p;
+BEGIN
+  lvl_t += get_delta();
+  score = sc[0];
+  IF (sc[0] > hi AND mode == 0) hi = sc[0]; END
+  IF (mode == 0 AND lost[0] >= 1)
+    state = 4; st_t = 0;
+    banner("GAME OVER", 9, "Score " + sc[0] + "   High " + hi, 14 + ndig(sc[0]) + ndig(hi),
+           "Space: continue  R: restart  Esc: title", 39, 255, 110, 110);
+  END
+  IF (mode == 1 AND (lost[0] >= 1 OR lost[1] >= 1))
+    p = (lost[0] >= 1);                            // the winner
+    wins[p]++; state = 6; st_t = 0;
+    IF (p == 0) banner("YOU WIN!", 8, "YOU " + wins[0] + "  -  " + wins[1] + " CPU", 15, "Space: next round   Esc: title", 30, 140, 255, 140);
+    ELSE banner("CPU WINS", 8, "YOU " + wins[0] + "  -  " + wins[1] + " CPU", 15, "Space: next round   Esc: title", 30, 255, 140, 140); END
+  END
+  IF (mode == 1)                                   // VS scores and incoming garbage
+    set_color('#ffffff');
+    text(fx[0], 6, "YOU " + sc[0]); text(fx[1], 6, "CPU " + sc[1]);
+    text(304, 200, "VS"); text(300, 220, "" + wins[0] + "-" + wins[1]);
+    set_color('#ff9090');
+    IF (gar[0] > 0) text(fx[0] + 180, 6, "+" + gar[0] + " !"); END
+    IF (gar[1] > 0) text(fx[1] + 180, 6, "+" + gar[1] + " !"); END
+  END
+  IF (key_pressed(_esc)) go_title(); END
+  RETURN 0;
+END
+
+// =====================================================================
+// MAIN
+// =====================================================================
+PRIVATE i, go;
+BEGIN
+  set_mode(640, 480);
+  set_fps(60, 0);
+  screen_color('#101020');
+  // palette: red, orange, yellow, green, blue, purple, pink
+  cr[0] = 235; cg[0] = 50;  cb[0] = 60;
+  cr[1] = 255; cg[1] = 145; cb[1] = 30;
+  cr[2] = 250; cg[2] = 215; cb[2] = 40;
+  cr[3] = 70;  cg[3] = 195; cb[3] = 70;
+  cr[4] = 50;  cg[4] = 130; cb[4] = 250;
+  cr[5] = 160; cg[5] = 80;  cb[5] = 230;
+  cr[6] = 250; cg[6] = 120; cb[6] = 200;
+  css[0] = '#ffffff'; css[1] = '#ff5a64'; css[2] = '#ffa040'; css[3] = '#ffe050'; css[4] = '#70e070';
+  css[5] = '#60a0ff'; css[6] = '#c080ff'; css[7] = '#ff90d8';
+  pnames[0] = "BLOCK"; pnames[1] = "FUNNEL"; pnames[2] = "LATTICE"; pnames[3] = "COLUMNS";
+  pnames[4] = "BOWL"; pnames[5] = "LACE";
+  FOR i = 0 TO 5 pnl[i] = 4; END pnl[1] = 6; pnl[2] = 7; pnl[3] = 7;
+  make_graphics();
+  FRAME;                                            // spread the drawing over two frames
+  paint_title();
+  FOR i = 0 TO 1 player(i); END                     // first: the sprites read what they set
+  FOR i = 0 TO 207 slot(i); END
+  FOR i = 0 TO 47 fx_sprite(i); END
+  FOR i = 0 TO 1 launcher(i); shot_sprite(i, 0); shot_sprite(i, 1); dino(i); END
+  fxman(); overlay(); hud_sprite();
+  go_title();
+  LOOP
+    click = (mouse.left AND lprev == 0); lprev = mouse.left;
+    rclick = (mouse.right AND rprev == 0); rprev = mouse.right;
+    st_t += get_delta();
+    go = (key_pressed(_space) OR key_pressed(_enter) OR click);
+    SWITCH (state)
+      CASE 0 title_frame();
+      CASE 1                                        // round intro, then GO
+        IF (st_t > 1.6) state = 2; msg_on = 0; float_text(fx[0] + 116, 250, "GO!"); click = 0; END
+      CASE 2 play_frame();
+      CASE 5 build_step();
+      CASE 3                                        // round clear
+        IF (st_t > 0.8 AND go) level++; start_round(); END
+      CASE 4                                        // game over: continue keeps the round
+        IF (st_t > 0.8)
+          IF (key_pressed(_space) OR click) sc[0] = 0; start_round(); END
+          IF (key_pressed(_r)) level = 1; sc[0] = 0; start_round(); END
+          IF (key_pressed(_esc)) go_title(); END
+        END
+      CASE 6                                        // VS round over
+        IF (st_t > 0.8)
+          IF (go) vs_round++; start_round(); END
+          IF (key_pressed(_esc)) go_title(); END
+        END
+    END
+    score = sc[0]; fps_now = get_fps();
+    FRAME;
+  END
+END

@@ -1,0 +1,240 @@
+PROGRAM platformer;
+
+GLOBAL g_player = 0;
+GLOBAL g_bullet = 0;
+GLOBAL g_enemy  = 0;
+GLOBAL g_coin   = 0;
+GLOBAL g_boom   = 0;
+GLOBAL score = 0;
+GLOBAL lives = 3;
+
+BEGIN
+  set_mode(480, 400);
+  set_fps(60, 0);  // written for 60 fps (DIV's default is 18)
+  screen_color('#0a0a14');
+
+  -- Player sprite (24x36)
+  g_player = new_graphic(24, 36);
+  gfx_fill_rgba(g_player, 0, 0, 0, 0);
+  gfx_circle(g_player, 12, 7, 6, 255, 210, 150);
+  gfx_rect(g_player, 6, 13, 12, 14, 80, 130, 255);
+  gfx_rect(g_player, 4, 27, 5, 9, 60, 100, 200);
+  gfx_rect(g_player, 15, 27, 5, 9, 60, 100, 200);
+  gfx_rect(g_player, 0, 17, 5, 6, 80, 130, 255);
+  gfx_rect(g_player, 19, 17, 5, 6, 80, 130, 255);
+  gfx_pixel(g_player, 15, 6, 30, 30, 30);
+  gfx_pixel(g_player, 16, 6, 30, 30, 30);
+
+  -- Bullet (10x5)
+  g_bullet = new_graphic(10, 5);
+  gfx_fill_rgba(g_bullet, 0, 0, 0, 0);
+  gfx_rect(g_bullet, 0, 1, 10, 3, 255, 240, 80);
+  gfx_circle(g_bullet, 5, 2, 2, 255, 200, 50);
+
+  -- Enemy (24x28)
+  g_enemy = new_graphic(24, 28);
+  gfx_fill_rgba(g_enemy, 0, 0, 0, 0);
+  gfx_circle(g_enemy, 12, 7, 6, 220, 80, 80);
+  gfx_rect(g_enemy, 5, 13, 14, 11, 180, 50, 50);
+  gfx_rect(g_enemy, 5, 24, 5, 4, 140, 40, 40);
+  gfx_rect(g_enemy, 14, 24, 5, 4, 140, 40, 40);
+  gfx_pixel(g_enemy, 8, 6, 255, 255, 80);
+  gfx_pixel(g_enemy, 9, 6, 255, 255, 80);
+  gfx_pixel(g_enemy, 15, 6, 255, 255, 80);
+  gfx_pixel(g_enemy, 16, 6, 255, 255, 80);
+
+  -- Coin (12x12)
+  g_coin = new_graphic(12, 12);
+  gfx_fill_rgba(g_coin, 0, 0, 0, 0);
+  gfx_circle(g_coin, 6, 6, 5, 255, 210, 40);
+  gfx_circle_outline(g_coin, 6, 6, 5, 180, 130, 20);
+  gfx_pixel(g_coin, 6, 6, 255, 250, 120);
+
+  -- Explosion (30x30)
+  g_boom = new_graphic(30, 30);
+  gfx_fill_rgba(g_boom, 0, 0, 0, 0);
+  gfx_circle(g_boom, 15, 15, 13, 255, 180, 60);
+  gfx_circle(g_boom, 15, 15, 8, 255, 240, 120);
+  gfx_circle(g_boom, 15, 15, 3, 255, 255, 220);
+
+  -- Ground and platforms
+  solid(0,   365, 480, 35, 50, 90, 50);
+  solid(60,  295, 110, 18, 70, 110, 140);
+  solid(230, 255, 130, 18, 70, 110, 140);
+  solid(380, 295, 90,  18, 70, 110, 140);
+  solid(120, 205, 90,  18, 80, 90,  160);
+  solid(280, 175, 110, 18, 80, 90,  160);
+  solid(40,  145, 90,  18, 100, 80, 160);
+  solid(360, 135, 110, 18, 100, 80, 160);
+  solid(0,   0,  10,  400, 35, 55, 35);
+  solid(470, 0,  10,  400, 35, 55, 35);
+
+  -- Coins
+  coin(100, 270); coin(150, 270);
+  coin(270, 230); coin(330, 230);
+  coin(155, 180); coin(200, 180);
+  coin(390, 110); coin(445, 110);
+
+  -- Enemies
+  enemy(150, 270);
+  enemy(290, 230);
+  enemy(110, 125);
+  enemy(390, 270);
+
+  player();
+  hud();
+
+  fade_off(100);
+  fade_on(5);
+
+  LOOP
+    IF (lives <= 0)
+      fade_off(3);
+      WHILE (is_fading()) FRAME; END
+      set_color('#f88');
+      text(0, 240, 180, "GAME OVER");
+      set_color('#ff8');
+      write_int(0, 240, 204, 4, score);
+      LOOP FRAME; END
+    END
+    FRAME;
+  END
+END
+
+PROCESS solid(px, py, pw, ph, r, g, b);
+BEGIN
+  // px,py is the block's top-left corner; x,y locate the graphic's
+  // centre (its control point 0).
+  x = px + pw / 2; y = py + ph / 2; width = pw; height = ph; z = 100;
+  graph = new_graphic(pw, ph);
+  gfx_rect(graph, 0, 0, pw, ph, r, g, b);
+  gfx_rect(graph, 0, 0, pw, 5, r + 40, g + 40, b + 30);
+  gfx_rect_outline(graph, 0, 0, pw, ph, r - 20, g - 20, b - 20);
+  LOOP FRAME; END
+END
+
+PROCESS explosion(ex, ey);
+PRIVATE life = 10;
+BEGIN
+  x = ex; y = ey; width = 30; height = 30; graph = g_boom;
+  LOOP
+    life = life - 1;
+    alpha = life * 10;
+    IF (life <= 0) BREAK; END
+    FRAME;
+  END
+END
+
+PROCESS coin(cx, cy);
+PRIVATE bob = 0;
+BEGIN
+  x = cx; y = cy; width = 12; height = 12; graph = g_coin;
+  LOOP
+    bob = bob + 2000;
+    y = cy + sin(bob) * 4 / 100000;
+    IF (collision(TYPE player))
+      score = score + 50;
+      explosion(x + 6, y + 6);
+      BREAK;
+    END
+    FRAME;
+  END
+END
+
+PROCESS player_bullet(bx, by, vbx);
+BEGIN
+  x = bx; y = by; width = 10; height = 5; graph = g_bullet;
+  LOOP
+    x = x + vbx;
+    IF (x < -10 OR x > 490) BREAK; END
+    IF (collision(TYPE enemy))
+      explosion(x, y);
+      signal(collision(TYPE enemy), S_KILL);
+      score = score + 100;
+      BREAK;
+    END
+    IF (place_meeting(x, y, TYPE solid)) BREAK; END
+    FRAME;
+  END
+END
+
+PROCESS enemy(ex, ey);
+PRIVATE vx = 1; on_ground = 0;
+BEGIN
+  x = ex; y = ey; width = 24; height = 28; graph = g_enemy;
+  LOOP
+    IF (on_ground == 0) y = y + 3; END
+    on_ground = 0;
+    IF (place_meeting(x, y + 1, TYPE solid))
+      on_ground = 1;
+      IF (place_meeting(x + vx * 3, y, TYPE solid)) vx = -vx; END
+      IF (NOT place_meeting(x + vx * 24, y + 5, TYPE solid)) vx = -vx; END
+    END
+    x = x + vx;
+    IF (x < 10)  x = 10;  vx =  abs(vx); END
+    IF (x > 446) x = 446; vx = -abs(vx); END
+    IF (collision(TYPE player_bullet))
+      explosion(x + 12, y + 14);
+      score = score + 100;
+      BREAK;
+    END
+    IF (y > 450) BREAK; END
+    FRAME;
+  END
+END
+
+PROCESS player();
+PRIVATE vx = 0; vy = 0; on_ground = 0; facing = 1; shoot_cd = 0;
+BEGIN
+  x = 220; y = 340; // standing on the ground, clear of the platform above
+  width = 24; height = 36;
+  graph = g_player;
+  LOOP
+    vx = 0;
+    IF (key(_left)  OR key(_a)) vx = -4; facing = -1; END
+    IF (key(_right) OR key(_d)) vx =  4; facing =  1; END
+    IF ((key(_up) OR key(_z)) AND on_ground)
+      vy = -21; on_ground = 0;
+    END
+    shoot_cd = shoot_cd - 1;
+    IF ((key(_space) OR key(_x)) AND shoot_cd <= 0)
+      player_bullet(x + 12, y + 18, facing * 11);
+      shoot_cd = 14;
+    END
+    vy = vy + 1;
+    IF (vy > 12) vy = 12; END
+    x = x + vx;
+    IF (place_meeting(x, y, TYPE solid))
+      IF (vx > 0) WHILE (place_meeting(x, y, TYPE solid)) x = x - 1; END
+      ELSE WHILE (place_meeting(x, y, TYPE solid)) x = x + 1; END
+      END
+      vx = 0;
+    END
+    y = y + vy; on_ground = 0;
+    IF (place_meeting(x, y, TYPE solid))
+      IF (vy >= 0)
+        on_ground = 1;
+        WHILE (place_meeting(x, y, TYPE solid)) y = y - 1; END
+      ELSE
+        WHILE (place_meeting(x, y, TYPE solid)) y = y + 1; END
+      END
+      vy = 0;
+    END
+    IF (x < 10)  x = 10;  END
+    IF (x > 446) x = 446; END
+    IF (y > 420) lives = lives - 1; x = 220; y = 340; vy = 0; END
+    IF (lives <= 0) BREAK; END
+    FRAME;
+  END
+END
+
+PROCESS hud();
+BEGIN
+  // Written once: WRITE texts persist, OFFSET keeps the values live.
+  set_color('#fff');
+  write_int(0, 8, 8, 0, OFFSET score);
+  write_int(0, 440, 8, 0, OFFSET lives);
+  LOOP
+    FRAME;
+  END
+END

@@ -1,0 +1,1022 @@
+PROGRAM aquarium;
+
+// LIVING AQUARIUM - a flocking (boids) simulation.
+// Four species of fish school with Craig Reynolds' three rules -
+// separation, alignment and cohesion - plus wall, rock and predator
+// avoidance and a taste for food pellets. Pikes hunt the nearest fish;
+// a fish that eats twice has a baby, a well fed pike splits in two and
+// a hungry one starves, so the populations rise and fall (a small
+// predator-prey system).
+//
+// How it stays fast: one MANAGER process rebuilds a spatial grid every
+// frame (a linked list of fish per 50x50 cell, kept in global arrays),
+// so a fish only looks at the (at most 4) cells its neighbour circle
+// touches, and at most MAXN schoolmates there. Each fish re-steers
+// every fifth frame (slots take turns) and keeps the same steering in
+// between. The grid has an empty border ring, so no bounds checks.
+// Everything you see is generated here: sprites, sand, rocks, light.
+
+GLOBAL
+  SW = 800; SH = 600;
+  TOP = 30;                  // water surface: fish stay below it
+  FLOOR = 522;               // lowest point a fish may reach
+  MAXF = 1000;               // fish slots (also the benchmark ceiling)
+  SPCAP = 80;                // births stop when a species has this many
+  CELL = 50; GW2 = 18; NCELL = 252;   // 16x12 cells + an empty border
+  NR = 46; NR2 = 2116;       // neighbour radius (and squared)
+  MAXN = 6;                  // most schoolmates a boid looks at
+  STEER = 5;                 // re-steer every STEER frames
+  FEAR_R = 120;              // fish notice a pike this close
+  MAXP = 8; MAXFOOD = 16;
+
+  // ---- fish, one slot each (f_on: 0 free, 1 alive, 2 eaten, 3 removed)
+  f_on[999]; f_sp[999]; f_x[999]; f_y[999]; f_vx[999]; f_vy[999];
+  f_al[999];                 // heading agreement with neighbours (-9 = none)
+  f_nx[999];                 // next fish in the same grid cell (-1 = end)
+  f_top = 0;                 // slots above this one are all free
+  f_hint = 0;                // lowest slot that may be free
+  g_head[251]; g_cnt[251];   // first fish of each cell, fish per cell
+                             // (the count only in the debug view)
+
+  // ---- species: 0 neon tetra, 1 goldfish, 2 angelfish, 3 chromis
+  sp_spd[3]; sp_sep[3]; sp_n[3];
+  sp_r[4]; sp_g[4]; sp_b[4]; // chart colours (4 = pikes)
+  NA = 48;                   // drawn directions per fish
+  spr[479];                  // fish graphics (species 4 = pike)
+  pn_g = 0; pn_c = 0; pn_hx = 0.0; pn_hy = 0.0; pn_bx = 0.0; pn_by = 0.0;
+
+  // ---- predators, food, rocks, kelp blades
+  p_on[7]; p_x[7]; p_y[7];
+  fd_on[15]; fd_x[15]; fd_y[15]; fd_top = 0;   // pellets (slots below fd_top)
+  rk_x[9]; rk_y[9]; rk_r[9]; n_rocks = 0;
+  rk_cell[755];              // up to 3 rocks near each grid cell (-1 none)
+  kl_x[99]; kl_y[99]; n_kelp = 0;     // tip of every kelp blade
+
+  // ---- graphics
+  g_bg = 0; g_pellet = 0; g_bubble = 0;
+  g_ring = 0; g_kelp0 = 0; g_kelp1 = 0; g_puff = 0; g_chart = 0;
+
+  // ---- boids weights in tenths (15 = 1.5), shown on the HUD
+  w_sep = 15; w_ali = 10; w_coh = 8; w_fear = 10;
+
+  // ---- state and statistics
+  tick = 0; paused = 0; dbg_on = 0; autofeed = 1; show_help = 1;
+  n_fish = 0; n_pred = 0; n_food = 0; focus = -1;
+  g_align = 0.0;             // mean heading agreement with neighbours
+  kills = 0; births = 0; starved = 0; pred_born = 0;
+  sim_t = 0.0; feed_t = 0.0; pred_t = 0.0; hist_t = 0.0;
+  hist[599]; hist_pos = 0; hist_max = 20; hist_new = 0;  // 5 x 120 samples
+  ready = 0; lprev = 0; rprev = 0;
+
+// =====================================================================
+// Small helpers
+
+// Height of the sand at column px (painted, and where pellets settle)
+FUNCTION sand_top(px);
+BEGIN
+  RETURN 528 + 6 * sin(px * 500) + 3 * sin(px * 1700 + 30000);
+END
+
+FUNCTION sp_name(s);
+BEGIN
+  IF (s == 0) RETURN 'tetra'; END
+  IF (s == 1) RETURN 'goldfish'; END
+  IF (s == 2) RETURN 'angel'; END
+  RETURN 'chromis';
+END
+
+// A weight in tenths shown as "1.5"
+FUNCTION tenths(v);
+BEGIN
+  RETURN '' + (v / 10) + '.' + (v % 10);
+END
+
+// Takes a free fish slot and starts a fish in it; -1 when full
+FUNCTION spawn_fish(s, px, py, sz);
+PRIVATE i;
+BEGIN
+  FOR i = f_hint TO MAXF - 1
+    IF (f_on[i] == 0)
+      f_on[i] = 1; f_sp[i] = s; f_x[i] = px; f_y[i] = py;
+      f_vx[i] = 0; f_vy[i] = 0; f_al[i] = -9;
+      f_hint = i + 1;
+      IF (i >= f_top) f_top = i + 1; END
+      fish(i, s, px, py, sz);
+      RETURN i;
+    END
+  END
+  RETURN -1;
+END
+
+// Marks up to n fish of species s for removal (they leave by themselves)
+FUNCTION remove_fish(s, n);
+PRIVATE i;
+BEGIN
+  FOR i = f_top - 1 TO 0 STEP -1
+    IF (n > 0 AND f_on[i] == 1 AND f_sp[i] == s) f_on[i] = 3; n--; END
+  END
+  RETURN 0;
+END
+
+FUNCTION spawn_pred(px, py);
+PRIVATE i;
+BEGIN
+  FOR i = 0 TO MAXP - 1
+    IF (p_on[i] == 0)
+      p_on[i] = 1; p_x[i] = px; p_y[i] = py;
+      predator(i, px, py);
+      RETURN i;
+    END
+  END
+  RETURN -1;
+END
+
+FUNCTION drop_food(px, py);
+PRIVATE i;
+BEGIN
+  FOR i = 0 TO MAXFOOD - 1
+    IF (fd_on[i] == 0)
+      fd_on[i] = 1; fd_x[i] = px; fd_y[i] = py;
+      pellet(i, px, py);
+      RETURN i;
+    END
+  END
+  RETURN -1;
+END
+
+// =====================================================================
+// Generated sprites. Rotating a sprite at draw time is by far the
+// slowest thing the canvas does here, so every fish is drawn up front
+// facing each of NA directions (7.5 degrees apart), two tail frames
+// each, and shown with angle 0. The drawing uses a "pen" in fish
+// coordinates: u along the body towards the head, v across it towards
+// the belly. Facing left, v is flipped so the fish stays belly down.
+
+FUNCTION pen_x(u, v);
+BEGIN
+  RETURN pn_c + u * pn_hx + v * pn_bx;
+END
+
+FUNCTION pen_y(u, v);
+BEGIN
+  RETURN pn_c + u * pn_hy + v * pn_by;
+END
+
+FUNCTION pen_line(u1, v1, u2, v2, r, gg, b);
+BEGIN
+  gfx_line(pn_g, pen_x(u1, v1), pen_y(u1, v1), pen_x(u2, v2), pen_y(u2, v2), r, gg, b);
+  RETURN 0;
+END
+
+FUNCTION pen_dot(u, v, rad, r, gg, b);
+BEGIN
+  gfx_circle(pn_g, pen_x(u, v), pen_y(u, v), rad, r, gg, b);
+  RETURN 0;
+END
+
+// Spindle-shaped body from u0 to u0 + ln, h high: a row of circles in
+// the back colour, then (pass 1) smaller, lighter ones towards the belly
+FUNCTION pen_body(u0, ln, h, r, gg, b);
+PRIVATE i, t, hh, pass;
+BEGIN
+  FOR pass = 0 TO 1
+    FOR i = 1 TO ln - 1
+      t = (i * 2 - ln) / (ln + 0.001);
+      hh = h * sqrt(1 - t * t);
+      IF (t < -0.4) hh = hh * (1.4 + t) / 1.001; END   // slim tail stalk
+      IF (pass == 0) pen_dot(u0 + i, 0, hh, r * 0.7, gg * 0.7, b * 0.7);
+      ELSE pen_dot(u0 + i, hh * 0.35, hh * 0.62, clamp(r + 45, 0, 255),
+                   clamp(gg + 45, 0, 255), clamp(b + 45, 0, 255)); END
+    END
+  END
+  RETURN 0;
+END
+
+// Tail: a fan of lines from the stalk at u0 back to the fin edge at
+// u0 - ln, h high each side, bent by sh
+FUNCTION pen_tail(u0, ln, h, sh, r, gg, b);
+PRIVATE j;
+BEGIN
+  FOR j = 0 TO h * 4
+    pen_line(u0, 0, u0 - ln, j * 0.5 - h + sh, r, gg, b);
+  END
+  RETURN 0;
+END
+
+// Draws species s (4 = pike), tail frame fr, facing angle a
+FUNCTION draw_fish(s, fr, a);
+PRIVATE sh, i, g, sz;
+BEGIN
+  sz = 24;
+  IF (s == 1) sz = 32; END
+  IF (s == 2) sz = 34; END
+  IF (s == 4) sz = 68; END
+  g = new_graphic(sz, sz); gfx_fill_rgba(g, 0, 0, 0, 0);
+  pn_g = g; pn_c = sz / 2;
+  pn_hx = cos(a); pn_hy = -sin(a);                   // screen y is down
+  pn_bx = -pn_hy; pn_by = pn_hx;                     // belly side
+  IF (pn_hx < -0.01) pn_bx = -pn_bx; pn_by = -pn_by; END
+  sh = fr * 2 - 1;                                   // tail bend
+  IF (s == 0)                               // neon tetra: small, blue + red
+    pen_tail(-5, 5, 3, sh, 120, 160, 210);
+    pen_body(-7, 17, 3.4, 60, 150, 255);
+    pen_line(-3, -0.3, 7, -0.3, 90, 235, 255);       // neon stripe
+    pen_line(-3, 1.3, 4, 1.3, 235, 40, 60);          // red flank
+    pen_dot(6.5, -0.8, 0.9, 10, 10, 20);
+  END
+  IF (s == 1)                               // goldfish: round, big tail
+    pen_tail(-6, 9, 6, sh * 2, 255, 185, 95);
+    pen_line(0, -5, 5, -8, 240, 120, 40);            // dorsal fin
+    pen_line(1, -5, 6, -8, 240, 120, 40);
+    pen_body(-8, 21, 6.2, 250, 130, 30);
+    pen_dot(8.5, -2, 1.2, 20, 10, 10);
+  END
+  IF (s == 2)                               // angelfish: tall, striped
+    pen_tail(-7, 6, 4, sh, 230, 220, 170);
+    FOR i = 0 TO 12                         // long dorsal and anal fins
+      pen_line(-3 + i * 0.6, 0, -6 + i * 0.3, -14 + i * 0.4, 220, 212, 150);
+      pen_line(-3 + i * 0.6, 0, -6 + i * 0.3, 14 - i * 0.4, 220, 212, 150);
+    END
+    pen_body(-8, 19, 8.0, 235, 225, 150);
+    pen_line(-1, -7, -1, 7, 40, 40, 40);             // black bands
+    pen_line(0, -7.5, 0, 7.5, 40, 40, 40);
+    pen_line(5, -5.5, 5, 5.5, 50, 50, 50);
+    pen_dot(7, -2, 1.1, 20, 20, 20);
+  END
+  IF (s == 3)                               // chromis: slim, green-silver
+    pen_tail(-6, 5, 4, sh, 110, 200, 150);
+    pen_body(-7, 18, 4.2, 90, 200, 140);
+    pen_line(-4, -0.8, 7, -0.8, 205, 255, 235);      // silver shine
+    pen_dot(7, -1, 0.9, 10, 20, 10);
+  END
+  IF (s == 4)                               // pike: long, olive, spotted
+    pen_tail(-24, 9, 7, sh * 3, 90, 110, 50);
+    pen_line(-16, -5, -11, -9, 80, 100, 40);          // back fin
+    pen_line(-15, -5, -10, -9, 80, 100, 40);
+    pen_body(-26, 58, 6.5, 110, 140, 60);
+    FOR i = 0 TO 8
+      pen_dot(-18 + i * 5, -2 + (i % 3), 0.8, 210, 220, 150);
+    END
+    pen_line(21, 1.5, 31, 0.5, 60, 50, 30);           // jaw line
+    pen_dot(22, -2, 1.3, 255, 230, 60);               // yellow eye
+    pen_dot(22.4, -2, 0.6, 0, 0, 0);
+  END
+  RETURN g;
+END
+
+// A kelp blade: a leaf drawn along +x with its pivot at the root, so
+// angle 90000 makes it stand up
+FUNCTION make_kelp(r, gg, b);
+PRIVATE g, i, w;
+BEGIN
+  g = new_graphic(36, 14); gfx_fill_rgba(g, 0, 0, 0, 0);
+  FOR i = 0 TO 35
+    w = 3.5 + 1.5 * sin(i * 10000);
+    gfx_line(g, i, 7 - w, i, 7 + w, r, gg + (i % 6) * 5, b);
+  END
+  gfx_line(g, 0, 7, 35, 7, r * 0.6, gg * 0.75, b * 0.6);   // midrib
+  set_point(0, g, 0, 1, 7);
+  RETURN g;
+END
+
+// Six directions of one fish and tail frame per call, so no frame runs
+// long: spr[(s * 2 + fr) * NA + direction]
+FUNCTION make_fish_set(s, fr, d0);
+PRIVATE d;
+BEGIN
+  FOR d = d0 TO d0 + 5
+    spr[(s * 2 + fr) * NA + d] = draw_fish(s, fr, d * 360000 / NA);
+  END
+  RETURN 0;
+END
+
+FUNCTION make_sprites();
+BEGIN
+  sp_spd[0] = 105; sp_spd[1] = 70; sp_spd[2] = 60; sp_spd[3] = 90;
+  sp_sep[0] = 14;  sp_sep[1] = 22; sp_sep[2] = 24; sp_sep[3] = 16;
+  sp_r[0] = 74;  sp_r[1] = 255; sp_r[2] = 255; sp_r[3] = 96;  sp_r[4] = 255;
+  sp_g[0] = 168; sp_g[1] = 154; sp_g[2] = 228; sp_g[3] = 224; sp_g[4] = 80;
+  sp_b[0] = 255; sp_b[1] = 48;  sp_b[2] = 96;  sp_b[3] = 144; sp_b[4] = 80;
+  g_kelp0 = make_kelp(40, 140, 60);
+  g_kelp1 = make_kelp(20, 95, 45);
+  g_pellet = new_graphic(5, 5); gfx_fill_rgba(g_pellet, 0, 0, 0, 0);
+  gfx_circle(g_pellet, 2, 2, 2, 160, 100, 40);
+  gfx_pixel(g_pellet, 1, 1, 230, 180, 110);
+  g_bubble = new_graphic(8, 8); gfx_fill_rgba(g_bubble, 0, 0, 0, 0);
+  gfx_circle_outline(g_bubble, 4, 4, 3, 200, 240, 255);
+  gfx_pixel(g_bubble, 3, 2, 255, 255, 255);
+  g_puff = new_graphic(6, 6); gfx_fill_rgba(g_puff, 0, 0, 0, 0);
+  gfx_circle(g_puff, 3, 3, 2, 240, 200, 200);
+  g_ring = new_graphic(NR * 2 + 4, NR * 2 + 4); gfx_fill_rgba(g_ring, 0, 0, 0, 0);
+  gfx_circle_outline(g_ring, NR + 2, NR + 2, NR, 255, 255, 120);
+  g_chart = new_graphic(240, 80);
+  RETURN 0;
+END
+
+// =====================================================================
+// The background: water gradient with light rays, then sand and rocks.
+// Painted a band at a time so no frame runs out of instruction budget.
+FUNCTION paint_water(y0, y1);
+PRIVATE yy, t, r, gg, b, k, rx, rw, l;
+BEGIN
+  FOR yy = y0 TO y1
+    t = yy / 600.0 + 0.0001;
+    r = 30 - 26 * t; gg = 130 - 100 * t; b = 180 - 110 * t;
+    gfx_line(g_bg, 0, yy, SW - 1, yy, r, gg, b);
+    FOR k = 0 TO 4                        // five slanted rays from above
+      rx = 90 + k * 170 + yy * 0.45;
+      rw = 18 + k * 7 + yy * 0.08;
+      l = 22 * (1 - t) * (1 - t);
+      gfx_line(g_bg, rx, yy, rx + rw, yy, r + l, gg + l, b + l);
+    END
+  END
+  RETURN 0;
+END
+
+FUNCTION paint_sand(x0, x1);
+PRIVATE xx, top, yy, d;
+BEGIN
+  FOR xx = x0 TO x1
+    top = sand_top(xx);
+    gfx_line(g_bg, xx, top, xx, top + 2, 225, 205, 150);    // lit crest
+    gfx_line(g_bg, xx, top + 3, xx, SH - 1, 190, 165, 115);
+    FOR yy = 0 TO 7                       // ripples: wavy darker lines
+      d = top + 9 + yy * 8 + 2 * sin(xx * 3000 + yy * 50000);
+      gfx_pixel(g_bg, xx, d, 160, 135, 90);
+      gfx_pixel(g_bg, xx, d + 1, 212, 192, 142);
+    END
+    IF (rand(0, 1) == 0) gfx_pixel(g_bg, xx, rand(top + 4, SH - 1), 130, 110, 80); END
+  END
+  RETURN 0;
+END
+
+// A rock: a row of overlapping lumps, wider than tall, lit from above,
+// recorded as a round obstacle the fish steer around
+FUNCTION add_rock(px, py, r);
+PRIVATE i, c, ox, oy, rr, j;
+BEGIN
+  rk_x[n_rocks] = px; rk_y[n_rocks] = py; rk_r[n_rocks] = r; n_rocks++;
+  j = rand(0, 359) * 1000;                // this rock's own lumpiness
+  gfx_circle(g_bg, px + 4, py + 4, r * 0.9, 48, 66, 78);     // soft shadow
+  FOR c = 0 TO 1                          // pass 0: body, pass 1: lit tops
+    FOR i = 0 TO 6
+      ox = (i - 3) * r * 0.22 + 3 * sin(j + i * 70000);
+      oy = abs(i - 3) * r * 0.13 + 3 * cos(j + i * 50000);
+      rr = r * (0.8 - abs(i - 3) * 0.1);
+      IF (c == 0)
+        gfx_circle(g_bg, px + ox, py + oy, rr, 74 + i * 2, 78 + i * 2, 84);
+      ELSE
+        gfx_circle(g_bg, px + ox - rr * 0.15, py + oy - rr * 0.3, rr * 0.55,
+                   104 + i * 3, 108 + i * 3, 110);
+      END
+    END
+  END
+  gfx_circle(g_bg, px - r * 0.3, py - r * 0.45, r * 0.18, 150, 152, 150);
+  FOR i = 0 TO r * 2                      // speckles and moss
+    c = rand(0, 3);
+    gfx_pixel(g_bg, px + rand(-r * 0.7, r * 0.7), py + rand(-r * 0.5, r * 0.5),
+              60 + c * 10, 85 + c * 20, 55);
+  END
+  RETURN 0;
+END
+
+// Part 0: a tall pillar of three rocks in the middle third; part 1:
+// loose rocks on the floor, away from the pillar
+FUNCTION make_rocks(part);
+PRIVATE i, px, r;
+BEGIN
+  IF (part == 0)
+    px = rand(330, 470);
+    add_rock(px, sand_top(px) - 8, 42);
+    add_rock(px + 8, sand_top(px) - 66, 32);
+    add_rock(px - 4, sand_top(px) - 110, 22);
+    vent(px + 34, sand_top(px + 34) - 4);
+    RETURN 0;
+  END
+  FOR i = 0 TO 4
+    px = 60 + i * 160 + rand(0, 60);
+    IF (abs(px - rk_x[0]) < 80) px = px + 120; END
+    r = rand(16, 30);
+    add_rock(px, sand_top(px) - r / 3, r);
+    IF (i % 2 == 0) vent(px + r, sand_top(px + r) - 2); END
+  END
+  RETURN 0;
+END
+
+// Which rocks can push a fish standing in each grid cell, so a fish
+// only tests those
+FUNCTION rock_cells(c0, c1);
+PRIVATE i, c, n;
+BEGIN
+  FOR c = c0 TO c1
+    n = 0;
+    rk_cell[c * 3] = -1; rk_cell[c * 3 + 1] = -1; rk_cell[c * 3 + 2] = -1;
+    FOR i = 0 TO n_rocks - 1
+      IF (n < 3 AND distance_rect(rk_x[i], rk_y[i], (c % GW2 - 1) * CELL,
+          (c / GW2 - 1) * CELL, CELL, CELL) < rk_r[i] + 36)
+        rk_cell[c * 3 + n] = i; n++;
+      END
+    END
+  END
+  RETURN 0;
+END
+
+// =====================================================================
+// MANAGER: rebuilds the neighbour grid, counts populations, measures
+// how aligned the schools are, runs the auto feeder, sends a pike into a
+// crowded tank and records the population history for the chart.
+// Created before any fish, so it runs first in every frame.
+PROCESS manager();
+PRIVATE i, c, s, asum, an, dt, top;
+BEGIN
+  LOOP
+    tick++;
+    // the grid, every frame: push each fish onto its cell's list
+    FOR i = 0 TO NCELL - 1 g_head[i] = -1; END
+    FOR i = 0 TO f_top - 1
+      IF (f_on[i] == 1)
+        c = (int(f_y[i]) / CELL + 1) * GW2 + int(f_x[i]) / CELL + 1;
+        f_nx[i] = g_head[c]; g_head[c] = i;
+      END
+    END
+    // the statistics, every 10th frame
+    IF (tick % 10 == 0)
+      FOR s = 0 TO 3 sp_n[s] = 0; END
+      n_fish = 0; asum = 0; an = 0; focus = -1; top = 0;
+      FOR i = 0 TO f_top - 1
+        IF (f_on[i] == 1)
+          sp_n[f_sp[i]]++; n_fish++;
+          IF (f_al[i] > -2) asum += f_al[i]; an++; END
+          IF (focus < 0) focus = i; END
+        END
+        IF (f_on[i]) top = i + 1; END
+      END
+      f_top = top;
+      IF (an > 0) g_align = asum / (an + 0.0001); END
+    END
+    n_pred = 0;
+    FOR i = 0 TO MAXP - 1 IF (p_on[i]) n_pred++; END END
+    n_food = 0; fd_top = 0;
+    FOR i = 0 TO MAXFOOD - 1 IF (fd_on[i]) n_food++; fd_top = i + 1; END END
+
+    IF (paused == 0 AND ready)
+      dt = get_delta();
+      sim_t += dt;
+      // auto feeder: a pellet now and then, so the fish can breed
+      feed_t += dt;
+      IF (autofeed AND feed_t > 0.7)
+        feed_t = 0; drop_food(rand(80, SW - 80), TOP);
+      END
+      // a hungry pike arrives when the tank is crowded and has none
+      pred_t += dt;
+      IF (n_pred > 0) pred_t = 0; END
+      IF (n_pred == 0 AND n_fish > 200 AND pred_t > 14)
+        pred_t = 0; spawn_pred(-30, rand(120, 400));
+      END
+      // population history: one sample every half second
+      hist_t += dt;
+      IF (hist_t >= 0.5)
+        hist_t = 0;
+        FOR s = 0 TO 3 hist[s * 120 + hist_pos] = sp_n[s]; END
+        hist[480 + hist_pos] = n_pred * 10;
+        IF (sim_t < 1)                     // first sample: fill the past
+          FOR i = 0 TO 599 hist[i] = hist[(i / 120) * 120 + hist_pos]; END
+        END
+        hist_pos = (hist_pos + 1) % 120;
+        hist_new = 1;
+      END
+    END
+    FRAME;
+  END
+END
+
+// =====================================================================
+// FISH: a boid. Steering is recomputed every STEER frames from the
+// neighbours found through the grid; the velocity is integrated every
+// frame. Velocities are in pixels per second, screen axes (y down).
+PROCESS fish(slot, sp, x, y, size);
+PRIVATE
+  vx, vy, ax, ay, tvx, tvy, dvx, dvy, spd, maxs, hx, hy, hd, phase, panic,
+  fed, a, dt,
+  i, c, k, cc, cx, cy, qx, qy, dx, dy, d2, d, f, inv, sepr, sepr2,
+  sx, sy, alx, aly, cox, coy, n_same, best, bd, feeding;
+BEGIN
+  sepr = sp_sep[sp]; sepr2 = sepr * sepr;
+  a = rand(0, 359) * 1000;                  // start in a random direction
+  spd = 1;
+  vx = get_distx(a, sp_spd[sp] * 0.7);
+  vy = get_disty(a, sp_spd[sp] * 0.7);
+  phase = rand(0, 100) * 0.01;
+  hd = normalize_angle(a);
+  graph = spr[sp * 2 * NA + (int(hd + 3750) / 7500) % NA];
+  LOOP
+    IF (f_on[slot] != 1) BREAK; END
+    IF (paused == 0)
+      dt = get_delta();
+      IF ((tick + slot) % STEER == 0)
+        // ---- 1. neighbours. The radius NR is under a cell, so the circle
+        //      around the fish touches at most 4 cells: its own and the
+        //      neighbours on the side of the cell it is in. Every fish
+        //      nearby counts for separation; only the own species for
+        //      alignment and cohesion (up to MAXN of them).
+        sx = 0; sy = 0; alx = 0; aly = 0; cox = 0; coy = 0;
+        n_same = 0; hx = vx / spd; hy = vy / spd;   // own heading
+        f_sp[slot] = -1;                         // so it skips itself
+        cx = int(x); cy = int(y);
+        cc = (cy / CELL + 1) * GW2 + cx / CELL + 1;
+        IF (cx % CELL < CELL / 2) qx = -1; ELSE qx = 1; END
+        IF (cy % CELL < CELL / 2) qy = -GW2; ELSE qy = GW2; END
+        FOR c = 0 TO 3
+          k = g_head[cc + (c % 2) * qx + (c / 2) * qy];
+          WHILE (k >= 0)
+            dx = f_x[k] - x; dy = f_y[k] - y;
+            d2 = dx * dx + dy * dy;
+            IF (d2 < NR2)
+              IF (d2 < sepr2)                    // too close: push apart
+                d = sqrt(d2) + 0.01;             // (0.01: itself adds 0)
+                f = (sepr - d) / (sepr * d);
+                sx -= dx * f; sy -= dy * f;
+              END
+              IF (f_sp[k] == sp)
+                alx += f_vx[k]; aly += f_vy[k];
+                cox += dx; coy += dy;
+                n_same++;
+                IF (n_same >= MAXN) BREAK; END
+              END
+            END
+            k = f_nx[k];
+          END
+          IF (n_same >= MAXN) BREAK; END
+        END
+        f_sp[slot] = sp;
+        ax = sx * w_sep * 40; ay = sy * w_sep * 40;
+        IF (n_same > 0)
+          inv = 1 / (n_same + 0.0001);
+          ax += (alx * inv - vx) * w_ali * 0.2 + cox * inv * w_coh * 0.25;
+          ay += (aly * inv - vy) * w_ali * 0.2 + coy * inv * w_coh * 0.25;
+          // heading agreement: cosine between our heading and the
+          // school's mean velocity (1 = same way, 0 = unrelated)
+          f_al[slot] = (hx * alx + hy * aly) / (sqrt(alx * alx + aly * aly) + 0.001);
+        ELSE
+          f_al[slot] = -9;
+        END
+        // ---- 2. pikes: flee, and panic (swim faster) for a while
+        IF (n_pred > 0)
+          FOR i = 0 TO MAXP - 1
+            IF (p_on[i])
+              dx = x - p_x[i]; dy = y - p_y[i];
+              IF (abs(dx) < FEAR_R AND abs(dy) < FEAR_R)
+                d = sqrt(dx * dx + dy * dy) + 0.01;
+                IF (d < FEAR_R)
+                  f = (FEAR_R - d) / (FEAR_R * d) * w_fear * 140;
+                  ax += dx * f; ay += dy * f;
+                  panic = 1.2;
+                END
+              END
+            END
+          END
+        END
+
+        // ---- 3. food: head for the nearest pellet, eat it on contact
+        feeding = 0;
+        IF (n_food > 0 AND panic <= 0)
+          best = -1; bd = 32400;                 // 180 px
+          FOR i = 0 TO fd_top - 1
+            IF (fd_on[i])
+              dx = fd_x[i] - x; dy = fd_y[i] - y;
+              IF (abs(dx) < 180 AND abs(dy) < 180)
+                d2 = dx * dx + dy * dy;
+                IF (d2 < bd) bd = d2; best = i; END
+              END
+            END
+          END
+          IF (best >= 0)
+            feeding = 1;
+            d = sqrt(bd) + 0.01;
+            IF (d < 9)
+              fd_on[best] = 0; fed++;
+              // two pellets make a baby (one, while the species is rare)
+              IF ((fed >= 2 OR sp_n[sp] < 12) AND sp_n[sp] < SPCAP AND n_fish < MAXF - 5)
+                fed = 0; births++;
+                spawn_fish(sp, x - hx * 10, y - hy * 10, 45);
+              END
+            ELSE
+              ax += (fd_x[best] - x) / d * 320;
+              ay += (fd_y[best] - y) / d * 320;
+            END
+          END
+        END
+
+        // ---- 4. walls, surface, floor and rocks push back
+        IF (x < 70) ax += (70 - x) * 10; END
+        IF (x > SW - 70) ax -= (x - SW + 70) * 10; END
+        IF (y < TOP + 45) ay += (TOP + 45 - y) * 10; END
+        IF (y > FLOOR - 60 AND feeding == 0) ay -= (y - FLOOR + 60) * 10; END
+        FOR c = cc * 3 TO cc * 3 + 2           // only the rocks near this cell
+          i = rk_cell[c];
+          IF (i < 0) BREAK; END
+          dx = x - rk_x[i]; dy = y - rk_y[i];
+          f = rk_r[i] + 36;
+          d = sqrt(dx * dx + dy * dy) + 0.01;
+          IF (d < f)
+            ax += dx / d * (f - d) * 16;
+            ay += dy / d * (f - d) * 16;
+          END
+        END
+        // ---- 5. a little wander, and a liking for swimming level
+        ax += rand(-60, 60); ay += rand(-30, 30) - vy * 0.8;
+
+        // ---- the velocity to reach by the next update, kept between the
+        //      species' cruising limits (faster in a panic); the frames in
+        //      between just blend towards it
+        maxs = sp_spd[sp];
+        IF (panic > 0) maxs = maxs * 1.6; panic -= dt * STEER; END
+        tvx = vx + ax * dt * STEER; tvy = vy + ay * dt * STEER;
+        spd = sqrt(tvx * tvx + tvy * tvy) + 0.001;
+        IF (spd > maxs) tvx = tvx * maxs / spd; tvy = tvy * maxs / spd; spd = maxs; END
+        IF (spd < maxs * 0.4)
+          tvx = tvx * maxs * 0.4 / spd; tvy = tvy * maxs * 0.4 / spd; spd = maxs * 0.4;
+        END
+        dvx = (tvx - vx) / (STEER + 0.0001); dvy = (tvy - vy) / (STEER + 0.0001);
+        x = clamp(x, 3, SW - 3); y = clamp(y, TOP, FLOOR);
+        f_vx[slot] = tvx; f_vy[slot] = tvy;
+      END
+
+      // ---- every frame: move
+      vx += dvx; vy += dvy;
+      x += vx * dt; y += vy * dt;
+      f_x[slot] = x; f_y[slot] = y;
+
+      // ---- look (every other frame): the pre-drawn graphic nearest to
+      //      the smoothed heading; the tail beats faster at speed
+      IF ((tick + slot) % 2 == 0)
+        hd = normalize_angle(lerp_angle(hd, fget_angle(0, 0, vx, vy), 0.5));
+        phase += dt * (6 + spd * 0.18);
+        graph = spr[(sp * 2 + int(phase) % 2) * NA + (int(hd + 3750) / 7500) % NA];
+      END
+      IF (size < 100) size = clamp(size + dt * 3, 0, 100); END   // babies grow
+    END
+    IF (dbg_on)                                  // velocity vector
+      FOR i = 1 TO 3
+        draw_rect(x + vx * 0.08 * i, y + vy * 0.08 * i, 2, 2, '#ffff80');
+      END
+    END
+    FRAME;
+  END
+  IF (f_on[slot] == 2)                           // eaten: a little cloud
+    FOR i = 0 TO 4 puff(x, y); END
+  END
+  f_on[slot] = 0;
+  IF (slot < f_hint) f_hint = slot; END
+END
+
+// =====================================================================
+// PREDATOR: a pike. Cruises, locks onto the nearest fish, chases it
+// with a final lunge and then digests for a while. It burns energy all
+// the time and each meal brings some back: a well fed pike splits in
+// two, one that runs out (fish too few or too quick) starves. That
+// feedback is what makes the populations cycle.
+PROCESS predator(ps, x, y);
+PRIVATE tgt, spd, want, energy, digest, search_t, lunge,
+        dx, dy, d, d2, bd, i, ddx, ddy, da, turn, wx, wy, phase, dt, hd;
+BEGIN
+  z = -5; tgt = -1; spd = 60; energy = 30; digest = 1;
+  IF (x > SW / 2) hd = 180000; END
+  graph = spr[8 * NA + hd / 7500];
+  wx = rand(100, SW - 100); wy = rand(100, 450);
+  LOOP
+    IF (p_on[ps] == 0) BREAK; END
+    IF (paused == 0)
+      dt = get_delta();
+      energy -= dt * 1.6; digest -= dt; search_t -= dt; lunge -= dt;
+      alpha = clamp(30 + energy * 7, 30, 100);   // a starving pike fades
+      IF (energy <= 0) starved++; BREAK; END
+      // look for the nearest fish within 220 px (not every frame)
+      IF (digest <= 0 AND (search_t <= 0 OR (tgt >= 0 AND f_on[tgt] != 1)))
+        search_t = 0.3; tgt = -1; bd = 48400;
+        FOR i = 0 TO f_top - 1
+          IF (f_on[i] == 1)
+            dx = f_x[i] - x; dy = f_y[i] - y;
+            d2 = dx * dx + dy * dy;
+            IF (d2 < bd) bd = d2; tgt = i; END
+          END
+        END
+      END
+      // desired direction: the prey (or a wander point) plus walls/rocks
+      IF (tgt >= 0 AND digest <= 0)
+        ddx = f_x[tgt] - x; ddy = f_y[tgt] - y; want = 120;
+        d = sqrt(ddx * ddx + ddy * ddy) + 0.01;
+        IF (d < 70 AND lunge < -1.5) lunge = 0.6; END  // burst of speed
+        IF (lunge > 0) want = 200; END
+        IF (d < 16)                              // caught it
+          f_on[tgt] = 2; tgt = -1; kills++;
+          energy += 9; digest = 2.5;
+          IF (energy > 50 AND n_pred < 5)        // well fed: split
+            energy -= 25; pred_born++; spawn_pred(x, y);
+          END
+        END
+      ELSE
+        ddx = wx - x; ddy = wy - y; want = 55;
+        IF (abs(ddx) + abs(ddy) < 40) wx = rand(100, SW - 100); wy = rand(100, 450); END
+      END
+      d = sqrt(ddx * ddx + ddy * ddy) + 0.01;
+      ddx = ddx / d; ddy = ddy / d;
+      IF (x < 60) ddx += 1.5; END
+      IF (x > SW - 60) ddx -= 1.5; END
+      IF (y < TOP + 40) ddy += 1.5; END
+      IF (y > FLOOR - 50) ddy -= 1.5; END
+      FOR i = 0 TO n_rocks - 1
+        dx = x - rk_x[i]; dy = y - rk_y[i];
+        d = sqrt(dx * dx + dy * dy) + 0.01;
+        IF (d < rk_r[i] + 45) ddx += dx / d * 2; ddy += dy / d * 2; END
+      END
+      // turn towards it at a limited rate, then swim forward
+      da = fget_angle(0, 0, ddx, ddy) - hd;
+      WHILE (da > 180000) da -= 360000; END
+      WHILE (da < -180000) da += 360000; END
+      turn = 220000 * dt;
+      hd = normalize_angle(hd + clamp(da, -turn, turn));
+      spd += (want - spd) * clamp(dt * 3, 0, 1);
+      x = clamp(x + get_distx(hd, spd * dt), -40, SW + 40);
+      y = clamp(y + get_disty(hd, spd * dt), TOP, FLOOR);
+      phase += dt * (2 + spd * 0.04);
+      graph = spr[(8 + int(phase) % 2) * NA + (int(hd + 3750) / 7500) % NA];
+      p_x[ps] = x; p_y[ps] = y;
+    END
+    FRAME;
+  END
+  p_on[ps] = 0;
+END
+
+// A food pellet sinks, wobbling, and rots away on the sand
+PROCESS pellet(fs, x, y);
+PRIVATE t, dt, rest;
+BEGIN
+  graph = g_pellet; z = -3;
+  LOOP
+    IF (fd_on[fs] == 0) BREAK; END
+    IF (paused == 0)
+      dt = get_delta(); t += dt;
+      IF (y < sand_top(x) - 3)
+        y += dt * 26; x += sin(t * 200000) * dt * 12;
+      ELSE
+        rest += dt; alpha = 100 - rest * 8;
+        IF (rest > 12) BREAK; END
+      END
+      fd_x[fs] = x; fd_y[fs] = y;
+    END
+    FRAME;
+  END
+  fd_on[fs] = 0;
+END
+
+// Bubbles rise from vents between the rocks
+PROCESS vent(x, y);
+PRIVATE t;
+BEGIN
+  LOOP
+    t -= get_delta();
+    IF (t <= 0 AND paused == 0) bubble(x + rand(-3, 3), y); t = rand(15, 90) * 0.01; END
+    FRAME;
+  END
+END
+
+PROCESS bubble(x, y);
+PRIVATE x0, t, sp;
+BEGIN
+  graph = g_bubble; z = -10; x0 = x; size = rand(40, 90); sp = rand(35, 60);
+  WHILE (y > TOP - 20)
+    IF (paused == 0)
+      t += get_delta();
+      y -= sp * get_delta();
+      x = x0 + 4 * sin(t * 250000);
+      size += get_delta() * 8;
+    END
+    FRAME;
+  END
+END
+
+// What is left of an eaten fish
+PROCESS puff(x, y);
+PRIVATE vx, vy;
+BEGIN
+  graph = g_puff; z = -4; vx = rand(-40, 40); vy = rand(-40, 20);
+  WHILE (alpha > 0)
+    x += vx * get_delta(); y += vy * get_delta();
+    alpha -= get_delta() * 120;
+    FRAME;
+  END
+END
+
+// One blade of a kelp plant. Blades are created root first, so they also
+// run root first: each one starts at the tip the blade below it left in
+// kl_x/kl_y this frame and bends a little more with the current.
+PROCESS kelp(n, root, bx, by, ph, amp, front);
+BEGIN
+  IF (front) graph = g_kelp1; z = -20; alpha = 85; ELSE graph = g_kelp0; z = 50; END
+  LOOP
+    IF (root) x = bx; y = by; ELSE x = kl_x[n - 1]; y = kl_y[n - 1]; END
+    angle = 90000 + amp * sin(get_time() * 60000 + ph);
+    kl_x[n] = x + get_distx(angle, 32); kl_y[n] = y + get_disty(angle, 32);
+    FRAME;
+  END
+END
+
+// Yellow neighbour-radius ring around the debug fish
+PROCESS ring();
+BEGIN
+  z = -30;
+  LOOP
+    IF (dbg_on AND focus >= 0 AND f_on[focus] == 1) graph = g_ring; x = f_x[focus]; y = f_y[focus]; ELSE graph = 0; END
+    FRAME;
+  END
+END
+
+// The population chart lives in a graphic that is redrawn only when a
+// new sample arrives (twice a second), not every frame
+PROCESS chart();
+PRIVATE s, i, v0, v1, y0, y1;
+BEGIN
+  x = 672; y = 58; z = -40;
+  LOOP
+    IF (hist_new)
+      hist_new = 0;
+      hist_max = 20;
+      FOR i = 0 TO 599 IF (hist[i] > hist_max) hist_max = hist[i]; END END
+      gfx_fill_rgba(g_chart, 0, 0, 0, 0);
+      FOR s = 0 TO 4
+        FOR i = 0 TO 118
+          v0 = hist[s * 120 + (hist_pos + i) % 120];
+          v1 = hist[s * 120 + (hist_pos + i + 1) % 120];
+          y0 = 78 - v0 * 58 / hist_max; y1 = 78 - v1 * 58 / hist_max;
+          IF (y1 < y0) v0 = y1; ELSE v0 = y0; END
+          gfx_rect(g_chart, i * 2, v0, 2, abs(y1 - y0) + 1, sp_r[s], sp_g[s], sp_b[s]);
+        END
+      END
+      graph = g_chart;
+    END
+    FRAME;
+  END
+END
+
+// =====================================================================
+// HUD: statistics, weights, help and the debug overlay (grid
+// occupancy, links from the debug fish to the neighbours it sees).
+PROCESS hud();
+PRIVATE i, j, s, k, dx, dy;
+BEGIN
+  LOOP
+    IF (dbg_on)
+      FOR i = 0 TO NCELL - 1                   // fish per cell
+        g_cnt[i] = 0; k = g_head[i];
+        WHILE (k >= 0) g_cnt[i]++; k = f_nx[k]; END
+      END
+      FOR j = 1 TO 12
+        FOR i = 1 TO 16
+          k = g_cnt[j * GW2 + i];                // busier cells redder
+          IF (k > 0)
+            draw_rect((i - 1) * CELL, (j - 1) * CELL, CELL, CELL,
+                      'rgba(255,' + clamp(255 - k * 20, 60, 255) + ',80,' + clamp(k * 0.04, 0.08, 0.35) + ')');
+          END
+        END
+      END
+      FOR i = 1 TO 15 draw_rect(i * CELL, 0, 1, SH, 'rgba(255,255,255,0.18)'); END
+      FOR j = 1 TO 11 draw_rect(0, j * CELL, SW, 1, 'rgba(255,255,255,0.18)'); END
+      // links from the debug fish to the schoolmates it steers by
+      IF (focus >= 0 AND f_on[focus] == 1)
+        FOR i = 0 TO f_top - 1
+          IF (f_on[i] == 1 AND f_sp[i] == f_sp[focus] AND i != focus)
+            dx = f_x[i] - f_x[focus]; dy = f_y[i] - f_y[focus];
+            IF (dx * dx + dy * dy < NR2)
+              FOR j = 1 TO 5
+                draw_rect(f_x[focus] + dx * j / 6.0, f_y[focus] + dy * j / 6.0, 2, 2, '#ffffff');
+              END
+            END
+          END
+        END
+      END
+    END
+
+    // ---- statistics panel
+    draw_rect(6, 6, 318, 64, 'rgba(0,10,25,0.55)');
+    set_color('#e8fbff');
+    text(12, 12, 'LIVING AQUARIUM   fish ' + n_fish + '   pikes ' + n_pred + '   food ' + n_food);
+    text(12, 26, 'fps ' + fps + '   processes ' + get_process_count(0) +
+         '   align ' + int(g_align * 100) + '%');
+    text(12, 40, 'separation ' + tenths(w_sep) + ' [Z/X]  alignment ' + tenths(w_ali) + ' [C/V]');
+    text(12, 54, 'cohesion ' + tenths(w_coh) + ' [B/N]   eaten ' + kills + '  born ' + births);
+    IF (paused) set_color('#ffe060'); text(SW / 2 - 24, 90, 'PAUSED'); END
+
+    // ---- chart frame and legend (the lines are the chart process)
+    draw_rect(546, 6, 252, 118, 'rgba(0,10,25,0.55)');
+    set_color('#e8fbff');
+    text(552, 10, 'population, last 60 s (max ' + hist_max + ')');
+    FOR s = 0 TO 4
+      set_color('rgb(' + sp_r[s] + ',' + sp_g[s] + ',' + sp_b[s] + ')');
+      IF (s < 4) text(552 + (s % 2) * 84, 100 + (s / 2) * 11, sp_name(s) + ' ' + sp_n[s]);
+      ELSE text(720, 100, 'pikes x10'); END
+    END
+
+    // ---- help
+    IF (show_help)
+      draw_rect(6, 74, 318, 94, 'rgba(0,10,25,0.55)');
+      set_color('#bfe8ff');
+      text(12, 80, 'LEFT CLICK  drop food    RIGHT CLICK  add pike');
+      text(12, 93, '1 2 3 4  add 10 tetra/gold/angel/chromis');
+      text(12, 106, 'Q W E R  remove 10      M  add 100 mixed');
+      text(12, 119, 'K  remove pikes    F  auto-feed (' + autofeed + ')');
+      text(12, 132, 'D  debug view      P / SPACE  pause');
+      text(12, 145, 'Z/X C/V B/N  boids weights   H  hide help');
+    END
+    FRAME;
+  END
+END
+
+// =====================================================================
+// MAIN: builds the tank a few rows per frame, then handles the input.
+PRIVATE i, s, n, mx, my, lb, rb;
+BEGIN
+  set_mode(800, 600);
+  set_fps(60, 0);
+  screen_color('#06243a');
+  make_sprites();
+  FOR s = 0 TO 9                           // 5 kinds x 2 tail frames
+    FOR i = 0 TO NA - 1 STEP 6
+      make_fish_set(s / 2, s % 2, i);
+      set_color('#bfe8ff'); text(330, 290, 'drawing the fish... ' + (s * 10 + 10) + '%');
+      FRAME;
+    END
+  END
+  g_bg = new_graphic(SW, SH);
+  FOR i = 0 TO 11
+    paint_water(i * 50, i * 50 + 49);
+    set_color('#bfe8ff'); text(330, 290, 'filling the tank...');
+    FRAME;
+  END
+  FOR i = 0 TO 7 paint_sand(i * 100, i * 100 + 99); FRAME; END
+  make_rocks(0);
+  FRAME;
+  make_rocks(1);
+  FRAME;
+  rock_cells(0, 125);
+  FRAME;
+  rock_cells(126, NCELL - 1);
+  put_screen(0, g_bg);
+
+  manager();                               // first: runs before the fish
+  FOR i = 0 TO 10                          // kelp plants of 5-7 blades
+    s = rand(4, 6);
+    mx = 30 + i * 74 + rand(0, 30);
+    my = rand(0, 360) * 1000;
+    FOR n = 0 TO s
+      kelp(n_kelp, n == 0, mx, sand_top(mx) + 4, my + n * 30000, 3000 + n * 2500, i % 4 == 3);
+      n_kelp++;
+    END
+  END
+  ring();
+  chart();
+  hud();
+  // the first schools, each species starting in its own area
+  FOR s = 0 TO 3
+    // 45 of each (180 in all) keep slower machines at 60 fps; M adds 100 more
+    FOR i = 0 TO 44
+      spawn_fish(s, 120 + s * 170 + rand(-60, 60), 120 + rand(0, 300), 100);
+    END
+    FRAME;
+  END
+  ready = 1;
+
+  LOOP
+    mx = mouse.x; my = mouse.y;
+    lb = mouse.left; rb = mouse.right;
+    IF (lb AND lprev == 0 AND my > TOP)          // a pinch of food
+      FOR i = 0 TO 4 drop_food(mx + rand(-14, 14), my + rand(-6, 6)); END
+    END
+    IF (rb AND rprev == 0) spawn_pred(mx, clamp(my, TOP, FLOOR)); END
+    lprev = lb; rprev = rb;
+
+    IF (key_pressed(_1)) FOR i = 1 TO 10 spawn_fish(0, rand(80, 720), rand(80, 460), 100); END END
+    IF (key_pressed(_2)) FOR i = 1 TO 10 spawn_fish(1, rand(80, 720), rand(80, 460), 100); END END
+    IF (key_pressed(_3)) FOR i = 1 TO 10 spawn_fish(2, rand(80, 720), rand(80, 460), 100); END END
+    IF (key_pressed(_4)) FOR i = 1 TO 10 spawn_fish(3, rand(80, 720), rand(80, 460), 100); END END
+    IF (key_pressed(_m)) FOR i = 0 TO 99 spawn_fish(i % 4, rand(80, 720), rand(80, 460), 100); END END
+    IF (key_pressed(_q)) remove_fish(0, 10); END
+    IF (key_pressed(_w)) remove_fish(1, 10); END
+    IF (key_pressed(_e)) remove_fish(2, 10); END
+    IF (key_pressed(_r)) remove_fish(3, 10); END
+    IF (key_pressed(_k)) FOR i = 0 TO MAXP - 1 p_on[i] = 0; END END
+
+    IF (key_pressed(_z)) w_sep = clamp(w_sep - 1, 0, 40); END
+    IF (key_pressed(_x)) w_sep = clamp(w_sep + 1, 0, 40); END
+    IF (key_pressed(_c)) w_ali = clamp(w_ali - 1, 0, 40); END
+    IF (key_pressed(_v)) w_ali = clamp(w_ali + 1, 0, 40); END
+    IF (key_pressed(_b)) w_coh = clamp(w_coh - 1, 0, 40); END
+    IF (key_pressed(_n)) w_coh = clamp(w_coh + 1, 0, 40); END
+
+    IF (key_pressed(_d)) dbg_on = 1 - dbg_on; END
+    IF (key_pressed(_p) OR key_pressed(_space)) paused = 1 - paused; END
+    IF (key_pressed(_f)) autofeed = 1 - autofeed; END
+    IF (key_pressed(_h)) show_help = 1 - show_help; END
+    FRAME;
+  END
+END

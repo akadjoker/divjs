@@ -1,0 +1,373 @@
+PROGRAM vector_asteroids;
+
+// Asteroids drawn in vector style. Nothing is loaded: every rock gets its
+// own jagged outline, drawn with gfx_line into a new_graphic of its own, so
+// the engine rotates it for us through ANGLE. The collision circle of each
+// rock is taken from the same random radii that shaped its outline.
+
+GLOBAL
+  scr_w = 640;
+  scr_h = 480;
+
+  g_ship   = 0;     // ship outline
+  g_thrust1 = 0;    // ship + short flame
+  g_thrust2 = 0;    // ship + long flame (they alternate: flicker)
+  g_bullet = 0;
+  g_spark  = 0;     // short line used for the particle bursts
+  g_stars  = 0;
+
+  score    = 0;
+  hiscore  = 0;
+  lives    = 3;
+  wave     = 0;
+  state    = 0;     // 0 title, 1 playing, 2 game over
+  rocks    = 0;     // asteroids alive
+  nbullets = 0;     // player bullets alive (limited)
+  purge    = 0;     // 1 = every asteroid removes itself
+  next_life = 10000;
+  ship_x   = 320;   // where the ship is (new waves spawn away from it)
+  ship_y   = 240;
+  ship_alive = 0;
+
+LOCAL
+  hit = 0;          // set to 1 by whoever smashes an asteroid
+
+// ---------------------------------------------------------------------
+// Graphics
+// ---------------------------------------------------------------------
+
+// The ship points right (angle 0). All three versions share the same
+// 48x20 canvas so the pivot (its centre) never moves when GRAPH changes.
+FUNCTION draw_ship(g, flame);
+BEGIN
+  gfx_fill_rgba(g, 0, 0, 0, 0);
+  gfx_line(g, 37, 10, 11, 2, 230, 240, 255);   // nose to rear corners
+  gfx_line(g, 37, 10, 11, 18, 230, 240, 255);
+  gfx_line(g, 11, 2, 16, 10, 230, 240, 255);   // notched tail
+  gfx_line(g, 11, 18, 16, 10, 230, 240, 255);
+  IF (flame > 0)
+    gfx_line(g, 14, 6, 14 - flame, 10, 255, 170, 60);
+    gfx_line(g, 14, 14, 14 - flame, 10, 255, 170, 60);
+  END
+  RETURN g;
+END
+
+FUNCTION make_graphics();
+BEGIN
+  g_ship    = draw_ship(new_graphic(48, 20), 0);
+  g_thrust1 = draw_ship(new_graphic(48, 20), 7);
+  g_thrust2 = draw_ship(new_graphic(48, 20), 13);
+
+  g_bullet = new_graphic(3, 3);
+  gfx_fill_rgba(g_bullet, 0, 0, 0, 0);
+  gfx_rect(g_bullet, 0, 0, 3, 3, 255, 255, 255);
+
+  g_spark = new_graphic(8, 2);
+  gfx_fill_rgba(g_spark, 0, 0, 0, 0);
+  gfx_line(g_spark, 0, 0, 7, 0, 220, 230, 255);
+
+  // A faint starfield as the background.
+  g_stars = new_graphic(scr_w, scr_h);
+  gfx_fill(g_stars, 0, 0, 6);
+  FOR i = 0 TO 119
+    c = rand(40, 110);
+    gfx_pixel(g_stars, rand(scr_w - 1), rand(scr_h - 1), c, c, c + 20);
+  END
+  put_screen(0, g_stars);
+  RETURN 0;
+END
+
+// ---------------------------------------------------------------------
+// Particles: a short line flying outwards and fading away
+// ---------------------------------------------------------------------
+PROCESS spark(px, py, dir, spd, life);
+PRIVATE t = 0;
+BEGIN
+  x = px; y = py; angle = dir; graph = g_spark; z = -5;
+  FROM t = 1 TO life;
+    advance(spd);
+    angle = angle + 9000;           // tumbling line
+    alpha = 100 - t * 100 / life;
+    FRAME;
+  END
+END
+
+FUNCTION burst(px, py, n, spd);
+BEGIN
+  FROM i = 1 TO n;
+    spark(px, py, rand(0, 359999), rand(spd / 2, spd), rand(20, 40));
+  END
+  RETURN 0;
+END
+
+// ---------------------------------------------------------------------
+// Asteroid: tier 3 = large, 2 = medium, 1 = small
+// ---------------------------------------------------------------------
+PROCESS asteroid(ax, ay, tier);
+PRIVATE r = 0; c = 0; n = 0; step = 0; a = 0; rr = 0; sum = 0;
+        px = 0; py = 0; fx = 0; fy = 0; qx = 0; qy = 0;
+        vx = 0; vy = 0; spin = 0; dir = 0; spd = 0.0;
+BEGIN
+  x = ax; y = ay;
+  rocks = rocks + 1;
+
+  // Outline: n vertices around the centre, each at its own random radius
+  // between 55% and 100% of the tier radius, joined by lines.
+  IF (tier == 3) r = 38; n = 12; END
+  IF (tier == 2) r = 21; n = 10; END
+  IF (tier == 1) r = 11; n = 8;  END
+  c = r + 2;                          // centre of a (2r+4)-square canvas
+  graph = new_graphic(c * 2, c * 2);  // pivot = centre = (c, c)
+  gfx_fill_rgba(graph, 0, 0, 0, 0);
+  step = 360000 / n;
+  FROM i = 0 TO n - 1;
+    a = i * step + rand(-step / 4, step / 4);
+    rr = rand(r * 55 / 100, r);
+    sum = sum + rr;
+    px = round(c + cos(a) * rr);
+    py = round(c - sin(a) * rr);
+    IF (i == 0) fx = px; fy = py;
+    ELSE gfx_line(graph, qx, qy, px, py, 200, 210, 230);
+    END
+    qx = px; qy = py;
+  END
+  gfx_line(graph, qx, qy, fx, fy, 200, 210, 230);
+
+  // Collision circle in graphic-local coordinates (the canvas centre),
+  // with the average vertex radius: it follows the outline, is scaled by
+  // SIZE and ignores the transparent corners of the square graphic.
+  add_collision_circle(c, c, sum / n);
+
+  // Smaller rocks fly faster; every wave adds a little speed.
+  dir = rand(0, 359999);
+  spd = (4 - tier) * 0.55 + 0.3 + wave * 0.06 + rand(0, 40) / 100.0;
+  vx = cos(dir) * spd;
+  vy = -sin(dir) * spd;
+  spin = rand(-2500, 2500);
+  angle = rand(0, 359999);
+
+  WHILE (hit == 0 AND purge == 0)
+    x = x + vx;
+    y = y + vy;
+    angle = angle + spin;
+    // Screen wrap: the rock leaves completely before it reappears.
+    IF (x < -c)        x = x + scr_w + c * 2; END
+    IF (x > scr_w + c) x = x - scr_w - c * 2; END
+    IF (y < -c)        y = y + scr_h + c * 2; END
+    IF (y > scr_h + c) y = y - scr_h - c * 2; END
+    FRAME;
+  END
+
+  IF (hit)
+    IF (tier == 3) score = score + 20;  END
+    IF (tier == 2) score = score + 50;  END
+    IF (tier == 1) score = score + 100; END
+    IF (tier > 1)
+      // Split into two smaller rocks, each with a brand new shape.
+      asteroid(x, y, tier - 1);
+      asteroid(x, y, tier - 1);
+      burst(x, y, 4, 3);
+    ELSE
+      burst(x, y, 10, 4);
+    END
+  END
+  rocks = rocks - 1;
+  free_graphic(graph);
+END
+
+// ---------------------------------------------------------------------
+// Bullets: limited number alive, they wrap and expire
+// ---------------------------------------------------------------------
+PROCESS bullet(bx, by, dir, svx, svy);
+PRIVATE vx = 0; vy = 0; life = 48; rock = 0;
+BEGIN
+  x = bx; y = by; graph = g_bullet;
+  nbullets = nbullets + 1;
+  vx = cos(dir) * 8 + svx;
+  vy = -sin(dir) * 8 + svy;
+  WHILE (life > 0)
+    life = life - 1;
+    x = x + vx;
+    y = y + vy;
+    IF (x < 0) x = x + scr_w; END
+    IF (x >= scr_w) x = x - scr_w; END
+    IF (y < 0) y = y + scr_h; END
+    IF (y >= scr_h) y = y - scr_h; END
+    rock = collision(TYPE asteroid);
+    IF (rock)
+      IF (rock.hit == 0)
+        rock.hit = 1;
+        BREAK;
+      END
+    END
+    FRAME;
+  END
+  nbullets = nbullets - 1;
+END
+
+// ---------------------------------------------------------------------
+// The ship: rotate, thrust with inertia, fire, hyperspace, die, respawn
+// ---------------------------------------------------------------------
+PROCESS ship();
+PRIVATE vx = 0.0; vy = 0.0; inv = 0; spd = 0.0; rock = 0; t = 0; blink = 0;
+BEGIN
+  graph = g_ship; z = -10;
+  add_collision_circle(24, 10, 9);   // the hull, not the whole 48x20 box
+  LOOP
+    // (Re)spawn in the middle, blinking while invulnerable.
+    x = scr_w / 2; y = scr_h / 2; angle = 90000;
+    vx = 0; vy = 0; inv = 150; alpha = 100;
+    ship_alive = 1;
+
+    LOOP
+      IF (key(_left))  angle = angle + 5000; END
+      IF (key(_right)) angle = angle - 5000; END
+
+      IF (key(_up))
+        vx = vx + cos(angle) * 0.14;
+        vy = vy - sin(angle) * 0.14;
+        blink = blink + 1;
+        IF ((blink / 3) % 2 == 0) graph = g_thrust1; ELSE graph = g_thrust2; END
+      ELSE
+        graph = g_ship;
+      END
+      // Space friction, and a speed cap.
+      vx = vx * 0.99;
+      vy = vy * 0.99;
+      spd = sqrt(vx * vx + vy * vy);
+      IF (spd > 6.0) vx = vx * 6.0 / spd; vy = vy * 6.0 / spd; END
+
+      x = x + vx;
+      y = y + vy;
+      IF (x < -10)        x = x + scr_w + 20; END
+      IF (x > scr_w + 10) x = x - scr_w - 20; END
+      IF (y < -10)        y = y + scr_h + 20; END
+      IF (y > scr_h + 10) y = y - scr_h - 20; END
+      ship_x = x; ship_y = y;
+
+      IF (key_pressed(_space) AND nbullets < 5)
+        bullet(x + cos(angle) * 15, y - sin(angle) * 15, angle, vx, vy);
+      END
+
+      // Hyperspace: jump to a random place (no guarantee it is safe).
+      IF (key_pressed(_down))
+        burst(x, y, 6, 2);
+        x = rand(40, scr_w - 40); y = rand(40, scr_h - 40);
+        vx = 0; vy = 0;
+        burst(x, y, 6, 2);
+      END
+
+      IF (inv > 0)
+        inv = inv - 1;
+        IF ((inv / 6) % 2 == 0) alpha = 100; ELSE alpha = 20; END
+      ELSE
+        alpha = 100;
+        rock = collision(TYPE asteroid);
+        IF (rock)
+          IF (rock.hit == 0) rock.hit = 1; END   // the rock breaks too
+          BREAK;
+        END
+      END
+      FRAME;
+    END
+
+    // Destroyed: a burst of line fragments, then wait and respawn.
+    ship_alive = 0;
+    burst(x, y, 14, 3);
+    graph = 0;
+    lives = lives - 1;
+    FROM t = 1 TO 90; FRAME; END
+    IF (lives <= 0) state = 2; BREAK; END
+    graph = g_ship;
+  END
+END
+
+// Spawns a wave of large rocks along the screen border, away from the ship.
+FUNCTION spawn_wave(count);
+BEGIN
+  FROM i = 1 TO count;
+    REPEAT
+      IF (rand(0, 1) == 0) sx = rand(0, scr_w); sy = rand(0, 1) * scr_h;
+      ELSE sx = rand(0, 1) * scr_w; sy = rand(0, scr_h);
+      END
+    UNTIL (distance(sx, sy, ship_x, ship_y) > 150)
+    asteroid(sx, sy, 3);
+  END
+  RETURN 0;
+END
+
+// Removes every asteroid (each one frees its own graphic on the way out).
+FUNCTION clear_rocks();
+BEGIN
+  purge = 1;
+  WHILE (rocks > 0) FRAME; END
+  purge = 0;
+  RETURN 0;
+END
+
+// ---------------------------------------------------------------------
+// MAIN: title, waves, game over, restart
+// ---------------------------------------------------------------------
+PRIVATE t1 = 0; t2 = 0; t3 = 0; wait = 0;
+BEGIN
+  set_mode(640, 480);
+  set_fps(60, 0);
+  screen_color('#000006');
+  make_graphics();
+
+  // HUD, written once: OFFSET keeps the numbers live.
+  write(0, 8, 8, 0, "SCORE");
+  write_int(0, 44, 8, 0, OFFSET score);
+  write(0, 270, 8, 0, "WAVE");
+  write_int(0, 300, 8, 0, OFFSET wave);
+  write(0, 530, 8, 0, "SHIPS");
+  write_int(0, 566, 8, 0, OFFSET lives);
+  write(0, 8, 20, 0, "HI");
+  write_int(0, 44, 20, 0, OFFSET hiscore);
+
+  // ---- Title: a few rocks drift behind the instructions ----
+  wave = 1;
+  spawn_wave(5);
+  t1 = write(0, 320, 180, 4, "V E C T O R   A S T E R O I D S");
+  t2 = write(0, 320, 230, 4, "LEFT/RIGHT rotate   UP thrust   SPACE fire   DOWN hyperspace");
+  t3 = write(0, 320, 260, 4, "press ENTER or SPACE to start");
+  REPEAT FRAME; UNTIL (key_pressed(_enter) OR key_pressed(_space))
+  delete_text(t1); delete_text(t2); delete_text(t3);
+  clear_rocks();
+
+  LOOP
+    // ---- Play ----
+    score = 0; lives = 3; wave = 0; next_life = 10000;
+    state = 1;
+    ship();
+    wait = 60;
+    WHILE (state == 1)
+      // Next wave once the field is clear (after a short pause).
+      IF (rocks == 0)
+        wait = wait - 1;
+        IF (wait <= 0)
+          wave = wave + 1;
+          spawn_wave(min_int(3 + wave, 11));
+          wait = 90;
+        END
+      END
+      IF (score >= next_life) lives = lives + 1; next_life = next_life + 10000; END
+      IF (score > hiscore) hiscore = score; END
+      FRAME;
+    END
+
+    // ---- Game over ----
+    t1 = write(0, 320, 220, 4, "G A M E   O V E R");
+    t2 = write(0, 320, 250, 4, "press ENTER or SPACE to play again");
+    FROM wait = 1 TO 60; FRAME; END    // don't skip it with a held fire key
+    REPEAT FRAME; UNTIL (key_pressed(_enter) OR key_pressed(_space))
+    delete_text(t1); delete_text(t2);
+    clear_rocks();
+  END
+END
+
+FUNCTION min_int(a, b);
+BEGIN
+  IF (a < b) RETURN a; END
+  RETURN b;
+END

@@ -1,0 +1,478 @@
+:root {
+  --bg: #0f1419;
+  --panel: #171f27;
+  --panel-2: #1f2a35;
+  --border: #2a3948;
+  --text: #e8f1f8;
+  --muted: #95a8b8;
+  --accent: #2dd4bf;
+  --accent-text: #042a27;
+  --danger: #ff6b6b;
+  --warn: #ffcb6b;
+  --screen-bg: #05080b;
+  --radius: 10px;
+  --mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  --sans: "Fira Sans", "Segoe UI", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+}
+
+button {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--muted);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+button:focus-visible,
+canvas:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 220px minmax(320px, 1fr) minmax(320px, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "top top top"
+    "side editor run";
+  height: 100vh;
+  gap: 10px;
+  padding: 10px;
+}
+
+.topbar {
+  grid-area: top;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 14px;
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.brand span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sidebar {
+  grid-area: side;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+
+.program-list {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.program-list h3 {
+  margin: 12px 4px 4px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.program-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  font-weight: 500;
+  background: transparent;
+  border-color: transparent;
+  padding: 6px 8px;
+}
+
+.program-list button:hover {
+  background: var(--panel-2);
+}
+
+.program-list button[aria-current="true"] {
+  background: var(--panel-2);
+  border-color: var(--accent);
+}
+
+.program-list .edited {
+  color: var(--warn);
+  font-size: 11px;
+}
+
+.editor-pane {
+  grid-area: editor;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.program-info {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.program-info h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.program-info p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.program-info p:empty {
+  display: none;
+}
+
+.program-info .controls::before {
+  content: "Controls: ";
+  color: var(--text);
+}
+
+.editor {
+  flex: 1;
+  min-height: 0;
+}
+
+.editor .cm-editor {
+  height: 100%;
+  font-size: 13px;
+}
+
+.editor .cm-scroller {
+  font-family: var(--mono);
+}
+
+.run-pane {
+  grid-area: run;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+
+.screen {
+  flex: 3 1 0;
+  min-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--screen-bg);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.screen canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+
+/* Full screen: the game alone on black. .screen-max is the same for
+   browsers without the Fullscreen API (iPhone Safari): the panel covers
+   the window instead. */
+.screen:fullscreen,
+.screen.screen-max {
+  border-radius: 0;
+  background: #000;
+}
+
+/* The focus ring is useful in the page, noise around a full-screen game. */
+.screen:fullscreen canvas,
+.screen.screen-max canvas {
+  outline: none;
+}
+
+.screen.screen-max {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.statusbar button.small {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.statusbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#status.running {
+  color: var(--accent);
+}
+
+#status.error {
+  color: var(--danger);
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tab {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: transparent;
+}
+
+.tab.active {
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+
+.console,
+.inspector,
+.files {
+  flex: 2 1 0;
+  min-height: 80px;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.console div {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 1px 0;
+}
+
+.console .error {
+  color: var(--danger);
+}
+
+.console .warn {
+  color: var(--warn);
+}
+
+.console .ok {
+  color: var(--accent);
+}
+
+.console a {
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.inspector h3 {
+  margin: 4px 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.inspector table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.inspector th,
+.inspector td {
+  text-align: left;
+  padding: 1px 6px;
+  border-bottom: 1px solid var(--panel-2);
+  white-space: nowrap;
+}
+
+.inspector th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.toast {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+@media (max-width: 1100px) {
+  .app {
+    grid-template-columns: 200px minmax(0, 1fr);
+    grid-template-rows: auto minmax(360px, 1fr) minmax(420px, auto);
+    grid-template-areas:
+      "top top"
+      "side editor"
+      "run run";
+    height: auto;
+    min-height: 100vh;
+  }
+}
+
+@media (max-width: 700px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(360px, 60vh) minmax(420px, auto);
+    grid-template-areas:
+      "top"
+      "side"
+      "editor"
+      "run";
+    padding: 8px;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .program-list {
+    max-height: 180px;
+  }
+}
+
+/* ── Files tab ─────────────────────────────────────────────────────── */
+
+.tab .count {
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--border);
+  color: var(--text);
+}
+
+.files {
+  font-family: var(--sans);
+}
+
+.drop-zone {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--muted);
+}
+
+.drop-zone p {
+  margin: 0 0 4px;
+}
+
+.drop-zone.over {
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+
+.drop-zone code {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+.drop-zone .hint {
+  font-size: 11px;
+}
+
+.file-pick {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.file-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.file-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.file-list .name {
+  font-family: var(--mono);
+  word-break: break-all;
+}
+
+.file-list .info {
+  flex: 1;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.file-list button {
+  padding: 2px 8px;
+  font-size: 11px;
+}

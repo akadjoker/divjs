@@ -1,0 +1,1199 @@
+PROGRAM chicken_cannon;
+
+// CHICKEN CANNON - a farm cannon fires live chickens at forts of wood and
+// straw guarded by grumpy scarecrows and foxes. Everything that tumbles is
+// a rigid body of the engine's physics (phys_*): a process calls phys_box
+// or phys_circle once and from then on the world moves it.
+//
+// Aim by holding the mouse button: the arrow from the cannon to the
+// pointer sets the angle and the power, and letting go fires. A dotted
+// line shows where the chicken goes in its first second of flight. Three
+// chickens: the HEN (light and bouncy), the FAT HEN (heavy: dense
+// phys_material, smashes through planks) and the EGG BOMBER, which drops
+// an exploding egg when you click while it flies.
+//
+// Every level builds a new fort from its number (rand_seed): towers of
+// wooden posts and planks, pyramids and huts of straw bales, with
+// scarecrows and foxes inside and on top. Wood cracks and breaks when
+// phys_impact() - how hard a body was hit in the last step - passes its
+// threshold; straw is light and gets shoved around. A target is knocked
+// out by a hard hit, by an egg blast, or by being tipped over. Knock them
+// all out to win the level; a new random fort follows.
+//
+// All graphics are drawn in code (new_graphic + gfx_*) and all sounds are
+// made by the engine (sfx, sfx_tone, song_*): no files.
+
+GLOBAL
+  SW = 800; SH = 480;          // screen
+  GY = 410;                    // ground level under the fort
+  CX = 92; CY = 368;           // the cannon's pivot (breech)
+  BARREL = 46;                 // pivot to muzzle, px
+  GRAV = 600;                  // gravity, px/s^2
+  DT = 0.0166666667;           // one physics step (1/60 s)
+  BLAST_R = 95.0;              // egg blast radius, px
+
+  // ---- block shapes (drawn lying down; posts are rotated 90000)
+  shp_w[4]; shp_h[4];
+  ch_r[2];                     // chicken radius per kind
+
+  // ---- game state
+  state = 0;          // 0 title, 1 building, 2 playing, 3 won, 4 lost
+  phase = 0;          // 0 aiming, 1 chicken flying, 2 waiting for calm
+  level = 1; score = 0; level_score0 = 0;
+  frame_no = 0; last_motion = 0; wait_t = 0;
+  armed = 0;          // 1 = impacts do damage (off while a fort settles)
+  targets_alive = 0; n_blocks = 0; n_parts = 0;
+  ammo[2]; sel = 0;
+  aim_ang = 38000; aim_pow = 170; aiming = 0; prevl = 1; recoil = 0;
+  blast_n = 0; blast_x = 0.0; blast_y = 0.0;
+  snd_crack_t = 0; snd_sq_t = 0;
+  check_now = 0; settle_max = 0.0; settle_ang = 0; attempts = 0;
+
+  // ---- measurements read by the tests
+  shots = 0; kos = 0; wins = 0; eggs = 0; breaks = 0; bodies = 0; fps_now = 0;
+
+  // ---- graphics
+  g_bg = 0; g_title = 0; g_barrel = 0; g_carr = 0;
+  g_ch[8];                     // chicken kind * 3 + frame (wings up, down, dizzy)
+  g_blk[14];                   // shape * 3 + damage stage
+  g_scare[1]; g_fox[1];        // [1] = knocked out
+  g_feather[1]; g_straw = 0; g_chip = 0; g_shell = 0;
+  g_egg = 0; g_puff = 0; g_splat = 0; g_panel = 0; g_clear = 0; g_fail = 0;
+
+  // ---- sounds
+  s_boom = 0; s_sq[3]; s_crack[2]; s_break = 0; s_straw = 0; s_egg = 0;
+  s_oof = 0; s_yelp = 0; s_bawk[2]; s_ding[3]; s_sad = 0; s_plop = 0;
+  song = 0;
+  names[2] = "HEN", "FAT HEN", "EGG BOMBER";
+
+// =====================================================================
+// Graphics, all drawn in code
+// =====================================================================
+
+// A wooden plank with grain and knots; stage 1 and 2 add cracks.
+FUNCTION wood_graphic(w, h, stage);
+PRIVATE g, i, k, px, py, qx, qy, c;
+BEGIN
+  g = new_graphic(w, h);
+  gfx_fill(g, 186, 132, 70);
+  FOR i = 1 TO h / 3
+    c = rand(0, 20);
+    px = 0; py = i * 3 + rand(-1, 1);
+    WHILE (px < w)
+      qx = px + rand(6, 14); qy = py + rand(-1, 1);
+      gfx_line(g, px, py, qx, qy, 146 - c, 98 - c, 48);
+      px = qx; py = qy;
+    END
+  END
+  IF (w > 40) gfx_circle(g, rand(10, w - 10), h / 2, 2, 120, 76, 36); END
+  gfx_line(g, 1, 1, w - 2, 1, 214, 168, 104);
+  gfx_rect_outline(g, 0, 0, w, h, 100, 62, 28);
+  FOR k = 1 TO stage * 2
+    px = w / 2 + rand(-w / 4, w / 4); py = h / 2;
+    FOR i = 0 TO 3
+      qx = px + rand(-8, 8); qy = py + rand(-h / 3, h / 3);
+      gfx_line(g, px, py, qx, qy, 50, 30, 16);
+      px = qx; py = qy;
+    END
+  END
+  RETURN g;
+END
+
+// A straw bale: golden stalks, two strings round it; damage frays it.
+FUNCTION straw_graphic(w, h, stage);
+PRIVATE g, i, px, py, c;
+BEGIN
+  g = new_graphic(w, h);
+  gfx_fill(g, 226, 190, 92);
+  FOR i = 0 TO 40
+    c = rand(0, 40);
+    px = rand(0, w - 6); py = rand(1, h - 2);
+    gfx_line(g, px, py, px + rand(3, 8), py + rand(-1, 1), 200 - c, 160 - c, 60);
+  END
+  gfx_rect(g, w / 4, 0, 2, h, 140, 90, 40);
+  gfx_rect(g, w * 3 / 4 - 2, 0, 2, h, 140, 90, 40);
+  gfx_rect_outline(g, 0, 0, w, h, 170, 130, 50);
+  FOR i = 1 TO stage * 6                  // stalks sticking out
+    px = rand(2, w - 3); py = rand(2, h - 3);
+    gfx_line(g, px, py, px + rand(-5, 5), py + rand(-5, 5), 250, 230, 140);
+  END
+  RETURN g;
+END
+
+// A chicken facing right. kind 0 white hen, 1 fat brown hen, 2 grey egg
+// bomber with aviator goggles. fr: 0 wings up, 1 wings down, 2 dizzy
+// (standing, crossed eyes).
+FUNCTION chicken_graphic(kind, fr);
+PRIVATE g, r, c, br, bgc, bb, sr, sg, sb, lr, lg, lb, i, ex, ey;
+BEGIN
+  r = ch_r[kind];
+  br = 250; bgc = 248; bb = 240; sr = 214; sg = 208; sb = 196; lr = 255; lg = 255; lb = 255;
+  IF (kind == 1) br = 196; bgc = 128; bb = 64; sr = 150; sg = 92; sb = 42; lr = 230; lg = 178; lb = 118; END
+  IF (kind == 2) br = 88; bgc = 92; bb = 104; sr = 56; sg = 58; sb = 70; lr = 130; lg = 134; lb = 148; END
+  c = r + 8;
+  g = new_graphic(c * 2, c * 2);
+  // legs: standing when dizzy, dangling behind in flight
+  IF (fr == 2)
+    gfx_line(g, c - 3, c + r - 2, c - 3, c + r + 6, 240, 150, 30);
+    gfx_line(g, c + 3, c + r - 2, c + 3, c + r + 6, 240, 150, 30);
+    gfx_line(g, c - 7, c + r + 6, c - 1, c + r + 6, 240, 150, 30);
+    gfx_line(g, c + 1, c + r + 6, c + 7, c + r + 6, 240, 150, 30);
+  ELSE
+    gfx_line(g, c - 2, c + r - 3, c - 8, c + r + 5, 240, 150, 30);
+    gfx_line(g, c + 3, c + r - 3, c - 3, c + r + 6, 240, 150, 30);
+  END
+  // tail feathers
+  gfx_circle(g, c - r, c - r * 0.3, r * 0.42, sr, sg, sb);
+  gfx_circle(g, c - r - 2, c - r * 0.75, r * 0.3, sr, sg, sb);
+  // body and belly
+  gfx_circle(g, c, c, r, sr * 0.6, sg * 0.6, sb * 0.6);
+  gfx_circle(g, c, c, r - 1, br, bgc, bb);
+  gfx_circle(g, c + r * 0.2, c + r * 0.35, r * 0.5, lr, lg, lb);
+  IF (kind == 2)
+    FOR i = 0 TO 5 gfx_circle(g, c - r * 0.5 + i * 3, c + (i % 2) * 4 - 2, 1, 200, 200, 214); END
+  END
+  // the wing
+  IF (fr == 0)
+    gfx_circle(g, c - r * 0.25, c - r * 0.5, r * 0.5, sr, sg, sb);
+    gfx_circle(g, c - r * 0.5, c - r * 0.95, r * 0.32, sr, sg, sb);
+  ELSE
+    IF (fr == 1)
+      gfx_circle(g, c - r * 0.25, c + r * 0.35, r * 0.5, sr, sg, sb);
+      gfx_circle(g, c - r * 0.45, c + r * 0.8, r * 0.32, sr, sg, sb);
+    ELSE
+      gfx_circle(g, c - r * 0.2, c + r * 0.1, r * 0.45, sr, sg, sb);
+    END
+  END
+  // comb, beak and wattle
+  gfx_circle(g, c + r * 0.1, c - r * 0.95, r * 0.24, 220, 40, 40);
+  gfx_circle(g, c + r * 0.4, c - r * 0.88, r * 0.2, 220, 40, 40);
+  gfx_circle(g, c - r * 0.18, c - r * 0.85, r * 0.2, 220, 40, 40);
+  FOR i = 0 TO 5
+    gfx_line(g, c + r * 0.8, c - r * 0.3 + i * r * 0.06, c + r + 6, c - r * 0.08, 250, 180, 30);
+  END
+  gfx_circle(g, c + r * 0.8, c + r * 0.22, r * 0.14 + 0.5, 220, 40, 40);
+  // the eye
+  ex = c + r * 0.42; ey = c - r * 0.35;
+  IF (kind == 2)                          // goggles and their strap
+    gfx_line(g, c - r, ey - 1, ex, ey - 1, 110, 70, 30);
+    gfx_line(g, c - r, ey, ex, ey, 110, 70, 30);
+    gfx_circle(g, ex, ey, r * 0.36, 160, 120, 40);
+    gfx_circle(g, ex, ey, r * 0.28, 170, 220, 250);
+  ELSE
+    gfx_circle(g, ex, ey, r * 0.27, 255, 255, 255);
+  END
+  IF (fr == 2)
+    gfx_line(g, ex - 2, ey - 2, ex + 2, ey + 2, 0, 0, 0);
+    gfx_line(g, ex - 2, ey + 2, ex + 2, ey - 2, 0, 0, 0);
+  ELSE
+    gfx_circle(g, ex + r * 0.08, ey, r * 0.12 + 0.5, 0, 0, 0);
+  END
+  IF (kind == 1)                          // a determined brow
+    gfx_line(g, ex - r * 0.3, ey - r * 0.4, ex + r * 0.3, ey - r * 0.25, 60, 30, 10);
+  END
+  RETURN g;
+END
+
+// A grumpy scarecrow on its pole; knocked out it has crossed eyes.
+FUNCTION scarecrow_graphic(ko);
+PRIVATE g;
+BEGIN
+  g = new_graphic(34, 52);
+  set_point(0, g, 0, 17, 28);            // the body box's centre
+  gfx_rect(g, 16, 34, 3, 18, 120, 80, 40);                   // pole
+  gfx_rect(g, 1, 22, 32, 3, 130, 90, 45);                    // arm stick
+  gfx_line(g, 0, 19, 3, 23, 240, 200, 90); gfx_line(g, 0, 27, 3, 23, 240, 200, 90);
+  gfx_line(g, 33, 19, 30, 23, 240, 200, 90); gfx_line(g, 33, 27, 30, 23, 240, 200, 90);
+  gfx_rect(g, 9, 20, 16, 16, 70, 110, 190);                   // shirt
+  gfx_rect(g, 4, 20, 6, 6, 70, 110, 190); gfx_rect(g, 24, 20, 6, 6, 70, 110, 190);
+  gfx_line(g, 9, 27, 24, 27, 40, 70, 140); gfx_line(g, 15, 20, 15, 35, 40, 70, 140);
+  gfx_line(g, 20, 20, 20, 35, 40, 70, 140);
+  gfx_rect(g, 17, 29, 5, 5, 200, 80, 60);                     // patch
+  gfx_line(g, 11, 36, 10, 41, 240, 200, 90); gfx_line(g, 14, 36, 14, 42, 240, 200, 90);
+  gfx_line(g, 20, 36, 21, 41, 240, 200, 90); gfx_line(g, 23, 36, 25, 40, 240, 200, 90);
+  gfx_circle(g, 17, 13, 8, 150, 120, 70);                     // sack head
+  gfx_circle(g, 17, 13, 7, 214, 184, 128);
+  IF (ko)
+    gfx_line(g, 12, 10, 15, 13, 30, 20, 10); gfx_line(g, 12, 13, 15, 10, 30, 20, 10);
+    gfx_line(g, 19, 10, 22, 13, 30, 20, 10); gfx_line(g, 19, 13, 22, 10, 30, 20, 10);
+    gfx_circle(g, 17, 18, 2, 60, 30, 20);
+  ELSE
+    gfx_circle(g, 14, 12, 1.5, 20, 20, 20); gfx_circle(g, 20, 12, 1.5, 20, 20, 20);
+    gfx_line(g, 11, 8, 15, 10, 40, 25, 10); gfx_line(g, 23, 8, 19, 10, 40, 25, 10);
+    gfx_line(g, 13, 18, 17, 16, 60, 30, 20); gfx_line(g, 17, 16, 21, 18, 60, 30, 20);
+    gfx_line(g, 14, 16, 14, 18, 60, 30, 20); gfx_line(g, 20, 16, 20, 18, 60, 30, 20);
+  END
+  gfx_rect(g, 5, 5, 24, 3, 200, 160, 60);                     // straw hat
+  gfx_rect(g, 10, 0, 14, 6, 216, 176, 70);
+  gfx_rect(g, 10, 4, 14, 1, 160, 50, 40);
+  RETURN g;
+END
+
+// A sulking fox sitting down, big tail behind.
+FUNCTION fox_graphic(ko);
+PRIVATE g, i;
+BEGIN
+  g = new_graphic(44, 32);
+  set_point(0, g, 0, 22, 20);
+  gfx_circle(g, 7, 22, 7, 216, 106, 36);                      // tail
+  gfx_circle(g, 3, 25, 3, 250, 250, 245);
+  gfx_circle(g, 18, 23, 8, 226, 116, 40);                     // body
+  gfx_rect(g, 12, 16, 16, 15, 226, 116, 40);
+  gfx_circle(g, 22, 25, 5, 250, 240, 225);
+  gfx_rect(g, 12, 28, 4, 4, 70, 40, 30); gfx_rect(g, 24, 28, 4, 4, 70, 40, 30);
+  FOR i = 0 TO 4                                              // ears
+    gfx_line(g, 24 + i, 9, 25, 1, 200, 96, 30);
+    gfx_line(g, 31 + i, 8, 35, 0, 200, 96, 30);
+  END
+  gfx_circle(g, 30, 14, 8, 232, 122, 46);                     // head
+  gfx_circle(g, 36, 17, 4, 250, 245, 235);                    // snout
+  gfx_circle(g, 40, 16, 1.5, 30, 20, 20);
+  IF (ko)
+    gfx_line(g, 26, 10, 29, 13, 20, 20, 20); gfx_line(g, 26, 13, 29, 10, 20, 20, 20);
+    gfx_line(g, 32, 10, 35, 13, 20, 20, 20); gfx_line(g, 32, 13, 35, 10, 20, 20, 20);
+    gfx_line(g, 34, 21, 38, 21, 20, 20, 20);
+  ELSE
+    gfx_circle(g, 28, 12, 1.5, 20, 20, 20); gfx_circle(g, 33, 12, 1.5, 20, 20, 20);
+    gfx_line(g, 25, 8, 29, 10, 60, 30, 10); gfx_line(g, 36, 8, 32, 10, 60, 30, 10);
+    gfx_line(g, 33, 21, 37, 20, 60, 30, 10);
+  END
+  RETURN g;
+END
+
+FUNCTION big_text(w, h, s, cr, cg, cb, sz);
+PRIVATE g;
+BEGIN
+  g = new_graphic(w, h);
+  gfx_text(g, 3, 3, s, 60, 30, 10, sz);             // shadow
+  gfx_text(g, 0, 0, s, cr, cg, cb, sz);
+  RETURN g;
+END
+
+// Height of the ground at x: a mound under the cannon, flat under the fort.
+FUNCTION ground_top(px);
+BEGIN
+  IF (px < 130) RETURN 392; END
+  IF (px < 175) RETURN 392 + (px - 130) * 18 / 45; END
+  RETURN GY;
+END
+
+// The farm behind the action: sky, sun, clouds, far hills, a barn, a
+// fence and the field. Drawn once into the background graphic.
+FUNCTION make_background();
+PRIVATE i, h, top, c, bx;
+BEGIN
+  g_bg = new_graphic(SW, SH);
+  set_point(0, g_bg, 0, SW / 2, SH / 2);
+  FOR i = 0 TO 419                      // sky: 1-pixel rows
+    gfx_rect(g_bg, 0, i, SW, 1, 110 + i / 5, 180 + i / 8, 240);
+  END
+  FRAME;
+  gfx_circle(g_bg, 700, 70, 40, 255, 240, 170);           // sun with a glow
+  gfx_circle(g_bg, 700, 70, 30, 255, 220, 90);
+  FOR i = 0 TO 4
+    h = 50 + (i * 37) % 80;
+    gfx_circle(g_bg, 60 + i * 170, h, 20, 250, 252, 255);
+    gfx_circle(g_bg, 84 + i * 170, h - 10, 25, 250, 252, 255);
+    gfx_circle(g_bg, 110 + i * 170, h, 18, 250, 252, 255);
+    gfx_rect(g_bg, 60 + i * 170, h, 50, 18, 250, 252, 255);
+  END
+  FOR i = 0 TO SW - 1                   // two layers of far hills
+    h = 110 + sin(i * 400) * 26 + sin(i * 1100 + 30000) * 12;
+    gfx_rect(g_bg, i, GY - h, 1, h, 150, 205, 150);
+    h = 60 + sin(i * 700 + 10000) * 18;
+    gfx_rect(g_bg, i, GY - h, 1, h, 110, 180, 100);
+  END
+  FRAME;
+  // the barn
+  bx = 236;
+  gfx_rect(g_bg, bx, 330, 96, 80, 180, 50, 40);
+  FOR i = 0 TO 47
+    gfx_line(g_bg, bx + i, 330 - i * 0.6, bx + 96 - i, 330 - i * 0.6, 150, 36, 30);
+  END
+  gfx_rect(g_bg, bx - 4, 328, 104, 4, 240, 240, 230);
+  gfx_rect(g_bg, bx + 30, 360, 36, 50, 240, 240, 230);
+  gfx_rect(g_bg, bx + 33, 363, 30, 44, 160, 40, 32);
+  gfx_line(g_bg, bx + 33, 363, bx + 62, 406, 240, 240, 230);
+  gfx_line(g_bg, bx + 62, 363, bx + 33, 406, 240, 240, 230);
+  gfx_rect(g_bg, bx + 40, 305, 16, 14, 240, 240, 230);
+  gfx_rect(g_bg, bx + 42, 307, 12, 10, 60, 40, 30);
+  // a haystack and a fence
+  gfx_circle(g_bg, 372, 402, 18, 220, 184, 80);
+  gfx_circle(g_bg, 372, 402, 14, 236, 200, 100);
+  FOR i = 0 TO 13
+    gfx_rect(g_bg, 150 + i * 20, 386, 4, 24, 220, 200, 160);
+  END
+  gfx_rect(g_bg, 150, 390, 264, 3, 220, 200, 160);
+  gfx_rect(g_bg, 150, 399, 264, 3, 220, 200, 160);
+  FRAME;
+  // the field: grass on top, dirt below
+  FOR i = 0 TO SW - 1
+    top = ground_top(i);
+    c = (i * 37) % 13;
+    gfx_rect(g_bg, i, top, 1, SH - top, 130 + c, 90 + c, 52);
+    gfx_rect(g_bg, i, top + 16 + (i * 7) % 5, 1, SH, 108 + c, 72 + c, 42);
+    gfx_rect(g_bg, i, top - 2 - (i * 13) % 3, 1, 8, 80 + c * 2, 176 + c, 64);
+  END
+  RETURN 0;
+END
+
+FUNCTION make_graphics();
+PRIVATE s, k, i;
+BEGIN
+  shp_w[0] = 56; shp_w[1] = 76; shp_w[2] = 96; shp_w[3] = 116; shp_w[4] = 34;
+  shp_h[0] = 14; shp_h[1] = 12; shp_h[2] = 12; shp_h[3] = 12; shp_h[4] = 26;
+  ch_r[0] = 11; ch_r[1] = 16; ch_r[2] = 11;
+  FOR s = 0 TO 3
+    FOR k = 0 TO 2 g_blk[s * 3 + k] = wood_graphic(shp_w[s], shp_h[s], k); END
+  END
+  FOR k = 0 TO 2 g_blk[12 + k] = straw_graphic(shp_w[4], shp_h[4], k); END
+  FRAME;
+  FOR s = 0 TO 2
+    FOR k = 0 TO 2 g_ch[s * 3 + k] = chicken_graphic(s, k); END
+  END
+  g_scare[0] = scarecrow_graphic(0); g_scare[1] = scarecrow_graphic(1);
+  g_fox[0] = fox_graphic(0); g_fox[1] = fox_graphic(1);
+  FRAME;
+
+  // the cannon: a red barrel turning round its breech, and a carriage
+  g_barrel = new_graphic(60, 24);
+  set_point(0, g_barrel, 0, 12, 12);
+  gfx_circle(g_barrel, 8, 12, 7, 60, 40, 30);
+  gfx_rect(g_barrel, 8, 4, 44, 16, 180, 45, 40);
+  gfx_rect(g_barrel, 8, 5, 44, 3, 232, 96, 80);
+  gfx_rect(g_barrel, 8, 16, 44, 3, 120, 26, 24);
+  gfx_rect(g_barrel, 18, 3, 4, 18, 236, 190, 60);
+  gfx_rect(g_barrel, 38, 3, 4, 18, 236, 190, 60);
+  gfx_circle(g_barrel, 30, 12, 3, 250, 245, 230);          // an egg painted on it
+  gfx_rect(g_barrel, 52, 1, 8, 22, 70, 50, 40);
+  gfx_rect(g_barrel, 57, 6, 3, 12, 20, 14, 10);
+  g_carr = new_graphic(64, 44);
+  set_point(0, g_carr, 0, 32, 16);
+  gfx_rect(g_carr, 6, 14, 52, 12, 140, 90, 45);
+  gfx_rect(g_carr, 6, 14, 52, 3, 176, 120, 64);
+  gfx_circle(g_carr, 32, 24, 18, 80, 50, 24);
+  gfx_circle(g_carr, 32, 24, 15, 160, 108, 52);
+  FOR i = 0 TO 5
+    gfx_line(g_carr, 32 + get_distx(i * 30000, 15), 24 + get_disty(i * 30000, 15),
+                     32 - get_distx(i * 30000, 15), 24 - get_disty(i * 30000, 15), 90, 56, 26);
+  END
+  gfx_circle(g_carr, 32, 24, 4, 90, 90, 100);
+
+  // particles
+  g_feather[0] = new_graphic(10, 5);
+  gfx_circle(g_feather[0], 5, 2, 2, 255, 255, 255); gfx_rect(g_feather[0], 2, 1, 7, 3, 255, 255, 255);
+  gfx_line(g_feather[0], 0, 2, 9, 2, 200, 200, 200);
+  g_feather[1] = new_graphic(10, 5);
+  gfx_circle(g_feather[1], 5, 2, 2, 200, 130, 70); gfx_rect(g_feather[1], 2, 1, 7, 3, 200, 130, 70);
+  gfx_line(g_feather[1], 0, 2, 9, 2, 150, 90, 40);
+  g_straw = new_graphic(9, 3); gfx_rect(g_straw, 0, 1, 9, 1, 240, 210, 100); gfx_pixel(g_straw, 4, 0, 250, 230, 140);
+  g_chip = new_graphic(7, 4); gfx_fill(g_chip, 160, 106, 52);
+  g_shell = new_graphic(5, 4); gfx_fill(g_shell, 250, 244, 228);
+  g_egg = new_graphic(12, 15);
+  gfx_circle(g_egg, 6, 9, 5, 200, 190, 170); gfx_circle(g_egg, 6, 6, 4, 200, 190, 170);
+  gfx_circle(g_egg, 6, 9, 4, 252, 248, 236); gfx_circle(g_egg, 6, 6, 3, 252, 248, 236);
+  gfx_circle(g_egg, 4, 5, 1, 255, 255, 255);
+  g_puff = new_graphic(24, 24);
+  FOR k = 0 TO 5 gfx_circle(g_puff, 12, 12, 11 - k * 2, 220 + k * 7, 222 + k * 6, 226 + k * 5); END
+  g_splat = new_graphic(40, 40);                           // fried egg explosion
+  FOR k = 0 TO 7
+    gfx_circle(g_splat, 20 + get_distx(k * 45000, 11), 20 + get_disty(k * 45000, 11), 8, 255, 252, 240);
+  END
+  gfx_circle(g_splat, 20, 20, 12, 255, 252, 240);
+  gfx_circle(g_splat, 20, 20, 7, 255, 190, 30);
+  gfx_circle(g_splat, 18, 18, 2, 255, 230, 140);
+  FRAME;
+  g_panel = new_graphic(400, 220);
+  gfx_fill_rgba(g_panel, 70, 40, 20, 88);
+  gfx_rect_outline(g_panel, 0, 0, 400, 220, 250, 210, 90);
+  gfx_rect_outline(g_panel, 3, 3, 394, 214, 150, 100, 40);
+  g_title = big_text(560, 76, "CHICKEN CANNON", 255, 220, 60, 64);
+  g_clear = big_text(380, 50, "FORT CLUCKED!", 255, 226, 70, 44);
+  g_fail = big_text(380, 50, "OUT OF CHICKENS", 255, 130, 100, 40);
+  make_background();
+  RETURN 0;
+END
+
+// =====================================================================
+// Sound and music (all made by the engine)
+// =====================================================================
+
+FUNCTION make_sounds();
+BEGIN
+  s_boom = sfx(sfx_explosion, 3);
+  s_sq[0] = sfx_tone(wave_square, 900, 1500, 110, 30);      // squawks: fast slides
+  s_sq[1] = sfx_tone(wave_saw, 1300, 700, 140, 26);
+  s_sq[2] = sfx_tone(wave_square, 700, 1700, 90, 30);
+  s_sq[3] = sfx_tone(wave_saw, 1600, 900, 180, 26);
+  s_crack[0] = sfx(sfx_hit, 2); s_crack[1] = sfx(sfx_hit, 7);
+  s_break = sfx(sfx_hit, 11);
+  s_straw = sfx_tone(wave_noise, 2000, 600, 120, 24);
+  s_egg = sfx(sfx_explosion, 12);
+  s_plop = sfx_tone(wave_sine, 300, 120, 90, 50);
+  s_oof = sfx_tone(wave_triangle, 260, 110, 220, 60);
+  s_yelp = sfx_tone(wave_saw, 800, 260, 200, 30);
+  s_bawk[0] = sfx_tone(wave_square, 520, 430, 110, 34);
+  s_bawk[1] = sfx_tone(wave_square, 480, 1100, 380, 34);
+  s_ding[0] = sfx_tone(wave_triangle, 523, 523, 150, 50);
+  s_ding[1] = sfx_tone(wave_triangle, 659, 659, 150, 50);
+  s_ding[2] = sfx_tone(wave_triangle, 784, 784, 150, 50);
+  s_ding[3] = sfx_tone(wave_triangle, 1047, 1047, 400, 50);
+  s_sad = sfx_tone(wave_triangle, 400, 150, 700, 50);
+  RETURN 0;
+END
+
+// A light "boom-chick" country tune: bass jumping root to fifth, a plucked
+// banjo-ish melody, soft drums. Quiet under the effects.
+FUNCTION make_song();
+PRIVATE s;
+BEGIN
+  s = song_new(128);
+  song_track(s, inst_pluck,
+    "G5 . E5 . G5 A5 G5 . | E5 . D5 . C5 . D5 . | E5 . G5 . A5 . C6 . | A5 . G5 . E5 - . . |" +
+    "G5 . E5 . G5 A5 G5 . | E5 . D5 . C5 . E5 . | D5 . D5 E5 D5 . C5 . | C5 - - . . . . . ", 30);
+  song_track(s, inst_bass,
+    "C4 . G4 . C4 . G4 . | C4 . G4 . C4 . G4 . | F4 . C5 . F4 . C5 . | C4 . G4 . C4 . G4 . |" +
+    "C4 . G4 . C4 . G4 . | F4 . C5 . F4 . C5 . | G4 . D5 . G4 . D5 . | C4 . G4 . C4 . . . ", 40);
+  song_track(s, inst_drums, "k . h . s . h . | k . h k s . h h ", 22);
+  RETURN s;
+END
+
+// A squawk with a random pitch, not more than one every few frames.
+FUNCTION squawk(pan);
+BEGIN
+  IF (frame_no - snd_sq_t < 6) RETURN 0; END
+  snd_sq_t = frame_no;
+  play_sound(s_sq[rand(0, 3)], 70, rand(85, 135), pan);
+  RETURN 1;
+END
+
+FUNCTION crack(big);
+BEGIN
+  IF (frame_no - snd_crack_t < 4) RETURN 0; END
+  snd_crack_t = frame_no;
+  IF (big) play_sound(s_break, 80, rand(70, 90), 40);
+  ELSE play_sound(s_crack[rand(0, 1)], 55, rand(90, 120), 40); END
+  RETURN 1;
+END
+
+// The victory jingle: bawk, bawk, BAWKAAAK! and a little fanfare.
+PROCESS jingle();
+PRIVATE k;
+BEGIN
+  play_sound(s_bawk[0], 90, 100, 0);
+  FRAME(1000);
+  play_sound(s_bawk[0], 90, 112, 0);
+  FRAME(1000);
+  play_sound(s_bawk[1], 100, 100, 0);
+  FRAME(2600);
+  FOR k = 0 TO 3
+    play_sound(s_ding[k], 70, 100, 0);
+    FRAME(700);
+  END
+END
+
+// =====================================================================
+// Level generation (all rand() calls happen under rand_seed(level))
+// =====================================================================
+
+// A tower of floors: two posts and a plank roof each, a target inside the
+// ground floor (and sometimes the upper ones) and one on top.
+FUNCTION build_tower(cx, L, floors);
+PRIVATE f, w, yb;
+BEGIN
+  w = shp_w[L]; yb = GY;
+  FOR f = 0 TO floors - 1
+    block(cx - w / 2 + 7, yb - 28, 0, 90000);
+    block(cx + w / 2 - 7, yb - 28, 0, 90000);
+    block(cx, yb - 62, L, 0);
+    IF (f == 0 OR rand(0, 1)) baddie(cx, yb, rand(0, 1)); END
+    yb -= 68;
+  END
+  IF (rand(0, 2) == 0)
+    block(cx, yb - 13, 4, 0);                // a bale with a scarecrow on it
+    baddie(cx, yb - 26, 0);
+  ELSE
+    baddie(cx, yb, rand(0, 1));
+  END
+  RETURN 0;
+END
+
+// A pyramid of straw bales with a target on the top.
+FUNCTION build_pyramid(cx, n);
+PRIVATE r, c;
+BEGIN
+  FOR r = 0 TO n - 1
+    FOR c = 0 TO n - r - 1
+      block(cx - (n - r - 1) * 17 + c * 34, GY - 13 - r * 26, 4, 0);
+    END
+  END
+  baddie(cx, GY - n * 26, rand(0, 1));
+  RETURN 0;
+END
+
+// A straw hut: two bale walls, a long plank roof, a fox inside and a
+// scarecrow on the roof.
+FUNCTION build_hut(cx);
+BEGIN
+  block(cx - 41, GY - 13, 4, 0); block(cx - 41, GY - 39, 4, 0);
+  block(cx + 41, GY - 13, 4, 0); block(cx + 41, GY - 39, 4, 0);
+  block(cx, GY - 58, 3, 0);
+  baddie(cx, GY, 1);
+  baddie(cx, GY - 64, 0);
+  RETURN 0;
+END
+
+// Fills the field from x = 440 to the right edge with sections.
+FUNCTION gen_fort();
+PRIVATE x0, k, w, L, n, fl;
+BEGIN
+  x0 = 440 + rand(0, 30);
+  LOOP
+    k = rand(0, 99);
+    IF (k < 50)
+      L = rand(1, 3); w = shp_w[L];
+      IF (x0 + w > 790) L = 1; w = shp_w[1]; END
+      IF (x0 + w > 790) BREAK; END
+      fl = clamp(1 + rand(0, (level + 1) / 2), 1, 3);
+      build_tower(x0 + w / 2, L, fl);
+    ELSE
+      IF (k < 78)
+        n = 2 + rand(0, 1); w = n * 34;
+        IF (x0 + w > 790) n = 2; w = 68; END
+        IF (x0 + w > 790) BREAK; END
+        build_pyramid(x0 + w / 2, n);
+      ELSE
+        w = 116;
+        IF (x0 + w > 790) BREAK; END
+        build_hut(x0 + w / 2);
+      END
+    END
+    x0 += w + 16 + rand(0, 14);
+  END
+  RETURN 0;
+END
+
+// =====================================================================
+// The world
+// =====================================================================
+
+// The ground as static edges (the picture is in the background graphic).
+PROCESS terrain();
+BEGIN
+  x = 0; y = 0;
+  phys_edge(0, 392, 130, 392);
+  phys_edge(130, 392, 175, GY);
+  phys_edge(175, GY, SW, GY);
+  phys_edge(0, -2000, 0, SH);                 // walls at the screen edges
+  phys_edge(SW, -2000, SW, SH);
+  phys_material(1, 0.9, 0.05);
+  LOOP FRAME; END
+END
+
+// Hit by an egg blast? Called by blocks and targets: a push away from the
+// blast and the damage it does (0 when out of range).
+FUNCTION blast_hit(px, py);
+PRIVATE d, k, a;
+BEGIN
+  d = fget_distance(px, py, blast_x, blast_y);
+  IF (d >= BLAST_R) RETURN 0; END
+  k = 1.0 - d / BLAST_R;
+  a = fget_angle(blast_x, blast_y, px, py);
+  phys_velocity(phys_vx() + get_distx(a, 420 * k), phys_vy() + get_disty(a, 420 * k) - 120 * k);
+  RETURN 190 * k;
+END
+
+// A wooden post or plank, or a straw bale (shape 4).
+PROCESS block(x, y, shp, angle);
+PRIVATE hp, hp0, thr, thr0, imp, stg, sx, sy, sa, d, i, age, straw, seen, v;
+BEGIN
+  z = 0;
+  graph = g_blk[shp * 3];
+  straw = shp == 4;
+  phys_box(shp_w[shp], shp_h[shp]);
+  IF (straw) phys_material(0.25, 0.9, 0.05); hp = 150; thr = 95;
+  ELSE phys_material(0.8, 0.7, 0.05); hp = 190; thr = 115; END
+  hp0 = hp; thr0 = thr; n_blocks++;
+  sx = x; sy = y; sa = angle; seen = blast_n;
+  LOOP
+    imp = phys_impact();
+    IF (armed)
+      IF (imp > thr)
+        hp -= imp - thr;
+        IF (hp <= 0) BREAK; END
+        IF (straw) play_sound(s_straw, 40, rand(80, 120), 50); ELSE crack(0); END
+      END
+      IF (seen != blast_n)
+        seen = blast_n;
+        hp -= blast_hit(x, y);
+        IF (hp <= 0) BREAK; END
+      END
+      stg = 0;
+      IF (hp < hp0 * 0.66) stg = 1; END
+      IF (hp < hp0 * 0.33) stg = 2; END
+      graph = g_blk[shp * 3 + stg];
+    ELSE
+      // While settling: learn the steady push of the load resting on this
+      // block, so only real hits count as damage.
+      age++;
+      IF (age > 30 AND imp * 1.5 + thr0 > thr) thr = imp * 1.5 + thr0; END
+      seen = blast_n;
+    END
+    IF (check_now)                     // how far did it drift while settling?
+      d = abs(x - sx) + abs(y - sy);
+      IF (d > settle_max) settle_max = d; END
+      IF (abs(angle - sa) > settle_ang) settle_ang = abs(angle - sa); END
+    END
+    v = abs(phys_vx()) + abs(phys_vy());
+    IF (v > 15) last_motion = frame_no; END
+    IF (y > 560) BREAK; END
+    FRAME;
+  END
+  // broken: bits fly apart, points
+  n_blocks--; breaks++;
+  IF (straw)
+    play_sound(s_straw, 70, 70, 50);
+    FOR i = 0 TO 9
+      IF (n_parts < 160) bit(x + rand(-12, 12), y + rand(-8, 8), rand(-160, 160), rand(-260, -40), g_straw, 0); END
+    END
+    score += 50; popup(x, y - 10, "+50", '#fff4a0');
+  ELSE
+    crack(1);
+    FOR i = 0 TO 6
+      IF (n_parts < 160) bit(x + rand(-shp_w[shp] / 3, shp_w[shp] / 3), y, phys_vx() * 0.3 + rand(-160, 160), phys_vy() * 0.3 - rand(40, 260), g_chip, 0); END
+    END
+    score += 100; popup(x, y - 10, "+100", '#ffffff');
+  END
+END
+
+// A target: 0 scarecrow, 1 fox. Given the floor it stands on. Knocked
+// out by damage, by an egg blast, by lying tipped over, or by falling.
+PROCESS baddie(x, floor_y, kind);
+PRIVATE hp, thr, thr0, imp, sx, sy, age, tilt, tipped, a, i, seen, gko, v, t;
+BEGIN
+  z = -1;
+  IF (kind == 0)
+    graph = g_scare[0]; gko = g_scare[1];
+    y = floor_y - 23;
+    phys_box(22, 46);
+    phys_material(0.5, 0.8, 0.05);
+    hp = 110;
+  ELSE
+    graph = g_fox[0]; gko = g_fox[1];
+    y = floor_y - 11;
+    phys_box(30, 22);
+    phys_material(0.8, 0.8, 0.05);
+    hp = 130;
+  END
+  thr = 70; thr0 = thr; targets_alive++;
+  sx = x; sy = y; seen = blast_n;
+  LOOP
+    imp = phys_impact();
+    a = normalize_angle(angle);
+    IF (a > 180000) a -= 360000; END
+    tilt = abs(a);
+    IF (armed)
+      IF (imp > thr)
+        hp -= imp - thr;
+        IF (hp <= 0) BREAK; END
+        IF (kind == 0) play_sound(s_oof, 50, rand(90, 130), 40); ELSE play_sound(s_yelp, 40, rand(110, 140), 40); END
+      END
+      IF (seen != blast_n)
+        seen = blast_n;
+        hp -= blast_hit(x, y);
+        IF (hp <= 0) BREAK; END
+      END
+      IF (tilt > 50000) tipped++; ELSE tipped = 0; END
+      IF (tipped > 25) BREAK; END
+    ELSE
+      age++;
+      IF (age > 30 AND imp * 1.5 + thr0 > thr) thr = imp * 1.5 + thr0; END
+      seen = blast_n;
+    END
+    IF (check_now)
+      IF (abs(x - sx) + abs(y - sy) > settle_max) settle_max = abs(x - sx) + abs(y - sy); END
+      IF (tilt > settle_ang) settle_ang = tilt; END
+    END
+    v = abs(phys_vx()) + abs(phys_vy());
+    IF (v > 15) last_motion = frame_no; END
+    IF (y > 500) BREAK; END
+    FRAME;
+  END
+  // knocked out: crossed eyes, a yell, and the ghost floats away
+  targets_alive--; kos++;
+  score += 1000;
+  popup(x - 10, y - 30, "+1000", '#80ff60');
+  IF (kind == 0) play_sound(s_oof, 90, 70, 40); ELSE play_sound(s_yelp, 80, 80, 40); END
+  FOR i = 0 TO 3 puff(x + rand(-12, 12), y + rand(-12, 12), 70); END
+  FOR i = 0 TO 5
+    IF (n_parts < 160)
+      IF (kind == 0) bit(x, y, rand(-180, 180), rand(-280, -60), g_straw, 0);
+      ELSE bit(x, y, rand(-180, 180), rand(-280, -60), g_feather[1], 1); END
+    END
+  END
+  phys_remove();
+  graph = gko; z = -8;
+  FOR t = 0 TO 49
+    y -= 1.2; angle = sin(t * 14000) * 20000;
+    alpha = 100 - t * 2;
+    FRAME;
+  END
+END
+
+// The cannon: the barrel follows the aim and kicks back when it fires.
+PROCESS cannon();
+BEGIN
+  graph = g_barrel; z = 2;
+  LOOP
+    angle = aim_ang;
+    x = CX - get_distx(aim_ang, recoil); y = CY - get_disty(aim_ang, recoil);
+    IF (recoil > 0) recoil--; END
+    FRAME;
+  END
+END
+
+// A chicken: flies as a physics circle (upright, flapping) until it first
+// touches something, then tumbles. The egg bomber drops an egg on a click.
+// Once it stops it gets up, dizzy, and runs home to the barn.
+PROCESS hen(x, y, vx, vy, kind);
+PRIVATE r, life, still, touched, used, imp, i, pl, fr, t, v, hop;
+BEGIN
+  z = -5; r = ch_r[kind];
+  graph = g_ch[kind * 3];
+  phys_circle(r);
+  IF (kind == 0) phys_material(1.3, 0.6, 0.45); END
+  IF (kind == 1) phys_material(6.0, 0.8, 0.1); END
+  IF (kind == 2) phys_material(1.4, 0.6, 0.35); END
+  phys_bullet(1);
+  phys_fixed_rotation(1);
+  phys_velocity(vx, vy);
+  pl = 1;
+  LOOP
+    life++;
+    // flap while airborne, fast when climbing
+    IF (NOT touched)
+      fr = (life / 4) % 2;
+      IF (phys_vy() > 200) fr = (life / 8) % 2; END
+      graph = g_ch[kind * 3 + fr];
+      IF (y < 0)                                     // off the top: a marker
+        set_color('#ffffff'); circle(x, 8, 4); circle(x, 18, 2);
+      END
+    END
+    imp = phys_impact();
+    IF (NOT touched AND (phys_contact(0) OR imp > 60))
+      touched = 1; phys_fixed_rotation(0);
+      graph = g_ch[kind * 3 + 1];
+      squawk(30);
+      popup(x - 16, y - r - 18, "BAWK!", '#ffffff');
+      FOR i = 0 TO 7 feather(x, y, kind == 1); END
+    ELSE
+      IF (touched AND imp > 250)
+        squawk(30);
+        FOR i = 0 TO 3 feather(x, y, kind == 1); END
+      END
+    END
+    // the egg bomber's egg: click (or space) in flight
+    IF (kind == 2 AND NOT used AND NOT touched AND life > 5 AND ((mouse.left AND NOT pl) OR key_pressed(_space)))
+      used = 1; eggs++;
+      egg(x + 2, y + r + 8, phys_vx() * 0.8, max(phys_vy(), 0) + 120);
+      phys_velocity(phys_vx() * 1.1, phys_vy() - 260);       // lighter: it shoots up
+      squawk(0);
+      popup(x - 20, y - r - 18, "EGG AWAY!", '#fff4a0');
+      FOR i = 0 TO 3 feather(x, y, 0); END
+    END
+    pl = mouse.left;
+    v = abs(phys_vx()) + abs(phys_vy());
+    IF (v < 25) still++; ELSE still = 0; last_motion = frame_no; END
+    IF (still > 40 OR life > 420 OR y > 520) BREAK; END
+    FRAME;
+  END
+  phase = 2; wait_t = 0;
+  IF (y > 470 OR x < 0 OR x > SW) life = -1; END
+  // dizzy: stand up and run home to the barn, hopping and flapping
+  phys_remove();
+  angle = 0; flags = 1;
+  y = ground_top(x) - r;
+  squawk(-30);
+  FOR i = 0 TO 2 feather(x, y, kind == 1); END
+  FOR t = 0 TO 300
+    IF (life < 0) BREAK; END
+    x -= 3;
+    hop = abs(sin(t * 20000)) * 6;
+    y = ground_top(x) - r - hop;
+    graph = g_ch[kind * 3 + 2];
+    IF (t % 10 < 5) graph = g_ch[kind * 3 + 1]; END
+    IF (t < 60)                                      // stars round its head
+      set_color('#ffe040');
+      circle(x + get_distx(t * 12000, r + 3), y - r - 4 + get_disty(t * 12000, 4), 2);
+      circle(x + get_distx(t * 12000 + 180000, r + 3), y - r - 4 + get_disty(t * 12000 + 180000, 4), 2);
+    END
+    IF (x < -30) BREAK; END
+    FRAME;
+  END
+END
+
+// The bomber's egg: falls, and bursts on the first thing it touches.
+PROCESS egg(x, y, vx, vy);
+PRIVATE life, i;
+BEGIN
+  z = -5; graph = g_egg;
+  phys_circle(6);
+  phys_material(2.0, 0.5, 0.1);
+  phys_bullet(1);
+  phys_velocity(vx, vy);
+  LOOP
+    life++;
+    IF (life > 2 AND (phys_contact(TYPE block) OR phys_contact(TYPE baddie) OR phys_contact(TYPE terrain))) BREAK; END
+    IF (life > 300 OR y > 500) BREAK; END
+    last_motion = frame_no;
+    FRAME;
+  END
+  blast_x = x; blast_y = y; blast_n++;
+  play_sound(s_egg, 90, 100, 30);
+  splat(x, y);
+  FOR i = 0 TO 4 puff(x + rand(-20, 20), y + rand(-20, 20), 90); END
+  FOR i = 0 TO 7
+    IF (n_parts < 160) bit(x, y, rand(-240, 240), rand(-320, -60), g_shell, 0); END
+  END
+END
+
+PROCESS splat(x, y);
+PRIVATE t;
+BEGIN
+  z = -7; graph = g_splat; size = 40;
+  FOR t = 0 TO 29
+    size += 8; alpha = 100 - t * 3;
+    FRAME;
+  END
+END
+
+// A feather: drifts down swaying and fades. brown: from the fat hen.
+FUNCTION feather(px, py, brown);
+BEGIN
+  IF (n_parts < 160) bit(px + rand(-6, 6), py + rand(-6, 6), rand(-200, 200), rand(-260, 40), g_feather[brown], 1); END
+  RETURN 0;
+END
+
+// Cheap particles without a physics body. kind 0 falls and spins (chips,
+// straw, shell); kind 1 is a feather that floats.
+PROCESS bit(x, y, vx, vy, graph, kind);
+PRIVATE t, spin, life;
+BEGIN
+  z = -3; n_parts++;
+  spin = rand(-20000, 20000);
+  life = 40; IF (kind == 1) life = 70; END
+  FOR t = 0 TO life
+    IF (kind == 1)
+      vx = vx * 0.93; vy = vy * 0.9 + 9;
+      x += vx * DT + sin(t * 12000) * 0.7; y += vy * DT;
+      angle = sin(t * 9000) * 45000;
+    ELSE
+      vy += 15; x += vx * DT; y += vy * DT; angle += spin;
+    END
+    IF (t > life - 20) alpha = (life - t) * 5; END
+    FRAME;
+  END
+  n_parts--;
+END
+
+PROCESS puff(x, y, size);
+PRIVATE t;
+BEGIN
+  z = -4; graph = g_puff;
+  FOR t = 0 TO 29
+    size += 3; alpha = 90 - t * 3; y -= 0.4;
+    FRAME;
+  END
+END
+
+PROCESS popup(x, y, s, col);
+PRIVATE t;
+BEGIN
+  FOR t = 0 TO 59
+    y -= 0.6;
+    set_color('#000000'); text(x + 1, y + 1, s);
+    set_color(col); text(x, y, s);
+    FRAME;
+  END
+END
+
+// A chicken in the ammo tray; the selected one is bigger and flaps.
+PROCESS ammo_icon(k);
+BEGIN
+  x = 32 + k * 52; y = 456; z = -60;
+  LOOP
+    graph = g_ch[k * 3];
+    size = 80;
+    IF (k == sel) size = 100; graph = g_ch[k * 3 + (frame_no / 8) % 2]; END
+    alpha = 100;
+    IF (ammo[k] <= 0) alpha = 30; END
+    FRAME;
+  END
+END
+
+PROCESS sprite(x, y, graph, z);
+BEGIN
+  LOOP FRAME; END
+END
+
+// A chicken on the title screen, flapping on the spot.
+PROCESS title_hen(x, y, kind, ph);
+PRIVATE t, y0;
+BEGIN
+  z = -50; y0 = y;
+  LOOP
+    t++;
+    graph = g_ch[kind * 3 + ((t + ph) / 6) % 2];
+    y = y0 + sin((t + ph) * 5000) * 8;
+    FRAME;
+  END
+END
+
+// =====================================================================
+// Levels
+// =====================================================================
+
+FUNCTION clear_world();
+BEGIN
+  signal(TYPE hen, s_kill); signal(TYPE egg, s_kill); signal(TYPE block, s_kill);
+  signal(TYPE baddie, s_kill); signal(TYPE terrain, s_kill); signal(TYPE cannon, s_kill);
+  signal(TYPE bit, s_kill); signal(TYPE puff, s_kill); signal(TYPE popup, s_kill);
+  signal(TYPE splat, s_kill); signal(TYPE sprite, s_kill); signal(TYPE title_hen, s_kill);
+  signal(TYPE ammo_icon, s_kill);
+  FRAME;
+  n_parts = 0; targets_alive = 0; n_blocks = 0;
+  RETURN 0;
+END
+
+// Builds the level from its number: generate, let it settle with damage
+// off, and start over from the next seed if anything moved.
+FUNCTION build_level();
+PRIVATE att, i;
+BEGIN
+  state = 1; armed = 0;
+  FOR att = 0 TO 5
+    clear_world();
+    // rand() is an LCG: close seeds start alike, so spread the seed
+    // (Knuth's multiplicative hash) and throw the first numbers away.
+    rand_seed((level * 7919 + att * 104729 + 11) * 2654435761);
+    FOR i = 0 TO 7 rand(0, 99); END
+    terrain();
+    gen_fort();
+    rand_seed();
+    settle_max = 0; settle_ang = 0;
+    FOR i = 1 TO 60 frame_no++; FRAME; END
+    check_now = 1; FRAME; FRAME; check_now = 0;
+    attempts = att + 1;
+    IF (settle_max < 2.5 AND settle_ang < 2500 AND targets_alive >= 2) BREAK; END
+  END
+  cannon();
+  sprite(CX, CY, g_carr, 1);
+  FOR i = 0 TO 2 ammo_icon(i); END
+  ammo[0] = 3; ammo[1] = 1; ammo[2] = 1;
+  IF (level >= 2) ammo[2] = 2; END
+  IF (level >= 3) ammo[1] = 2; END
+  IF (targets_alive > 5) ammo[0] = 4; END
+  sel = 0; phase = 0; wait_t = 0; aiming = 0; prevl = 1;
+  level_score0 = score;
+  armed = 1; state = 2;
+  RETURN 0;
+END
+
+// Chickens not fired yet.
+FUNCTION ammo_left();
+BEGIN
+  RETURN ammo[0] + ammo[1] + ammo[2];
+END
+
+FUNCTION show_title();
+BEGIN
+  clear_world();
+  state = 0;
+  sprite(400, 150, g_title, -50);
+  title_hen(300, 290, 0, 0); title_hen(400, 280, 1, 7); title_hen(500, 290, 2, 13);
+  sprite(620, GY - 26, g_scare[0], -40); sprite(680, GY - 20, g_fox[0], -40);
+  RETURN 0;
+END
+
+// Speed of a shot from its power (px of drag): 220 to 896 px/s.
+FUNCTION shot_speed(p);
+BEGIN
+  RETURN 220 + (p - 40) * 2.6;
+END
+
+// Fires the selected chicken from the muzzle.
+FUNCTION fire();
+PRIVATE tx, ty, v, i;
+BEGIN
+  IF (ammo[sel] <= 0) RETURN 0; END
+  ammo[sel]--; shots++;
+  tx = CX + get_distx(aim_ang, BARREL); ty = CY + get_disty(aim_ang, BARREL);
+  v = shot_speed(aim_pow);
+  hen(tx, ty, get_distx(aim_ang, v), get_disty(aim_ang, v), sel);
+  play_sound(s_boom, 80, rand(90, 110), -60);
+  squawk(-60);
+  recoil = 10;
+  FOR i = 0 TO 3 puff(tx + get_distx(aim_ang, i * 8), ty + get_disty(aim_ang, i * 8), 60 + i * 10); END
+  FOR i = 0 TO 3 feather(tx, ty, sel == 1); END
+  phase = 1; aiming = 0;
+  RETURN 1;
+END
+
+// The dotted path of the first second of flight.
+FUNCTION draw_preview();
+PRIVATE k, qx, qy, vx, vy, v;
+BEGIN
+  qx = CX + get_distx(aim_ang, BARREL); qy = CY + get_disty(aim_ang, BARREL);
+  v = shot_speed(aim_pow);
+  vx = get_distx(aim_ang, v); vy = get_disty(aim_ang, v);
+  set_color('#ffffff');
+  FOR k = 1 TO 60                        // the physics' semi-implicit Euler steps
+    vy += GRAV * DT; qx += vx * DT; qy += vy * DT;
+    IF (qy > GY) BREAK; END
+    IF (k % 5 == 0) circle(qx, qy, 3.2 - k / 30.0); END
+  END
+  RETURN 0;
+END
+
+// =====================================================================
+// MAIN
+// =====================================================================
+PRIVATE k, pressed, a, calm, ix, cnt;
+BEGIN
+  set_mode(SW, SH);
+  set_fps(60, 0);
+  phys_gravity(0, GRAV);
+  make_graphics();
+  put_screen(0, g_bg);
+  make_sounds();
+  song = make_song();
+  music_volume(45);
+  song_play(song);
+  show_title();
+
+  LOOP
+    frame_no++;
+    bodies = phys_bodies(); fps_now = get_fps();
+    pressed = mouse.left AND NOT prevl;
+    IF (state == 0)
+      draw_rect(150, 422, 500, 52, 'rgba(60,30,10,0.6)');
+      set_color('#ffffff');
+      text(162, 428, "Hold the mouse button and point to aim, let go to fire the chicken!");
+      text(162, 443, "Knock out every grumpy scarecrow and fox in the fort.");
+      text(162, 458, "The EGG BOMBER drops an egg when you click while it flies.");
+      IF ((frame_no / 30) % 2) set_color('#5a2a10'); text(310, 206, "CLICK OR PRESS SPACE TO START"); END
+      IF (pressed OR key_pressed(_space) OR key_pressed(_enter))
+        level = 1; score = 0; build_level(); pressed = 0;
+      END
+    END
+    IF (state == 2)
+      // choose the chicken: keys 1-3, TAB, or click its icon
+      IF (key_pressed(_1)) sel = 0; END
+      IF (key_pressed(_2)) sel = 1; END
+      IF (key_pressed(_3)) sel = 2; END
+      IF (key_pressed(_tab)) sel = (sel + 1) % 3; END
+      IF (pressed AND mouse.y > 436 AND mouse.x < 170)
+        sel = clamp((mouse.x - 6) / 52, 0, 2); pressed = 0;
+      END
+      cnt = 0;
+      WHILE (ammo[sel] == 0 AND cnt < 3) sel = (sel + 1) % 3; cnt++; END
+      IF (phase == 0)
+        // aim with the mouse: hold, drag, let go
+        IF (pressed) aiming = 1; END
+        IF (aiming)
+          a = fget_angle(CX, CY, mouse.x, mouse.y);
+          IF (a > 180000) a -= 360000; END
+          aim_ang = clamp(a, 0, 85000);
+          aim_pow = clamp(fget_distance(CX, CY, mouse.x, mouse.y), 40, 300);
+          set_color('#ffffff80');
+          circle(mouse.x, mouse.y, 5);
+          IF (NOT mouse.left) fire(); END
+        END
+        // or with the keys
+        IF (key(_up) OR key(_w)) aim_ang = min(aim_ang + 500, 85000); END
+        IF (key(_down) OR key(_s)) aim_ang = max(aim_ang - 500, 0); END
+        IF (key(_right) OR key(_d)) aim_pow = min(aim_pow + 2, 300); END
+        IF (key(_left) OR key(_a)) aim_pow = max(aim_pow - 2, 40); END
+        IF (key_pressed(_space) AND phase == 0) fire(); END
+        IF (phase == 0) draw_preview(); END
+        // power meter beside the cannon
+        draw_rect(18, 298, 14, 66, '#fff4d0');
+        draw_rect(20, 300, 10, 62, '#40240f');
+        k = (aim_pow - 40) * 60 / 260;
+        draw_rect(21, 361 - k, 8, k, 'rgb(' + (60 + k * 3) + ',' + (210 - k * 2) + ',50)');
+      END
+      IF (phase == 2)
+        wait_t++;
+        calm = frame_no - last_motion > 40;
+        IF (targets_alive <= 0 AND (calm OR wait_t > 150))
+          // bonus for the chickens not fired
+          score += ammo_left() * 1500;
+          wins++;
+          state = 3;
+          sprite(400, 220, g_panel, -55);
+          sprite(410, 170, g_clear, -57);
+          jingle();
+        ELSE
+          IF (targets_alive > 0 AND ((calm AND wait_t > 30) OR wait_t > 300))
+            IF (ammo_left() > 0) phase = 0;
+            ELSE
+              state = 4;
+              sprite(400, 220, g_panel, -55);
+              sprite(410, 170, g_fail, -57);
+              play_sound(s_sad, 80, 100, 0);
+            END
+          END
+        END
+      END
+      IF (key_pressed(_r)) score = level_score0; build_level(); END
+    ELSE
+      IF (state == 3)
+        set_color('#ffffff');
+        text(330, 222, "LEVEL " + level + " CLEARED");
+        text(330, 240, "Chickens left bonus: " + (ammo_left() * 1500));
+        text(330, 258, "SCORE " + score);
+        text(300, 292, "Click or press ENTER for the next fort");
+        IF (pressed OR key_pressed(_enter) OR key_pressed(_space) OR key_pressed(_n))
+          level++; build_level(); pressed = 0;
+        END
+      END
+      IF (state == 4)
+        set_color('#ffffff');
+        text(310, 230, "The fort still stands... BAWK.");
+        text(310, 250, "Level " + level + "   score " + score);
+        text(300, 292, "Click or press R / ENTER to try again");
+        IF (pressed OR key_pressed(_r) OR key_pressed(_enter) OR key_pressed(_space))
+          score = level_score0; build_level(); pressed = 0;
+        END
+      END
+    END
+
+    // HUD
+    IF (state >= 1)
+      draw_rect(0, 0, SW, 22, 'rgba(60,30,10,0.55)');
+      set_color('#ffffff');
+      text(10, 7, "LEVEL " + level);
+      text(90, 7, "SCORE " + score);
+      text(210, 7, "TARGETS " + targets_alive);
+      text(560, 7, "R retry   1-3/TAB chicken");
+      IF (state == 1) set_color('#3a2410'); text(300, 60, "Level " + level + " - the fort is being built..."); END
+      IF (state == 2 OR state == 1)
+        FOR k = 0 TO 2
+          ix = 32 + k * 52;
+          IF (k == sel)                    // a frame round the selected one
+            draw_rect(ix - 25, 434, 50, 2, '#ffe070'); draw_rect(ix - 25, 476, 50, 2, '#ffe070');
+            draw_rect(ix - 25, 434, 2, 44, '#ffe070'); draw_rect(ix + 23, 434, 2, 44, '#ffe070');
+          END
+          set_color('#ffffff');
+          text(ix + 10, 466, "x" + ammo[k]);
+          set_color('#ffe0a0'); text(ix - 21, 438, "" + (k + 1));
+        END
+        set_color('#ffffff');
+        text(180, 448, names[sel]);
+        IF (sel == 2) text(180, 462, "click in flight: drop an egg"); END
+      END
+    END
+    prevl = mouse.left;
+    FRAME;
+  END
+END

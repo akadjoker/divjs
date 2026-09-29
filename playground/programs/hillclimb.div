@@ -1,0 +1,909 @@
+PROGRAM hillclimb;
+
+// HILL CLIMB DIV - a physics driving game in the style of Hill Climb Racing.
+//
+// Everything moves with the engine's rigid-body physics (phys_*):
+// - the car is a chassis box (plus a circle for the driver's head) and two
+//   wheels pinned to it with phys_pin at their centres. The engine drives
+//   the wheels with phys_spin: each frame the wheel's angular speed is
+//   measured from its angle change and pushed a limited step towards the
+//   target speed, which behaves like a motor with limited torque.
+// - the terrain is endless: a process per 512-pixel chunk adds static
+//   phys_edge segments along a layered value-noise height function and
+//   paints its strip of ground into its own graphic. Chunks are created
+//   ahead of the car and die (taking their bodies and graphics with them)
+//   far behind it, so the world never holds more than a handful of bodies.
+// - hills grow steeper and bumpier with distance, ramps and gaps appear,
+//   and the biome (meadow, desert, snow, volcano) changes every 500 m.
+//
+// In the air the same keys rotate the car: flips and long jumps pay coins.
+// Fuel runs out (grab the red cans), coins buy upgrades between runs, and
+// a second vehicle can be bought. A run ends when the driver's head hits
+// the ground, the car falls into a gap or it stops without fuel.
+
+GLOBAL
+  CW = 512;                 // chunk width in pixels (32 terrain segments)
+  SEG = 16;                 // pixels between terrain vertices
+  BIOME_LEN = 16000;        // pixels per biome (500 m at 32 px a metre)
+  START_PX = 400;           // where the car starts (distance 0)
+
+  // ---- terrain generation
+  seed = 0;
+  rnd[1023];                // random lattice values 0..1 for the noise
+  hs[32];                   // scratch: the vertex heights of one chunk
+  bcol[95];                 // 4 biomes x 24 colour components
+  bfric[3];                 // ground friction per biome
+
+  // ---- graphics
+  g_sky[3]; g_hills[3];
+  g_body[1]; g_wheel[1];
+  g_coin = 0; g_gem = 0; g_fuel = 0; g_stage = 0; g_title = 0;
+  g_msg[5];                 // big banners: crash, fuel, gap, flip, go, air
+  g_hud = 0; g_panel = 0;
+
+  // ---- vehicles (0 jeep, 1 monster truck) and their upgrades
+  v_bw[1]; v_bh[1];         // chassis box
+  v_wx[1]; v_wy[1]; v_wr[1];// wheel offsets and radius
+  v_hx[1]; v_hy[1];         // head offset from the chassis centre
+  v_top[1]; v_acc[1];       // top speed (px/s), motor step (rad/s per frame)
+  v_dens[1]; v_grip[1]; v_price[1];
+  owned[1]; up_eng[1]; up_grip[1]; up_fuel[1];
+  veh = 0;
+
+  // ---- the running car, as the engine sees it this run
+  top_spin = 0.0;           // wheel target speed (DIV angle units/s)
+  eng_acc = 0.0;            // max change of wheel speed per frame
+  grip = 1.0;               // wheel friction
+  fuel = 0.0; fuel_max = 30.0;
+  car_id = 0; car_x = 0.0; car_y = 0.0; car_vx = 0.0;
+  touch_l = 0; touch_r = 0; // wheels on the ground
+  gas = 0; brake = 0;       // the throttle (needs fuel) and the brake
+  tilt = 0;                 // keys held, for turning in the air: 1 back, -1 forward
+
+  // ---- game state
+  state = 0;                // 0 garage, 1 driving
+  run_over = 0;             // 0 driving, 1 crash, 2 no fuel, 3 fell
+  run_id = 0;               // counts runs: world processes of an old run quit
+  coins = 0; best_m = 0;
+  dist_m = 0; run_coins = 0; flips = 0; air_s = 0.0;
+  last_m = 0; last_coins = 0; last_flips = 0; last_why = 0;
+  next_chunk = 0; chunks_alive = 0; chunks_made = 0;
+  next_fuel_px = 0; cans = 0; coins_taken = 0;
+  cur_biome = 0;
+  cam_x = 0.0; cam_y = 0.0; cam_y0 = 0.0;
+  msg_k = -1; msg_t = 0; msg_sub = "";
+  panel_dirty = 1;
+  bodies = 0; max_bodies = 0; fps_now = 0;
+
+// =====================================================================
+// Small helpers
+// =====================================================================
+
+// Wraps an angle difference into -180000..180000
+FUNCTION adiff(a);
+BEGIN
+  WHILE (a > 180000) a -= 360000; END
+  WHILE (a < -180000) a += 360000; END
+  RETURN a;
+END
+
+FUNCTION setc(b, k, r, g, bl);
+BEGIN
+  bcol[b * 24 + k] = r; bcol[b * 24 + k + 1] = g; bcol[b * 24 + k + 2] = bl;
+  RETURN 0;
+END
+
+// Colour component k of biome b
+FUNCTION bc(b, k);
+BEGIN
+  RETURN bcol[b * 24 + k];
+END
+
+FUNCTION biome_of(px);
+BEGIN
+  RETURN int(floor(px * 0.0000625)) % 4;
+END
+
+// Cost of the next level of an upgrade
+FUNCTION up_cost(lvl);
+BEGIN
+  RETURN 60 + lvl * 60 + lvl * lvl * 60;
+END
+
+// =====================================================================
+// Terrain: layered value noise, sampled at vertices 16 px apart
+// =====================================================================
+
+// Smooth value noise in -0.5..0.5 with lattice cells `cell` px wide
+FUNCTION noise(px, cell, off);
+PRIVATE t, i, f, a, b;
+BEGIN
+  t = px / (cell + 0.0001);
+  i = floor(t);
+  f = t - i;
+  f = f * f * (3 - 2 * f);
+  a = rnd[(i + off) % 1024];
+  b = rnd[(i + 1 + off) % 1024];
+  RETURN a + (b - a) * f - 0.5;
+END
+
+// 0 at the start, 1 at about 1300 m: hills, bumps and gaps scale with it
+FUNCTION diff_at(px);
+BEGIN
+  RETURN clamp((px * 0.03125 - 60) * 0.0008, 0, 1);
+END
+
+// Every 2048-px cell may hold a gap (from cell 4 on): its start, or -1
+FUNCTION gap_at(c);
+BEGIN
+  IF (c < 4) RETURN -1; END
+  IF (rnd[(c * 7 + 13) % 1024] > 0.22 + 0.3 * diff_at(c * 2048)) RETURN -1; END
+  RETURN c * 2048 + 1536;
+END
+
+// Width of that gap: 48..128 px, wider further on
+FUNCTION gap_w(c);
+BEGIN
+  RETURN 48 + 16 * int(rnd[(c * 11 + 5) % 1024] * (1 + 5 * diff_at(c * 2048)));
+END
+
+FUNCTION in_gap(px);
+PRIVATE c, gs;
+BEGIN
+  c = floor(px * 0.00048828125);          // px / 2048
+  gs = gap_at(c);
+  IF (gs < 0) RETURN 0; END
+  IF (px > gs AND px < gs + gap_w(c)) RETURN 1; END
+  RETURN 0;
+END
+
+// The rolling hills alone: three octaves of noise, growing with distance
+FUNCTION base_h(px);
+PRIVATE k, h;
+BEGIN
+  k = diff_at(px);
+  // long hills, medium hills, small bumps
+  h = noise(px, 1024, 0) * (380 + 520 * k)
+    + noise(px, 320, 317) * (120 + 200 * k)
+    + noise(px, 96, 631) * (6 + 44 * k);
+  RETURN h * smoothstep(500, 1500, px);    // a flat run-up at the start
+END
+
+// Height (screen y) of terrain vertex i, at x = i * 16. Around a gap the
+// hills are flattened to the height at its lip, a ramp lifts the road to
+// the lip and the landing side is a little lower, so the jump is fair.
+FUNCTION vy(i);
+PRIVATE px, h, c, gs, w;
+BEGIN
+  px = i * SEG;
+  h = base_h(px);
+  c = px / 2048;                           // whole / whole: integer division
+  gs = gap_at(c);
+  IF (gs >= 0)
+    w = smoothstep(gs - 480, gs - 256, px) * (1 - smoothstep(gs + 300, gs + 500, px));
+    IF (w > 0) h = lerp(h, base_h(gs), w); END
+    IF (px > gs - 224 AND px <= gs)
+      h = h - (px - gs + 224) * (0.18 + 0.12 * diff_at(px));
+    END
+    IF (px > gs) h = h + 30 * w; END
+  END
+  RETURN 320 + h;
+END
+
+// Surface y at any x: the same straight segments as the physics edges
+FUNCTION ground_y(px);
+PRIVATE i, f, a;
+BEGIN
+  i = floor(px * 0.0625);
+  f = px * 0.0625 - i;
+  a = vy(i);
+  RETURN a + (vy(i + 1) - a) * f;
+END
+
+// =====================================================================
+// Graphics, all drawn in code
+// =====================================================================
+
+// Sky for a biome: a gradient, a sun, clouds and far mountains. It is the
+// scroll's background plane and tiles horizontally (period 800).
+FUNCTION make_sky(b);
+PRIVATE g, i, t, my;
+BEGIN
+  g = new_graphic(800, 480);
+  FOR i = 0 TO 119
+    t = i * 0.0084;
+    gfx_rect(g, 0, i * 4, 800, 4, lerp(bc(b, 12), bc(b, 15), t), lerp(bc(b, 13), bc(b, 16), t), lerp(bc(b, 14), bc(b, 17), t));
+  END
+  IF (b == 3)
+    gfx_circle(g, 610, 90, 34, 230, 90, 50);        // a red moon
+  ELSE
+    gfx_circle(g, 610, 90, 30, 255, 240, 170);
+    FOR i = 0 TO 3
+      gfx_circle(g, 90 + i * 170, 70 + (i % 2) * 40, 16, 250, 250, 255);
+      gfx_circle(g, 110 + i * 170, 62 + (i % 2) * 40, 20, 250, 250, 255);
+      gfx_circle(g, 132 + i * 170, 72 + (i % 2) * 40, 14, 250, 250, 255);
+    END
+  END
+  FOR i = 0 TO 199
+    my = 300 + 40 * sin(i * 1800 + b * 50000) + 22 * sin(i * 5400 + 20000) + 9 * sin(i * 12600);
+    gfx_rect(g, i * 4, my, 4, 480 - my, bc(b, 18), bc(b, 19), bc(b, 20));
+  END
+  RETURN g;
+END
+
+// Nearer hills, a screen-space layer that moves at a third of the speed
+FUNCTION make_hills(b);
+PRIVATE g, i, hy;
+BEGIN
+  g = new_graphic(800, 360);
+  FOR i = 0 TO 199
+    hy = 110 + 38 * sin(i * 5400 + b * 70000) + 18 * sin(i * 12600);
+    gfx_rect(g, i * 4, hy, 4, 360 - hy, bc(b, 21), bc(b, 22), bc(b, 23));
+    gfx_rect(g, i * 4, hy, 4, 3, bc(b, 21) + 20, bc(b, 22) + 20, bc(b, 23) + 20);
+  END
+  RETURN g;
+END
+
+// Chassis with its driver, drawn facing right; the graphic's centre is
+// the body's centre.
+FUNCTION make_body(v);
+PRIVATE g, w, h, cx, cy, bx, by, bw, bh, r, gg, bb, hx, hy;
+BEGIN
+  bw = v_bw[v]; bh = v_bh[v];
+  w = bw + 12; h = 88;
+  cx = w / 2; cy = h / 2;
+  bx = cx - bw / 2; by = cy - bh / 2;
+  hx = cx + v_hx[v]; hy = cy + v_hy[v];
+  IF (v == 0) r = 220; gg = 60; bb = 50; ELSE r = 60; gg = 150; bb = 220; END
+  g = new_graphic(w, h);
+  // roll cage and seat
+  gfx_line(g, bx + 22, by, hx - 12, hy - 12, 90, 90, 100);
+  gfx_line(g, hx - 12, hy - 12, hx + 14, hy - 12, 90, 90, 100);
+  gfx_line(g, hx + 14, hy - 12, hx + 22, by, 90, 90, 100);
+  gfx_rect(g, hx - 13, hy - 2, 5, by - hy + 2, 60, 50, 45);
+  // driver: torso, arm to the wheel, helmet with visor
+  gfx_rect(g, hx - 6, hy + 6, 12, by - hy - 6, 60, 110, 200);
+  gfx_line(g, hx + 4, hy + 10, hx + 14, hy + 14, 240, 200, 160);
+  gfx_line(g, hx + 14, hy + 10, hx + 14, by, 40, 40, 40);
+  gfx_circle(g, hx, hy, 9, 250, 210, 60);
+  gfx_rect(g, hx + 2, hy - 3, 7, 5, 40, 40, 60);
+  // body: a raised hood at the front, highlight, shadow, lights
+  gfx_rect(g, bx, by, bw, bh, r, gg, bb);
+  gfx_rect(g, bx + bw - 30, by - 6, 30, 7, r, gg, bb);
+  gfx_rect(g, bx, by, bw, 3, r + 30, gg + 50, bb + 30);
+  gfx_rect(g, bx, by + bh - 4, bw, 4, r / 2, gg / 2, bb / 2);
+  gfx_rect(g, bx + bw - 4, by + 2, 4, 5, 255, 240, 140);
+  gfx_rect(g, bx, by + 3, 3, 5, 255, 40, 40);
+  gfx_rect_outline(g, bx, by, bw, bh, r / 3, gg / 3, bb / 3);
+  IF (v == 1) gfx_text(g, bx + 30, by + 5, "4x4", 255, 255, 255, 11); END
+  RETURN g;
+END
+
+// A tyre with a rim and spokes, so the rolling shows
+FUNCTION make_wheel(r);
+PRIVATE g, s, i;
+BEGIN
+  s = r * 2 + 2;
+  g = new_graphic(s, s);
+  gfx_circle(g, r + 1, r + 1, r, 35, 35, 38);
+  FOR i = 0 TO 11
+    gfx_circle(g, r + 1 + cos(i * 30000) * (r - 2), r + 1 + sin(i * 30000) * (r - 2), 2, 70, 70, 75);
+  END
+  gfx_circle(g, r + 1, r + 1, r * 0.6, 185, 185, 195);
+  FOR i = 0 TO 2
+    gfx_line(g, r + 1 + cos(i * 60000) * r * 0.6, r + 1 + sin(i * 60000) * r * 0.6,
+                r + 1 - cos(i * 60000) * r * 0.6, r + 1 - sin(i * 60000) * r * 0.6, 90, 90, 100);
+  END
+  gfx_circle(g, r + 1, r + 1, 3, 60, 60, 70);
+  RETURN g;
+END
+
+// A big banner text, centred in its graphic (monospace: 0.6 x size per char)
+FUNCTION banner(t, n, size, r, g, b);
+PRIVATE gr, w;
+BEGIN
+  w = int(n * size * 0.62) + 16;
+  gr = new_graphic(w, size + 10);
+  gfx_text(gr, 10, 7, t, 0, 0, 0, size);
+  gfx_text(gr, 8, 5, t, r, g, b, size);
+  RETURN gr;
+END
+
+FUNCTION make_small();
+PRIVATE i;
+BEGIN
+  g_coin = new_graphic(20, 20);
+  gfx_circle(g_coin, 10, 10, 9, 200, 140, 20);
+  gfx_circle(g_coin, 10, 10, 7, 255, 205, 50);
+  gfx_rect(g_coin, 9, 5, 2, 10, 200, 140, 20);
+  g_gem = new_graphic(22, 22);
+  gfx_circle(g_gem, 11, 11, 10, 120, 30, 160);
+  gfx_circle(g_gem, 11, 11, 7, 220, 80, 255);
+  gfx_text(g_gem, 7, 4, "25", 255, 255, 255, 9);
+  g_fuel = new_graphic(22, 28);
+  gfx_rect(g_fuel, 1, 4, 20, 23, 200, 30, 30);
+  gfx_rect(g_fuel, 13, 0, 6, 5, 60, 60, 60);
+  gfx_rect_outline(g_fuel, 1, 4, 20, 23, 110, 10, 10);
+  gfx_text(g_fuel, 5, 8, "F", 255, 255, 255, 15);
+  // the garage floor
+  g_stage = new_graphic(800, 110);
+  gfx_rect(g_stage, 0, 0, 800, 110, 120, 85, 50);
+  gfx_rect(g_stage, 0, 0, 800, 10, 80, 170, 60);
+  FOR i = 0 TO 19 gfx_circle(g_stage, i * 41 + 13, 40 + (i * 37) % 60, 3, 95, 65, 38); END
+  g_title = banner("HILL CLIMB DIV", 14, 36, 255, 210, 60);
+  g_msg[0] = banner("CRASHED!", 8, 40, 255, 80, 60);
+  g_msg[1] = banner("OUT OF FUEL", 11, 40, 255, 160, 40);
+  g_msg[2] = banner("FELL IN A GAP", 13, 40, 255, 80, 60);
+  g_msg[3] = banner("FLIP!", 5, 40, 120, 255, 120);
+  g_msg[4] = banner("GO!", 3, 40, 255, 255, 255);
+  g_msg[5] = banner("AIR TIME", 8, 34, 120, 220, 255);
+  g_hud = new_graphic(250, 84);
+  g_panel = new_graphic(600, 250);
+  RETURN 0;
+END
+
+// Colours: grass, grass edge, dirt, deep dirt, sky top, sky horizon,
+// far mountains, near hills - and the ground friction - for each biome.
+FUNCTION init_tables();
+BEGIN
+  setc(0, 0, 90, 185, 60);   setc(0, 3, 55, 135, 40);   setc(0, 6, 140, 95, 55);
+  setc(0, 9, 105, 70, 42);   setc(0, 12, 80, 150, 225); setc(0, 15, 195, 228, 250);
+  setc(0, 18, 130, 160, 200);setc(0, 21, 75, 150, 80);  bfric[0] = 1.0;
+  setc(1, 0, 238, 205, 125); setc(1, 3, 205, 160, 90);  setc(1, 6, 215, 165, 95);
+  setc(1, 9, 175, 125, 70);  setc(1, 12, 235, 160, 90); setc(1, 15, 250, 225, 170);
+  setc(1, 18, 195, 125, 85); setc(1, 21, 210, 150, 95); bfric[1] = 0.9;
+  setc(2, 0, 245, 250, 255); setc(2, 3, 185, 205, 230); setc(2, 6, 125, 125, 140);
+  setc(2, 9, 95, 95, 110);   setc(2, 12, 110, 140, 185);setc(2, 15, 220, 232, 245);
+  setc(2, 18, 205, 215, 235);setc(2, 21, 165, 185, 215);bfric[2] = 0.65;
+  setc(3, 0, 95, 65, 60);    setc(3, 3, 235, 95, 30);   setc(3, 6, 62, 42, 40);
+  setc(3, 9, 40, 26, 26);    setc(3, 12, 30, 15, 35);   setc(3, 15, 150, 60, 45);
+  setc(3, 18, 60, 30, 32);   setc(3, 21, 75, 38, 42);   bfric[3] = 1.0;
+
+  // jeep: light and nimble
+  v_bw[0] = 90;  v_bh[0] = 18; v_wx[0] = 32; v_wy[0] = 16; v_wr[0] = 15;
+  v_hx[0] = -4;  v_hy[0] = -24; v_top[0] = 600; v_acc[0] = 1.5;
+  v_dens[0] = 1.2; v_grip[0] = 0.95; v_price[0] = 0; owned[0] = 1;
+  // monster truck: big wheels, more power and grip
+  v_bw[1] = 100; v_bh[1] = 22; v_wx[1] = 38; v_wy[1] = 22; v_wr[1] = 21;
+  v_hx[1] = -6;  v_hy[1] = -27; v_top[1] = 720; v_acc[1] = 2.0;
+  v_dens[1] = 1.3; v_grip[1] = 1.1; v_price[1] = 1500; owned[1] = 0;
+  RETURN 0;
+END
+
+// =====================================================================
+// World processes
+// =====================================================================
+
+// One 512-px piece of road: physics edges plus its painted strip. The
+// work is spread over three frames; the chunk dies far behind the car.
+PROCESS chunk(ci);
+PRIVATE cl, i, j, a, b, miny, maxy, top, h, g, bi, gx, sy, px, n, sx, k, my_run;
+BEGIN
+  my_run = run_id;
+  ctype = c_scroll; z = 50;
+  cl = ci * CW;
+  bi = biome_of(cl);
+  chunks_alive++; chunks_made++;
+  FRAME;
+  // ---- frame 1: vertex heights, bounds, physics edges
+  miny = 99999; maxy = -99999;
+  FOR i = 0 TO 32
+    hs[i] = vy(ci * 32 + i);
+    IF (hs[i] < miny) miny = hs[i]; END
+    IF (hs[i] > maxy) maxy = hs[i]; END
+  END
+  top = floor(miny) - 90;                  // room for trees and signs
+  h = int(maxy - top) + 560;               // ground reaches below the view
+  h = h + h % 2;
+  x = cl + CW / 2; y = top + h / 2;
+  FOR i = 0 TO 31
+    IF (in_gap(cl + i * SEG + 8) == 0)
+      phys_edge(i * SEG - 256, hs[i] - y, i * SEG + SEG - 256, hs[i + 1] - y);
+    END
+  END
+  IF (ci == 0) phys_edge(-256, hs[0] - y - 3000, -256, hs[0] - y); END   // wall behind the start
+  phys_material(1, bfric[bi], 0);
+  g = new_graphic(CW, h);
+  // ---- frames 2 and 3: paint the columns, half a chunk each
+  FOR k = 0 TO 1
+    FRAME;
+    FOR i = 0 TO 32 hs[i] = vy(ci * 32 + i); END
+    FOR i = k * 16 TO k * 16 + 15
+      IF (in_gap(cl + i * SEG + 8) == 0)
+        a = hs[i]; b = hs[i + 1];
+        FOR j = 0 TO 14 STEP 2
+          gx = i * SEG + j;
+          sy = a + (b - a) * j * 0.0625 - top;
+          gfx_rect(g, gx, sy, 2, h - sy, bc(bi, 6), bc(bi, 7), bc(bi, 8));
+          gfx_rect(g, gx, sy + 60 + (gx % 7), 2, h - sy, bc(bi, 9), bc(bi, 10), bc(bi, 11));
+          gfx_rect(g, gx, sy, 2, 8, bc(bi, 0), bc(bi, 1), bc(bi, 2));
+          gfx_rect(g, gx, sy + 8, 2, 3, bc(bi, 3), bc(bi, 4), bc(bi, 5));
+          IF (rand(0, 5) == 0) gfx_rect(g, gx, sy - rand(1, 3), 1, 3, bc(bi, 3), bc(bi, 4), bc(bi, 5)); END
+        END
+        IF (rand(0, 2) == 0) gfx_circle(g, i * SEG + 8, a - top + rand(22, 120), rand(2, 4), bc(bi, 9), bc(bi, 10), bc(bi, 11)); END
+      ELSE
+        // a gap: open sky above, a dark chasm below the road line
+        sy = vy(gap_at((cl + i * SEG) / 2048) / SEG) - top + 110;
+        gfx_rect(g, i * SEG, sy, SEG, h - sy, bc(bi, 9) / 3, bc(bi, 10) / 3, bc(bi, 11) / 3);
+      END
+    END
+  END
+  // ---- decorations, a sign every 100 m and the best-distance flag
+  FOR n = 0 TO 1
+    px = cl + rand(24, CW - 24);
+    IF (ci > 0 AND in_gap(px) == 0 AND in_gap(px - 20) == 0 AND in_gap(px + 20) == 0)
+      gx = px - cl; sy = ground_y(px) - top;
+      IF (bi == 0)
+        gfx_rect(g, gx - 3, sy - 34, 6, 36, 110, 75, 40);
+        gfx_circle(g, gx, sy - 44, 16, 50, 130, 50);
+        gfx_circle(g, gx - 9, sy - 34, 11, 60, 145, 55);
+        gfx_circle(g, gx + 9, sy - 36, 11, 45, 120, 45);
+      END
+      IF (bi == 1)
+        gfx_rect(g, gx - 4, sy - 40, 8, 42, 60, 150, 70);
+        gfx_rect(g, gx - 14, sy - 26, 10, 5, 60, 150, 70);
+        gfx_rect(g, gx - 14, sy - 34, 5, 10, 60, 150, 70);
+        gfx_rect(g, gx + 4, sy - 22, 9, 5, 60, 150, 70);
+      END
+      IF (bi == 2)
+        gfx_rect(g, gx - 2, sy - 10, 4, 12, 90, 60, 40);
+        FOR j = 0 TO 4
+          gfx_rect(g, gx - 16 + j * 3, sy - 14 - j * 9, 32 - j * 6, 7, 40, 100, 70);
+          gfx_rect(g, gx - 16 + j * 3, sy - 14 - j * 9, 32 - j * 6, 2, 240, 245, 255);
+        END
+      END
+      IF (bi == 3)
+        gfx_circle(g, gx, sy - 4, 12, 45, 32, 32);
+        gfx_line(g, gx - 6, sy - 10, gx + 2, sy - 2, 255, 120, 30);
+        gfx_line(g, gx + 2, sy - 2, gx + 7, sy - 9, 255, 120, 30);
+      END
+    END
+  END
+  px = ((cl + 3199 - START_PX) / 3200) * 3200 + START_PX;    // next 100 m mark
+  IF (px < cl + CW - 30 AND px > START_PX AND px > cl + 30 AND in_gap(px) == 0)
+    gx = px - cl; sy = ground_y(px) - top;
+    gfx_rect(g, gx - 2, sy - 40, 4, 42, 90, 70, 50);
+    gfx_rect(g, gx - 22, sy - 56, 44, 18, 245, 240, 220);
+    gfx_rect_outline(g, gx - 22, sy - 56, 44, 18, 90, 70, 50);
+    gfx_text(g, gx - 18, sy - 53, "" + ((px - START_PX) / 32) + "m", 40, 40, 40, 12);
+  END
+  px = START_PX + best_m * 32;
+  IF (best_m > 20 AND px >= cl AND px < cl + CW AND in_gap(px) == 0)
+    gx = px - cl; sy = ground_y(px) - top;
+    gfx_rect(g, gx - 1, sy - 60, 3, 62, 60, 60, 60);
+    gfx_rect(g, gx + 2, sy - 60, 34, 16, 230, 40, 40);
+    gfx_text(g, gx + 5, sy - 58, "BEST", 255, 255, 255, 11);
+  END
+  graph = g;
+  // ---- pickups: a row of coins in about half the chunks, and fuel cans
+  IF (ci > 1 AND rand(0, 99) < 35)
+    n = rand(3, 6); sx = cl + rand(30, 280);
+    FOR j = 0 TO n - 1
+      px = sx + j * 26;
+      IF (in_gap(px) == 0)
+        IF (px > START_PX + 16000 AND j == n / 2) coin(px, ground_y(px) - 26, 25);
+        ELSE coin(px, ground_y(px) - 26, 5); END
+      END
+    END
+  END
+  WHILE (next_fuel_px < cl + CW)
+    IF (in_gap(next_fuel_px) == 1 OR in_gap(next_fuel_px + 30) == 1 OR in_gap(next_fuel_px - 30) == 1)
+      next_fuel_px += 160;
+    ELSE
+      fuel_can(next_fuel_px, ground_y(next_fuel_px) - 22);
+      // cans get further apart: 140 m at first, up to 260 m
+      next_fuel_px += 32 * clamp(140 + (next_fuel_px - START_PX) * 0.03125 * 0.08, 140, 260);
+    END
+  END
+  LOOP
+    IF (x < car_x - 1500 OR my_run != run_id) BREAK; END
+    FRAME;
+  END
+  graph = 0;
+  free_graphic(g);
+  chunks_alive--;
+END
+
+PROCESS coin(x, y, val);
+PRIVATE my_run;
+BEGIN
+  my_run = run_id;
+  ctype = c_scroll; z = 10;
+  IF (val > 5) graph = g_gem; ELSE graph = g_coin; END
+  LOOP
+    IF (my_run != run_id OR x < car_x - 1700) BREAK; END
+    IF (run_over == 0 AND abs(x - car_x) < 46 AND abs(y - car_y) < 54)
+      coins += val; run_coins += val; coins_taken++;
+      BREAK;
+    END
+    FRAME;
+  END
+END
+
+PROCESS fuel_can(x, y);
+PRIVATE my_run;
+BEGIN
+  my_run = run_id;
+  ctype = c_scroll; z = 10; graph = g_fuel;
+  LOOP
+    IF (my_run != run_id OR x < car_x - 1700) BREAK; END
+    IF (run_over == 0 AND abs(x - car_x) < 46 AND abs(y - car_y) < 54)
+      fuel = fuel_max; cans++;
+      BREAK;
+    END
+    FRAME;
+  END
+END
+
+// The nearer hills: two copies side by side in screen space, moving at
+// 35 % of the camera speed (the sky moves at 10 %) for parallax.
+PROCESS hills_layer(k);
+PRIVATE t;
+BEGIN
+  z = 200;
+  LOOP
+    graph = g_hills[cur_biome];
+    t = cam_x * 0.35;
+    x = 400 + k * 800 - (t - floor(t * 0.00125) * 800);
+    y = clamp(390 - (cam_y - cam_y0) * 0.08, 340, 480);
+    FRAME;
+  END
+END
+
+// =====================================================================
+// The car
+// =====================================================================
+
+// A wheel: a dynamic circle pinned to the chassis at its centre. Gas and
+// brake move its angular speed a limited step towards the target speed
+// every frame (a motor with limited torque); otherwise it rolls freely.
+PROCESS wheel(x, y, v, side);
+PRIVATE prev, w, target, t;
+BEGIN
+  ctype = c_scroll; z = -2; graph = g_wheel[v];
+  phys_circle(v_wr[v], phys_dynamic);
+  phys_material(1.0, grip, 0.1);
+  phys_pin(father, x, y);
+  prev = angle;
+  LOOP
+    t = 0;
+    IF (phys_contact(TYPE chunk) > 0) t = 1; END
+    IF (side == 0) touch_l = t; ELSE touch_r = t; END
+    w = adiff(angle - prev) * 60;          // DIV units per second
+    prev = angle;
+    IF (run_over == 0 AND (gas OR brake))
+      IF (gas) target = -top_spin;         // clockwise rolls right
+      ELSE target = top_spin * 0.45; END   // brake, then reverse
+      phys_spin(w + clamp(target - w, -eng_acc, eng_acc));
+    END
+    FRAME;
+  END
+END
+
+// The chassis, with the driver's head as a second shape. It checks the
+// head against the ground, counts flips and air time, burns fuel and
+// turns the car in the air.
+PROCESS car(x, y, v);
+PRIVATE prev, dang, w, air, rot, hx, hy, stall, empty, target, secs;
+BEGIN
+  ctype = c_scroll; z = 0; graph = g_body[v];
+  car_id = id;
+  phys_box(v_bw[v], v_bh[v], phys_dynamic);
+  phys_add_box(0, v_bh[v] / 2 - 2, v_bw[v] - 20, 4);     // low ballast
+  phys_add_circle(v_hx[v], v_hy[v], 9);                  // the head
+  phys_material(v_dens[v], 0.4, 0.05);
+  wheel(x - v_wx[v], y + v_wy[v], v, 0);
+  wheel(x + v_wx[v], y + v_wy[v], v, 1);
+  prev = angle;
+  LOOP
+    car_x = x; car_y = y; car_vx = phys_vx();
+    dang = adiff(angle - prev); prev = angle;
+    IF (run_over == 0 AND int((x - START_PX) * 0.03125) > dist_m) dist_m = int((x - START_PX) * 0.03125); END
+
+    IF (touch_l OR touch_r)
+      // landing: pay for a long jump
+      IF (air > 72 AND run_over == 0)
+        secs = air * 0.01667;
+        IF (secs > air_s) air_s = secs; END
+        coins += int(secs * 5); run_coins += int(secs * 5);
+        msg_k = 5; msg_t = 70; msg_sub = "" + int(secs) + "." + int(secs * 10) % 10 + " s   +" + int(secs * 5);
+      END
+      air = 0; rot = 0;
+    ELSE
+      air++;
+    END
+
+    // in the air: gas leans back (counter-clockwise), brake leans forward
+    IF (air > 4 AND run_over == 0)
+      rot += dang;
+      IF (tilt != 0)
+        target = tilt * 450000;
+        w = dang * 60;
+        phys_spin(w + clamp(target - w, -26000, 26000));
+      END
+      IF (abs(rot) >= 330000)
+        flips++; coins += 25; run_coins += 25;
+        rot -= sign(rot) * 360000;
+        msg_k = 3; msg_t = 70; msg_sub = "+25   (" + flips + " this run)";
+      END
+    END
+
+    // the driver's head: rotate its offset with the chassis (DIV angles
+    // turn counter-clockwise with y down) and test it against the road
+    hx = x + cos(angle) * v_hx[v] + sin(angle) * v_hy[v];
+    hy = y - sin(angle) * v_hx[v] + cos(angle) * v_hy[v];
+    IF (run_over == 0 AND in_gap(hx) == 0 AND ground_y(hx) - hy < 12)
+      run_over = 1; msg_k = 0; msg_t = 170; msg_sub = "";
+    END
+    IF (run_over == 0 AND y > ground_y(x) + 320)
+      run_over = 3; msg_k = 2; msg_t = 170; msg_sub = "";
+    END
+
+    // fuel: burns faster with the throttle open
+    IF (run_over == 0)
+      IF (gas) fuel -= 0.01667; ELSE fuel -= 0.004; END
+      IF (fuel <= 0)
+        fuel = 0;
+        // it ends once the car stops, or after 5 s of rolling back and forth
+        empty++;
+        IF (abs(car_vx) < 25 AND air == 0) stall++; ELSE stall = 0; END
+        IF (stall > 100 OR empty > 300) run_over = 2; msg_k = 1; msg_t = 170; msg_sub = ""; END
+      END
+    END
+    FRAME;
+  END
+END
+
+// =====================================================================
+// Screens
+// =====================================================================
+
+// The HUD graphic, redrawn a few times a second with a larger font
+PROCESS hud();
+PRIVATE t, f;
+BEGIN
+  x = 133; y = 50; z = -50; graph = g_hud;
+  LOOP
+    IF (state != 1) BREAK; END
+    IF (t % 6 == 0)
+      gfx_fill_rgba(g_hud, 0, 0, 0, 0);
+      gfx_fill_rgba(g_hud, 10, 15, 25, 55);
+      gfx_text(g_hud, 8, 6, "" + dist_m + " m", 255, 255, 255, 20);
+      gfx_text(g_hud, 130, 11, "BEST " + best_m, 200, 210, 230, 12);
+      gfx_text(g_hud, 8, 32, "COINS " + coins, 255, 210, 60, 14);
+      gfx_text(g_hud, 150, 34, "FLIPS " + flips, 140, 240, 140, 12);
+      f = fuel / fuel_max;
+      gfx_rect(g_hud, 8, 58, 234, 16, 40, 40, 45);
+      IF (f > 0.25) gfx_rect(g_hud, 10, 60, 230 * f, 12, 60, 200, 70);
+      ELSE gfx_rect(g_hud, 10, 60, 230 * f, 12, 230, 60, 40); END
+      gfx_text(g_hud, 100, 60, "FUEL", 255, 255, 255, 11);
+    END
+    t++;
+    FRAME;
+  END
+END
+
+// A big message in the middle of the screen while msg_t runs
+PROCESS banner_show();
+BEGIN
+  x = 400; y = 150; z = -60;
+  LOOP
+    IF (msg_t > 0 AND msg_k >= 0)
+      graph = g_msg[msg_k]; msg_t--;
+      set_color('#ffffff');
+      text(400 - 3 * 22, 180, msg_sub);
+    ELSE
+      graph = 0;
+    END
+    FRAME;
+  END
+END
+
+// The garage panel: coins, the vehicle and its three upgrades
+FUNCTION draw_panel();
+PRIVATE g, i, lvl, yy;
+BEGIN
+  g = g_panel;
+  gfx_fill_rgba(g, 0, 0, 0, 0);
+  gfx_fill_rgba(g, 10, 15, 30, 70);
+  gfx_text(g, 20, 12, "COINS " + coins, 255, 210, 60, 18);
+  gfx_text(g, 330, 14, "BEST " + best_m + " m", 220, 230, 250, 16);
+  IF (veh == 0) gfx_text(g, 20, 42, "JEEP", 255, 255, 255, 18);
+  ELSE gfx_text(g, 20, 42, "MONSTER TRUCK", 255, 255, 255, 18); END
+  IF (owned[1]) gfx_text(g, 330, 46, "V: switch vehicle", 180, 190, 210, 13);
+  ELSE gfx_text(g, 330, 46, "V: buy truck (" + v_price[1] + ")", 180, 190, 210, 13); END
+  FOR i = 0 TO 2
+    IF (i == 0) lvl = up_eng[veh]; END
+    IF (i == 1) lvl = up_grip[veh]; END
+    IF (i == 2) lvl = up_fuel[veh]; END
+    yy = 82 + i * 34;
+    IF (i == 0) gfx_text(g, 20, yy, "[1] ENGINE", 255, 255, 255, 16); END
+    IF (i == 1) gfx_text(g, 20, yy, "[2] GRIP", 255, 255, 255, 16); END
+    IF (i == 2) gfx_text(g, 20, yy, "[3] FUEL TANK", 255, 255, 255, 16); END
+    draw_pips(g, 190, yy, lvl);
+    IF (lvl >= 5) gfx_text(g, 350, yy, "MAX", 140, 240, 140, 16);
+    ELSE
+      IF (coins >= up_cost(lvl)) gfx_text(g, 350, yy, "" + up_cost(lvl) + " coins", 255, 210, 60, 16);
+      ELSE gfx_text(g, 350, yy, "" + up_cost(lvl) + " coins", 150, 130, 100, 16); END
+    END
+  END
+  IF (last_m > 0 OR last_why > 0)
+    gfx_text(g, 20, 190, "LAST RUN: " + last_m + " m  +" + last_coins + " coins  " + last_flips + " flips", 200, 220, 255, 14);
+  END
+  gfx_text(g, 20, 218, "ENTER / SPACE: drive!", 120, 255, 120, 18);
+  RETURN 0;
+END
+
+FUNCTION draw_pips(g, px, py, lvl);
+PRIVATE i;
+BEGIN
+  FOR i = 0 TO 4
+    IF (i < lvl) gfx_rect(g, px + i * 28, py + 2, 22, 14, 90, 220, 90);
+    ELSE gfx_rect(g, px + i * 28, py + 2, 22, 14, 60, 65, 80); END
+  END
+  RETURN 0;
+END
+
+// Garage scenery: the car on the floor with its wheels turning slowly
+PROCESS garage_car(v);
+PRIVATE w1, w2;
+BEGIN
+  x = 400; y = 372; z = 0; graph = g_body[v];
+  w1 = garage_part(400 - v_wx[v], 372 + v_wy[v], g_wheel[v], -2, 1);
+  w2 = garage_part(400 + v_wx[v], 372 + v_wy[v], g_wheel[v], -2, 1);
+  y = 425 - v_wy[v] - v_wr[v] - 10;
+  w1.y = y + v_wy[v]; w2.y = y + v_wy[v];
+  WHILE (state == 0 AND veh == v) FRAME; END
+  signal(w1, s_kill); signal(w2, s_kill);
+END
+
+PROCESS garage_part(x, y, graph, z, spin);
+BEGIN
+  LOOP
+    IF (state != 0) BREAK; END
+    angle -= spin * 3000;
+    FRAME;
+  END
+END
+
+// =====================================================================
+// Runs
+// =====================================================================
+
+FUNCTION start_run();
+PRIVATE i, gy;
+BEGIN
+  // a new world: the lattice values come from a new seed
+  seed = rand(1, 999999);
+  rand_seed(seed);
+  FOR i = 0 TO 1023 rnd[i] = rand(0, 9999) * 0.0001; END
+  rand_seed();
+  // the car's performance from its upgrades
+  top_spin = v_top[veh] * (1 + 0.12 * up_eng[veh]) / (v_wr[veh] + 0.0) * 57296;
+  eng_acc = v_acc[veh] * (1 + 0.3 * up_eng[veh]) * 57296;
+  grip = v_grip[veh] + 0.15 * up_grip[veh];
+  fuel_max = 30 + 8 * up_fuel[veh];
+  fuel = fuel_max;
+  run_over = 0; dist_m = 0; run_coins = 0; flips = 0; air_s = 0;
+  next_chunk = 0; cans = 0;
+  next_fuel_px = START_PX + 32 * 110;
+  cur_biome = 0;
+  start_scroll(0, 0, 0, g_sky[0], 0, 0);
+  gy = ground_y(START_PX);
+  car_x = START_PX; car_y = gy;
+  cam_x = START_PX - 300; cam_y = gy - 290; cam_y0 = cam_y;
+  RETURN 0;
+END
+
+// =====================================================================
+// Main
+// =====================================================================
+PRIVATE i, k, b, over_t, tx, ty, lvl;
+BEGIN
+  set_mode(800, 480);
+  set_fps(60, 0);
+  phys_gravity(0, 470);
+  init_tables();
+  make_small();
+  FOR i = 0 TO 1
+    g_body[i] = make_body(i);
+    g_wheel[i] = make_wheel(v_wr[i]);
+  END
+  FOR b = 0 TO 3                         // one biome's scenery per frame
+    g_sky[b] = make_sky(b);
+    g_hills[b] = make_hills(b);
+    FRAME;
+  END
+  FOR i = 0 TO 1023 rnd[i] = rand(0, 9999) * 0.0001; END
+  start_scroll(0, 0, 0, g_sky[0], 0, 0);
+  hills_layer(0); hills_layer(1);
+  banner_show();
+
+  LOOP
+    // ---------------- the garage: spend coins, pick a vehicle
+    state = 0; panel_dirty = 1;
+    scroll.x0 = 0; scroll.y0 = 0; scroll.x1 = 0; scroll.y1 = 0;
+    cam_x = 0; cam_y = cam_y0;
+    garage_part(400, 30, g_title, -10, 0);
+    garage_part(400, 205, g_panel, -10, 0);
+    garage_part(400, 480 - 55, g_stage, 5, 0);
+    garage_car(veh);
+    LOOP
+      k = -1;
+      IF (key_pressed(_1)) k = 0; END
+      IF (key_pressed(_2)) k = 1; END
+      IF (key_pressed(_3)) k = 2; END
+      IF (k >= 0)
+        IF (k == 0) lvl = up_eng[veh]; END
+        IF (k == 1) lvl = up_grip[veh]; END
+        IF (k == 2) lvl = up_fuel[veh]; END
+        IF (lvl < 5 AND coins >= up_cost(lvl))
+          coins -= up_cost(lvl);
+          IF (k == 0) up_eng[veh]++; END
+          IF (k == 1) up_grip[veh]++; END
+          IF (k == 2) up_fuel[veh]++; END
+        END
+        panel_dirty = 1;
+      END
+      IF (key_pressed(_v))
+        IF (owned[1 - veh] == 0 AND coins >= v_price[1 - veh])
+          coins -= v_price[1 - veh]; owned[1 - veh] = 1;
+        END
+        IF (owned[1 - veh]) veh = 1 - veh; garage_car(veh); END
+        panel_dirty = 1;
+      END
+      IF (panel_dirty) draw_panel(); panel_dirty = 0; END
+      set_color('#fff4d0');
+      text(400 - 3 * 76, 456, "RIGHT/UP: gas   LEFT/DOWN: brake/reverse   in the air they tilt the car");
+      IF (key_pressed(_enter) OR key_pressed(_space)) BREAK; END
+      FRAME;
+    END
+
+    // ---------------- a run
+    state = 1;
+    FRAME;                                 // garage processes quit
+    start_run();
+    FOR i = 0 TO 4 chunk(next_chunk); next_chunk++; FRAME; END
+    FRAME; FRAME; FRAME;                   // the first chunks finish painting
+    car(START_PX, ground_y(START_PX) - v_wy[veh] - v_wr[veh] - 4, veh);
+    hud();
+    msg_k = 4; msg_t = 50; msg_sub = "";
+    over_t = 0;
+    LOOP
+      gas = 0; brake = 0; tilt = 0;
+      IF (run_over == 0)
+        IF (key(_right) OR key(_up)) tilt = 1; IF (fuel > 0) gas = 1; END END
+        IF (key(_left) OR key(_down)) tilt = -1; brake = 1; END
+      END
+      // new road ahead
+      IF (next_chunk * CW < car_x + 1700) chunk(next_chunk); next_chunk++; END
+      // the camera leads the car a little in the direction it moves
+      tx = car_id.x - 300 + clamp(car_vx * 0.3, -60, 160);
+      ty = car_id.y - 290;
+      cam_x += (tx - cam_x) * 0.12;
+      cam_y += (ty - cam_y) * 0.1;
+      scroll.x0 = cam_x; scroll.y0 = cam_y;
+      scroll.x1 = cam_x * 0.1; scroll.y1 = 0;
+      // a new biome: a new sky
+      b = biome_of(car_x);
+      IF (b != cur_biome) cur_biome = b; start_scroll(0, 0, 0, g_sky[b], 0, 0); END
+      bodies = phys_bodies();
+      IF (bodies > max_bodies) max_bodies = bodies; END
+      fps_now = get_fps();
+      IF (run_over != 0)
+        over_t++;
+        IF (over_t > 170 OR (over_t > 40 AND (key_pressed(_enter) OR key_pressed(_space)))) BREAK; END
+      END
+      FRAME;
+    END
+
+    // ---------------- end of the run: keep the results, clear the world
+    last_m = dist_m; last_coins = run_coins; last_flips = flips; last_why = run_over;
+    IF (dist_m > best_m) best_m = dist_m; END
+    msg_t = 0;
+    run_id++;                              // chunks and pickups of this run quit
+    signal(car_id, s_kill_tree);
+    FRAME; FRAME;
+    car_x = 0;
+  END
+END

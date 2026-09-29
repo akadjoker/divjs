@@ -1,0 +1,38 @@
+PROGRAM ejemplo_frame;
+
+GLOBAL
+    g_flecha;
+
+BEGIN
+    set_title("Ejemplo de Frame");
+    set_mode(480, 240);
+    set_fps(60);
+
+    g_flecha = load_graphic('../assets/003.png');
+
+    // Same movement in every process; only FRAME(n) differs.
+    // FRAME(100) is one whole frame, so higher n means proportionally
+    // slower: 200 runs every other frame, 400 every fourth.
+    flecha(100, 40);
+    flecha(200, 90);
+    flecha(400, 140);
+    flecha(800, 190);
+
+    LOOP
+        FRAME;
+    END
+END
+
+PROCESS flecha(delay, y);
+BEGIN
+    graph = g_flecha;
+    size  = 50;
+
+    write(0, 240, y, 4, "frame(" + delay + ")");
+
+    LOOP
+        x += 5; IF (x > 500) x = -20; END
+
+        FRAME(delay);
+    END
+END

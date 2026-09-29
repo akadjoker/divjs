@@ -1,0 +1,1270 @@
+PROGRAM arkanoid;
+
+// ---------------------------------------------------------------------
+// PROCEDURAL ARKANOID - a brick breaker where every round is generated
+// from its round number.
+//
+// * The wall is a 13 x 17 grid. Every generator works on the left half
+//   (columns 0-6) and mirrors it, so every round is symmetric. Five
+//   generators: mirrored noise, geometric shapes (circles, diamonds,
+//   squares, rings), pixel-art figures, stripes/checkers and chevrons.
+//   Silver bricks (several hits) and gold bricks (indestructible) are
+//   sprinkled on top, then a flood fill removes any brick the ball could
+//   never reach through the gold.
+// * The ball is moved by hand in sub-steps shorter than its radius and
+//   tested against the grid cell by cell; on contact it is put back
+//   where it was and bounced on the axis that caused the hit, so it can
+//   never tunnel through or sink into a brick.
+// * The paddle (the Vaus) bounces the ball at an angle that depends on
+//   where it lands. Capsules: E enlarge, C catch, L laser, S slow,
+//   D disruption (3 balls), B break (warp to the next round), P extra
+//   player. Floating enemies drift down from hatches in the ceiling;
+//   every 5th round a mothership with a weak core shoots at the Vaus.
+// * No asset files: bricks, Vaus, capsules, enemies, the boss, the metal
+//   frame and the patterned backgrounds are all drawn with gfx_*.
+// ---------------------------------------------------------------------
+
+GLOBAL
+  // --- Screen and play field -------------------------------------------
+  FL = 32; FR = 448; FT = 56; SH = 640;   // inner field: left, right, top
+  GX = 32; GY = 88;                       // top-left corner of the grid
+  BW = 32; BH = 16; COLS = 13; ROWS = 17; NCELL = 221;
+  PY = 604;                               // paddle centre line
+  BALL_R = 5;                             // the ball collides as a 10x10 box
+  EPS = 0.00001;                          // keeps divisions fractional
+
+  // --- The wall ---------------------------------------------------------
+  // cell: 0 empty, 1-7 colours, 8 silver, 9 gold. The scalar just before
+  // an array is its base for the automated test (arrays are not listed).
+  cell_base = 0;
+  cell[220];
+  hp[220];          // hits left of a silver brick
+  capc[220];        // 1 = this brick carries a capsule
+  flash[220];       // frames of hit flash left
+  seen[220];        // flood fill marks
+  queue[220];       // flood fill queue
+
+  // Brick colours 1-7 (white orange cyan green red blue pink), 8 silver, 9 gold
+  colr[9] = 0, 235, 255,  60,  80, 235,  60, 240, 185, 235;
+  colg[9] = 0, 235, 145, 220, 215,  55, 110,  95, 188, 185;
+  colb[9] = 0, 235,  40, 235,  85,  55, 245, 205, 200,  50;
+  // Capsules 1-7: E C L S D B P
+  capr[7] = 0,  50,  40, 225, 240,  40, 230, 150;
+  capg[7] = 0,  90, 190,  45, 140, 200,  80, 150;
+  capb[7] = 0, 235,  70,  45,  40, 220, 200, 160;
+
+  // Figures: 10 rows each, one number per row, one digit per half-grid
+  // column (0 empty, 1-7 colour, 8 silver, 9 gold); the last digit is the
+  // centre column. heart, invader, rocket, smiley, castle, mushroom.
+  figs[59] =
+    55500,  515555, 5555555, 5555555, 555555, 55555, 5555, 555, 55, 5,
+    4000,   400,    4444,    44844,   444444, 404444, 404000, 440, 0, 0,
+    1,      55,     555,     585,     555,    555,  6555, 66555, 60222, 20,
+    2222,   222222, 2211222, 2211222, 2222222, 2522222, 255555, 22222, 2222, 0,
+    9090009, 9990999, 8880888, 8888888, 7777777, 7777777, 7777007, 7777007, 0, 0,
+    5555,   551155, 5511555, 5555555, 5555555, 111111, 11811, 1111, 1111, 0;
+
+  // --- Graphics ---------------------------------------------------------
+  g_brick[9]; g_brickc[9]; g_crack = 0; g_flash[9];
+  g_pad[3];         // normal, enlarged, catch, laser
+  g_cap[27];        // 7 capsules x 4 rolling frames
+  g_part[11];       // particles: brick colours, 10 white, 11 fire
+  g_enemy[11];      // 3 kinds x 4 frames
+  g_ball = 0; g_laser = 0; g_bullet = 0; g_boss = 0; g_boss_hit = 0;
+  g_bg = 0; g_logo = 0; g_sub = 0; g_ready = 0; g_round = 0; g_boss_lbl = 0;
+  g_over = 0; g_clear = 0; g_life = 0;
+
+  // --- Game state -------------------------------------------------------
+  state = 0;        // 0 title, 1 building, 2 intro, 3 play, 4 dying, 5 clear, 6 game over
+  st_t = 0;         // frames left in the current state
+  score = 0; hiscore = 50000; lives = 3; level = 1; first_round = 1;
+  bricks_left = 0; build_r = 0; last_kind = -1; kind = 0; boss_level = 0;
+  fire = 0; click = 0;                    // launch / fire pressed this frame
+  pad_x = 240; pad_w = 64; pad_mode = 0; pad_alive = 0; pad_hit = 0;
+  spd = 4.0; spd_base = 4.0; spd_max = 8.0;
+  nballs = 0; n_caps = 0; n_enemies = 0; n_lasers = 0; n_parts = 0;
+  split_req = 0; warp_open = 0; warped = 0; en_t = 0; hatch_t = 0; hatch_x = 0;
+  boss_on = 0; boss_x = 240; boss_y = 150; boss_hp = 0; boss_max = 1;
+  boss_flash = 0; boss_dead = 0;
+  force_cap = 0;    // test hook: MAIN drops this capsule above the Vaus
+
+  // Statistics (shown nowhere, read by the automated test)
+  st_broken = 0; st_silver_hits = 0; st_silver_broken = 0; st_gold_hits = 0;
+  st_paddle_hits = 0; st_catches = 0; st_laser_hits = 0; st_enemy_kills = 0;
+  st_boss_hits = 0; st_lost_balls = 0; last_cap = 0; st_caps = 0;
+
+// ======================================================================
+// Graphics
+// ======================================================================
+
+// A bevelled brick of type t. v: 0 plain, 1 with a capsule mark,
+// 2 cracked (silver after a hit), 3 hit flash.
+FUNCTION make_brick(t, v);
+PRIVATE g; r; gr; b;
+BEGIN
+  g = new_graphic(32, 16);
+  r = colr[t]; gr = colg[t]; b = colb[t];
+  IF (v == 3)
+    r = r + (255 - r) * 70 / 100; gr = gr + (255 - gr) * 70 / 100; b = b + (255 - b) * 70 / 100;
+  END
+  gfx_rect(g, 0, 0, 32, 16, r * 25 / 100, gr * 25 / 100, b * 25 / 100);   // dark gap
+  gfx_rect(g, 0, 0, 31, 15, r + (255 - r) * 55 / 100, gr + (255 - gr) * 55 / 100, b + (255 - b) * 55 / 100);
+  gfx_rect(g, 2, 2, 29, 13, r * 55 / 100, gr * 55 / 100, b * 55 / 100);   // lower-right shade
+  gfx_rect(g, 2, 2, 27, 11, r, gr, b);                                    // face
+  gfx_rect(g, 3, 3, 25, 3, r + (255 - r) * 30 / 100, gr + (255 - gr) * 30 / 100, b + (255 - b) * 30 / 100);
+  IF (t == 8)                         // brushed metal lines
+    gfx_rect(g, 3, 8, 25, 1, r * 80 / 100, gr * 80 / 100, b * 80 / 100);
+    gfx_rect(g, 3, 11, 25, 1, r * 80 / 100, gr * 80 / 100, b * 80 / 100);
+  END
+  IF (t == 9)                         // two diagonal glints
+    gfx_line(g, 6, 12, 12, 3, 255, 250, 200);
+    gfx_line(g, 10, 12, 16, 3, 255, 240, 170);
+  END
+  IF (v == 1)                         // a tiny capsule inside
+    gfx_rect(g, 11, 5, 10, 6, r * 30 / 100, gr * 30 / 100, b * 30 / 100);
+    gfx_rect(g, 12, 6, 8, 4, 255, 255, 255);
+    gfx_rect(g, 13, 7, 6, 2, 255, 220, 90);
+  END
+  IF (v == 2)                         // cracks
+    gfx_line(g, 7, 3, 13, 8, 60, 60, 70);
+    gfx_line(g, 13, 8, 10, 13, 60, 60, 70);
+    gfx_line(g, 13, 8, 22, 6, 60, 60, 70);
+    gfx_line(g, 22, 6, 26, 11, 60, 60, 70);
+  END
+  RETURN g;
+END
+
+// The Vaus: a shaded cylinder, silver body, coloured bands, red caps.
+// mode 0 normal, 1 enlarged, 2 catch (green bands), 3 laser (cannons).
+FUNCTION make_vaus(w, mode);
+PRIVATE g; yy; k; ins; cr; cg; cb; br; bg; bb;
+BEGIN
+  g = new_graphic(w, 14);
+  cr = 220; cg = 40; cb = 40;
+  br = 60; bg = 110; bb = 240;
+  IF (mode == 2) br = 60; bg = 220; bb = 90; END
+  IF (mode == 3) cr = 255; cg = 120; cb = 30; END
+  FOR yy = 0 TO 13
+    k = clamp(105 - abs(yy * 2 - 8) * 7, 25, 100);     // light from above
+    ins = 0;
+    IF (yy == 0 OR yy == 13) ins = 3; END
+    IF (yy == 1 OR yy == 12) ins = 1; END
+    gfx_rect(g, ins, yy, 11 - ins, 1, cr * k / 100, cg * k / 100, cb * k / 100);
+    gfx_rect(g, w - 11, yy, 11 - ins, 1, cr * k / 100, cg * k / 100, cb * k / 100);
+    gfx_rect(g, 11, yy, 5, 1, br * k / 100, bg * k / 100, bb * k / 100);
+    gfx_rect(g, w - 16, yy, 5, 1, br * k / 100, bg * k / 100, bb * k / 100);
+    gfx_rect(g, 16, yy, w - 32, 1, 205 * k / 100, 210 * k / 100, 222 * k / 100);
+  END
+  IF (mode == 3)                      // laser cannons on the caps
+    gfx_rect(g, 3, 0, 4, 6, 70, 70, 80);
+    gfx_rect(g, w - 7, 0, 4, 6, 70, 70, 80);
+    gfx_rect(g, 4, 0, 2, 2, 255, 255, 160);
+    gfx_rect(g, w - 6, 0, 2, 2, 255, 255, 160);
+  END
+  RETURN g;
+END
+
+// Capsule k (1-7) with its letter, frame f: a dark stripe rolls round it.
+FUNCTION make_capsule(k, f, s);
+PRIVATE g; yy; kk; ins; r; gr; b;
+BEGIN
+  g = new_graphic(30, 14);
+  r = capr[k]; gr = capg[k]; b = capb[k];
+  FOR yy = 0 TO 13
+    kk = clamp(110 - abs(yy * 2 - 8) * 8, 30, 100);
+    IF ((yy + 14 - f * 3) % 14 < 2) kk = kk * 60 / 100; END
+    ins = 0;
+    IF (yy == 0 OR yy == 13) ins = 4; END
+    IF (yy == 1 OR yy == 12) ins = 2; END
+    IF (yy == 2 OR yy == 11) ins = 1; END
+    gfx_rect(g, ins, yy, 30 - ins * 2, 1, r * kk / 100, gr * kk / 100, b * kk / 100);
+  END
+  gfx_text(g, 12, 2, s, 20, 20, 30, 12);
+  gfx_text(g, 11, 1, s, 255, 250, 200, 12);
+  RETURN g;
+END
+
+// Floating enemy kind k, animation frame f (24x24).
+FUNCTION make_enemy(k, f);
+PRIVATE g; j; a; px; py; yy; w;
+BEGIN
+  g = new_graphic(24, 24);
+  IF (k == 0)                         // "molecule": three orbiting balls
+    FOR j = 0 TO 2
+      a = f * 30000 + j * 120000;
+      px = round(12 + cos(a) * 6); py = round(12 + sin(a) * 6);
+      gfx_circle(g, px, py, 5, 40, 150, 60);
+      gfx_circle(g, px - 1, py - 1, 3, 120, 240, 120);
+      gfx_pixel(g, px - 2, py - 2, 255, 255, 255);
+    END
+  END
+  IF (k == 1)                         // spinning top with rolling stripes
+    FOR yy = 2 TO 21
+      w = 2 + (21 - yy);
+      IF (yy < 8) w = 2 + yy * 2; END
+      IF (((yy + f * 2) / 3) % 2)
+        gfx_rect(g, 12 - w / 2, yy, w, 1, 230, 120, 40);
+      ELSE
+        gfx_rect(g, 12 - w / 2, yy, w, 1, 250, 220, 90);
+      END
+    END
+  END
+  IF (k == 2)                         // ring with a pulsing core
+    gfx_circle_outline(g, 12, 12, 10, 90, 140, 255);
+    gfx_circle_outline(g, 12, 12, 9, 160, 200, 255);
+    gfx_circle(g, 12, 12, 3 + f % 2, 255, 90, 200);
+    a = f * 90000;
+    gfx_circle(g, round(12 + cos(a) * 9), round(12 + sin(a) * 9), 2, 255, 255, 255);
+  END
+  RETURN g;
+END
+
+// The mothership: a hull with trimmed corners, eyes, cannons and the
+// weak core under it. hit = 1 draws the flashing version.
+FUNCTION make_boss(hit);
+PRIVATE g; yy; hw; k; l;
+BEGIN
+  g = new_graphic(144, 76);
+  l = 0;
+  IF (hit) l = 60; END
+  FOR yy = 0 TO 53
+    hw = 72 - clamp(abs(yy - 26) - 14, 0, 30) * 2;
+    k = clamp(100 - abs(yy - 12) * 2, 35, 100);
+    gfx_rect(g, 72 - hw, yy, hw * 2, 1, clamp(125 * k / 100 + l * 2, 0, 255), clamp(110 * k / 100 + l, 0, 255), clamp(160 * k / 100 + l, 0, 255));
+  END
+  gfx_rect(g, 4, 0, 136, 1, 220, 210, 255);
+  FOR k = 1 TO 4
+    gfx_rect(g, k * 29, 6, 1, 40, 60, 50, 90);         // panel seams
+  END
+  gfx_rect(g, 6, 30, 132, 3, 60, 50, 90);
+  gfx_rect(g, 34, 14, 22, 7, 60, 0, 0);                // eyes
+  gfx_rect(g, 88, 14, 22, 7, 60, 0, 0);
+  gfx_rect(g, 36, 16, 18, 3, 255, 60 + l * 3, 40);
+  gfx_rect(g, 90, 16, 18, 3, 255, 60 + l * 3, 40);
+  gfx_rect(g, 6, 38, 12, 14, 70, 70, 80);              // side cannons
+  gfx_rect(g, 126, 38, 12, 14, 70, 70, 80);
+  gfx_rect(g, 9, 48, 6, 6, 30, 30, 36);
+  gfx_rect(g, 129, 48, 6, 6, 30, 30, 36);
+  gfx_circle(g, 72, 62, 13, 40, 20, 60);               // the weak core
+  gfx_circle(g, 72, 62, 11, 200, 40 + l, 150);
+  gfx_circle(g, 72, 62, 7, 255, 120 + l, 220);
+  gfx_circle(g, 71, 60, 3, 255, 255, 255);
+  RETURN g;
+END
+
+// A text label with a dark outline (n = number of characters).
+FUNCTION make_label(s, n, sz, r, gr, b);
+PRIVATE g;
+BEGIN
+  g = new_graphic(n * sz * 62 / 100 + 12, sz + 12);
+  gfx_text(g, 7, 8, s, 0, 0, 0, sz);
+  gfx_text(g, 4, 6, s, 10, 10, 30, sz);
+  gfx_text(g, 8, 6, s, 10, 10, 30, sz);
+  gfx_text(g, 6, 4, s, 10, 10, 30, sz);
+  gfx_text(g, 6, 7, s, r * 50 / 100, gr * 50 / 100, b * 50 / 100, sz);
+  gfx_text(g, 6, 5, s, r, gr, b, sz);
+  RETURN g;
+END
+
+FUNCTION make_graphics();
+PRIVATE t; i;
+BEGIN
+  FOR t = 1 TO 9
+    g_brick[t] = make_brick(t, 0);
+    g_brickc[t] = make_brick(t, 1);
+    g_flash[t] = make_brick(t, 3);
+  END
+  g_crack = make_brick(8, 2);
+  g_pad[0] = make_vaus(64, 0);
+  g_pad[1] = make_vaus(96, 1);
+  g_pad[2] = make_vaus(64, 2);
+  g_pad[3] = make_vaus(64, 3);
+  g_ball = new_graphic(10, 10);
+  gfx_circle(g_ball, 5, 5, 5, 150, 160, 190);
+  gfx_circle(g_ball, 5, 5, 4, 225, 230, 245);
+  gfx_circle(g_ball, 4, 4, 2, 255, 255, 255);
+  g_laser = new_graphic(3, 12);
+  gfx_fill(g_laser, 255, 60, 40);
+  gfx_rect(g_laser, 1, 0, 1, 12, 255, 240, 160);
+  g_bullet = new_graphic(10, 10);
+  gfx_circle(g_bullet, 5, 5, 5, 255, 90, 30);
+  gfx_circle(g_bullet, 5, 5, 3, 255, 220, 90);
+  FOR t = 1 TO 11
+    g_part[t] = new_graphic(3, 3);
+    IF (t <= 9) gfx_fill(g_part[t], colr[t], colg[t], colb[t]); END
+  END
+  gfx_fill(g_part[10], 255, 255, 230);
+  gfx_fill(g_part[11], 255, 150, 40);
+  g_life = make_vaus(24, 0);
+  RETURN 0;
+END
+
+FUNCTION make_more_graphics();
+PRIVATE t; f;
+BEGIN
+  FOR f = 0 TO 3
+    g_cap[f] = make_capsule(1, f, "E");
+    g_cap[4 + f] = make_capsule(2, f, "C");
+    g_cap[8 + f] = make_capsule(3, f, "L");
+    g_cap[12 + f] = make_capsule(4, f, "S");
+    g_cap[16 + f] = make_capsule(5, f, "D");
+    g_cap[20 + f] = make_capsule(6, f, "B");
+    g_cap[24 + f] = make_capsule(7, f, "P");
+    FOR t = 0 TO 2 g_enemy[t * 4 + f] = make_enemy(t, f); END
+  END
+  g_boss = make_boss(0);
+  g_boss_hit = make_boss(1);
+  g_logo = make_label("ARKANOID", 8, 52, 255, 200, 60);
+  g_sub = make_label("PROCEDURAL EDITION", 18, 18, 120, 200, 255);
+  g_ready = make_label("READY", 5, 22, 255, 255, 255);
+  g_boss_lbl = make_label("BOSS ROUND", 10, 20, 255, 90, 90);
+  g_over = make_label("GAME OVER", 9, 34, 255, 70, 70);
+  g_clear = make_label("ROUND CLEAR", 11, 26, 120, 255, 140);
+  RETURN 0;
+END
+
+// Background of round lv: deep space outside and a dim level-tinted
+// pattern inside the field (one of four).
+FUNCTION make_bg(lv);
+PRIVATE g; i; j; k; r; gr; b; px; py; pk;
+BEGIN
+  IF (g_bg) free_graphic(g_bg); END
+  g = new_graphic(480, 640);
+  g_bg = g;
+  gfx_fill(g, 3, 3, 10);
+  FOR i = 0 TO 90
+    k = rand(60, 230);
+    gfx_pixel(g, rand(0, 479), rand(40, 639), k, k, clamp(k + 30, 0, 255));
+  END
+  pk = lv % 4;
+  r = rand(20, 70); gr = rand(20, 70); b = rand(40, 90);
+  gfx_rect(g, FL, FT, FR - FL, SH - FT, r / 3, gr / 3, b / 3);
+  IF (pk == 0)                        // bevelled square tiles
+    FOR j = 0 TO 18
+      FOR i = 0 TO 12
+        px = FL + i * 32; py = FT + j * 32;
+        gfx_rect(g, px + 1, py + 1, 30, 30, r, gr, b);
+        gfx_rect(g, px + 3, py + 3, 28, 28, r / 4, gr / 4, b / 4);
+        gfx_rect(g, px + 3, py + 3, 26, 26, r / 2, gr / 2, b / 2);
+      END
+    END
+  END
+  IF (pk == 1)                        // circuit board traces
+    FOR i = 0 TO 70
+      px = FL + rand(0, 25) * 16; py = FT + rand(0, 36) * 16;
+      IF (rand(0, 1))
+        gfx_rect(g, px, py, rand(2, 6) * 16, 2, r, gr, b);
+      ELSE
+        gfx_rect(g, px, py, 2, rand(2, 6) * 16, r, gr, b);
+      END
+      gfx_rect(g, px - 2, py - 2, 6, 6, r * 3 / 2, gr * 3 / 2, b * 3 / 2);
+    END
+  END
+  IF (pk == 2)                        // diagonal stripes
+    FOR i = 0 TO 70
+      gfx_line(g, FL + i * 12 - 580, SH, FL + i * 12, FT, r * 3 / 2, gr * 3 / 2, b * 3 / 2);
+      gfx_line(g, FL + i * 12 - 579, SH, FL + i * 12 + 1, FT, r, gr, b);
+    END
+  END
+  IF (pk == 3)                        // brick wall
+    FOR j = 0 TO 36
+      FOR i = 0 TO 13
+        px = FL + i * 32 - (j % 2) * 16; py = FT + j * 16;
+        gfx_rect(g, px + 1, py + 1, 30, 14, r / 2, gr / 2, b / 2);
+        gfx_rect(g, px + 1, py + 1, 30, 1, r, gr, b);
+      END
+    END
+  END
+  RETURN 0;
+END
+
+// The HUD bar, the metal pipe frame and the two hatches over g_bg.
+FUNCTION make_frame();
+PRIVATE g; i; j; k; px;
+BEGIN
+  g = g_bg;
+  gfx_rect(g, 0, 0, 480, 40, 0, 0, 0);          // HUD bar
+  gfx_rect(g, 0, FT - 16, 16, 16, 0, 0, 0);
+  gfx_rect(g, 464, FT - 16, 16, 16, 0, 0, 0);
+  // The frame: three metal pipes shaded like cylinders
+  FOR i = 0 TO 15
+    k = clamp(105 - abs(i * 2 - 12) * 6, 25, 100);
+    gfx_rect(g, 16 + i, FT - 16, 1, SH, 150 * k / 100, 160 * k / 100, 180 * k / 100);
+    gfx_rect(g, FR + i, FT - 16, 1, SH, 150 * k / 100, 160 * k / 100, 180 * k / 100);
+    gfx_rect(g, 16, FT - 16 + i, 448, 1, 150 * k / 100, 160 * k / 100, 180 * k / 100);
+    FOR j = 0 TO 4                    // blue joint rings
+      gfx_rect(g, 16 + i, FT + 60 + j * 120, 1, 8, 60 * k / 100, 100 * k / 100, 220 * k / 100);
+      gfx_rect(g, FR + i, FT + 60 + j * 120, 1, 8, 60 * k / 100, 100 * k / 100, 220 * k / 100);
+    END
+  END
+  FOR j = 0 TO 1                      // enemy hatches in the ceiling
+    px = 112 + j * 208;
+    gfx_rect(g, px, FT - 14, 48, 12, 20, 22, 30);
+    gfx_rect(g, px + 2, FT - 12, 44, 8, 60, 64, 80);
+    gfx_rect(g, px + 23, FT - 12, 2, 8, 20, 22, 30);
+  END
+  RETURN 0;
+END
+
+// ======================================================================
+// Level generation
+// ======================================================================
+
+// Sets cell (r, c) and its mirror image (c is a half-grid column 0-6).
+FUNCTION put2(r, c, t);
+BEGIN
+  IF (r < 0 OR r >= ROWS OR c < 0 OR c > 6) RETURN 0; END
+  cell[r * COLS + c] = t;
+  cell[r * COLS + 12 - c] = t;
+  RETURN 0;
+END
+
+// Colour for band n with the round's palette shift.
+FUNCTION pcol(n, pal);
+BEGIN
+  RETURN 1 + (n + pal) % 7;
+END
+
+// Adds cell i to the flood fill if it is inside, unvisited and not gold.
+FUNCTION visit(i, qt);
+BEGIN
+  IF (seen[i] == 0 AND cell[i] != 9)
+    seen[i] = 1; queue[qt] = i;
+    RETURN qt + 1;
+  END
+  RETURN qt;
+END
+
+// Flood fill from the open space under the wall through everything that
+// is not gold; bricks it never reaches are walled in and get removed.
+FUNCTION reach_fix();
+PRIVATE i; c; r; qh = 0; qt = 0;
+BEGIN
+  FOR i = 0 TO NCELL - 1 seen[i] = 0; END
+  FOR c = 0 TO COLS - 1 qt = visit((ROWS - 1) * COLS + c, qt); END
+  WHILE (qh < qt)
+    i = queue[qh]; qh = qh + 1;
+    r = i / COLS; c = i % COLS;
+    IF (c > 0) qt = visit(i - 1, qt); END
+    IF (c < COLS - 1) qt = visit(i + 1, qt); END
+    IF (r > 0) qt = visit(i - COLS, qt); END
+    IF (r < ROWS - 1) qt = visit(i + COLS, qt); END
+  END
+  FOR i = 0 TO NCELL - 1
+    IF (seen[i] == 0 AND cell[i] != 9) cell[i] = 0; END
+  END
+  RETURN 0;
+END
+
+// Builds round lv into cell[]; every random choice is seeded by lv.
+FUNCTION gen_level(lv);
+PRIVATE r; c; i; t; d = 0.0; dx; dy; top; h; dens; pal; shp; rad; cr; ring;
+        f; v; rot; ps; ng; low;
+BEGIN
+  rand_seed(lv * 7919 + 4051);
+  FOR i = 0 TO NCELL - 1 cell[i] = 0; hp[i] = 0; capc[i] = 0; flash[i] = 0; END
+  pal = rand(0, 6);
+  boss_level = (lv % 5 == 0);
+  IF (boss_level)
+    // Boss rounds: a thin guard of bricks and gold posts under the boss
+    top = rand(0, 2); v = rand(0, 2);
+    FOR c = top TO 6 put2(10, c, pcol(c, pal)); put2(11 - v % 2, c, pcol(c + 1, pal)); END
+    FOR c = 0 TO 6
+      IF ((c + v) % 3 == 0) put2(13, c, 9); END
+      IF ((c + v) % 3 == 1) put2(13, c, 8); END
+    END
+    kind = 5;
+  ELSE
+    kind = rand(0, 4);
+    IF (kind == last_kind) kind = (kind + 1 + rand(0, 3)) % 5; END
+  END
+  last_kind = kind;
+
+  IF (kind == 0)                      // mirrored noise, two rows per colour
+    top = rand(0, 2); h = rand(8, 12); dens = rand(45, 70);
+    FOR r = top TO top + h - 1
+      FOR c = 0 TO 6
+        IF (rand(0, 99) < dens) put2(r, c, pcol(r / 2, pal)); END
+      END
+    END
+  END
+  IF (kind == 1)                      // circle, diamond or square, maybe rings
+    cr = rand(5, 8); rad = rand(4, 7); shp = rand(0, 2); ring = rand(0, 1);
+    FOR r = 0 TO ROWS - 1
+      FOR c = 0 TO 6
+        dx = (6 - c) * 2; dy = abs(r - cr);     // a brick is twice as wide as high
+        IF (shp == 0) d = sqrt(dx * dx + dy * dy); END
+        IF (shp == 1) d = (dx + dy) * 0.7; END
+        IF (shp == 2) d = dx; IF (dy > d) d = dy; END END
+        IF (d <= rad + 0.5)
+          t = int(d * 0.5);
+          IF (ring == 0 OR t % 2 == 0) put2(r, c, pcol(t, pal)); END
+        END
+      END
+    END
+  END
+  IF (kind == 2)                      // a pixel-art figure
+    f = rand(0, 5); top = rand(1, 4); rot = rand(0, 1) * rand(1, 6);
+    FOR r = 0 TO 9
+      v = figs[f * 10 + r];
+      FOR i = 0 TO 6
+        t = v % 10; v = v / 10;
+        IF (t >= 1 AND t <= 7) t = 1 + (t - 1 + rot) % 7; END
+        IF (t) put2(top + r, 6 - i, t); END
+      END
+    END
+  END
+  IF (kind == 3)                      // stripes with pillar gaps or a checkerboard
+    top = rand(1, 3); h = rand(6, 10); v = rand(0, 1);
+    FOR c = 0 TO 6 seen[c] = (rand(0, 99) < 20); END
+    FOR r = top TO top + h - 1
+      FOR c = 0 TO 6
+        IF (seen[c] == 0 AND (v == 0 OR (r + c) % 2 == 0)) put2(r, c, pcol(r, pal)); END
+      END
+    END
+  END
+  IF (kind == 4)                      // chevrons or a pyramid
+    top = rand(0, 3); v = rand(0, 1);
+    FOR r = 0 TO ROWS - 1
+      FOR c = 0 TO 6
+        dy = r - top;
+        IF (v == 0 AND dy >= 0 AND dy <= 12 AND (abs(dy - c) <= 1 OR abs(dy - c - 5) <= 1))
+          put2(r, c, pcol(dy / 3, pal));
+        END
+        IF (v == 1 AND dy >= 6 - c AND dy <= 10) put2(r, c, pcol(dy - 6 + c, pal)); END
+      END
+    END
+  END
+
+  IF (boss_level == 0)
+    // Silver: whole rows or single bricks, more of them each round
+    ps = clamp(lv * 4, 0, 32);
+    v = rand(0, 1);
+    FOR r = 0 TO ROWS - 1
+      t = (rand(0, 99) < ps / 2);
+      FOR c = 0 TO 6
+        i = r * COLS + c;
+        IF (cell[i] >= 1 AND cell[i] <= 7)
+          IF ((v AND t) OR (v == 0 AND rand(0, 99) < ps)) put2(r, c, 8); END
+        END
+      END
+    END
+    // Gold from round 3: mirrored pairs, sometimes a bar with openings
+    IF (lv >= 3)
+      ng = rand(1, clamp(1 + lv / 4, 1, 4));
+      FOR i = 1 TO ng put2(rand(1, ROWS - 3), rand(0, 5), 9); END
+      IF (rand(0, 99) < 30)
+        low = 0;
+        FOR i = 0 TO NCELL - 1 IF (cell[i]) low = i / COLS; END END
+        IF (low + 2 < ROWS)
+          FOR c = 0 TO 6 IF (c % 3 != 1) put2(low + 2, c, 9); END END
+        END
+      END
+    END
+  END
+  reach_fix();
+
+  // Too few bricks (a sparse noise roll): add a mirrored bonus row
+  IF (boss_level == 0)
+    v = 0;
+    FOR i = 0 TO NCELL - 1 IF (cell[i] != 0 AND cell[i] != 9) v = v + 1; END END
+    IF (v < 14)
+      FOR c = 0 TO 6 IF (cell[COLS + c] == 0) put2(1, c, pcol(c, pal)); END END
+    END
+  END
+  // Count, silver strength and capsule bricks (mirrored as well)
+  bricks_left = 0;
+  FOR i = 0 TO NCELL - 1
+    t = cell[i];
+    IF (t != 0 AND t != 9) bricks_left = bricks_left + 1; END
+    IF (t == 8) hp[i] = 2 + lv / 8; END
+    c = i % COLS;
+    IF (c <= 6 AND t >= 1 AND t <= 7 AND rand(0, 99) < 12)
+      capc[i] = 1; capc[i + 12 - c * 2] = 1;
+    END
+  END
+  rand_seed();
+  RETURN 0;
+END
+
+// ======================================================================
+// Ball physics helpers
+// ======================================================================
+
+// Index of the live brick that a ball centred at (px, py) overlaps
+// (the nearest one if it touches two), or -1.
+FUNCTION brick_at(px, py);
+PRIVATE c0; c1; r0; r1; r; c; i; best = -1; bd = 99999.0; d = 0.0;
+BEGIN
+  IF (py + BALL_R <= GY OR py - BALL_R >= GY + ROWS * BH) RETURN -1; END
+  c0 = clamp(int((px - BALL_R + 0.01 - GX) / (BW + EPS)), 0, COLS - 1);
+  c1 = clamp(int((px + BALL_R - 0.01 - GX) / (BW + EPS)), 0, COLS - 1);
+  r0 = clamp(int((py - BALL_R + 0.01 - GY) / (BH + EPS)), 0, ROWS - 1);
+  r1 = clamp(int((py + BALL_R - 0.01 - GY) / (BH + EPS)), 0, ROWS - 1);
+  FOR r = r0 TO r1
+    FOR c = c0 TO c1
+      i = r * COLS + c;
+      IF (cell[i])
+        d = abs(GX + c * BW + 16 - px) + abs(GY + r * BH + 8 - py) * 2;
+        IF (d < bd) bd = d; best = i; END
+      END
+    END
+  END
+  RETURN best;
+END
+
+// 1 if the ball box at (px, py) touches the boss hull, 2 its core, else 0.
+FUNCTION in_boss(px, py);
+BEGIN
+  IF (boss_on == 0) RETURN 0; END
+  IF (abs(px - boss_x) < 72 + BALL_R AND abs(py - boss_y + 11) < 27 + BALL_R) RETURN 1; END
+  IF (abs(px - boss_x) < 18 + BALL_R AND abs(py - boss_y - 24) < 12 + BALL_R) RETURN 2; END
+  RETURN 0;
+END
+
+// Keeps a direction at least 18 degrees away from horizontal.
+FUNCTION fix_angle(a);
+BEGIN
+  a = normalize_angle(a);
+  IF (a < 18000) a = 18000; END
+  IF (a > 162000 AND a <= 180000) a = 162000; END
+  IF (a > 180000 AND a < 198000) a = 198000; END
+  IF (a > 342000) a = 342000; END
+  RETURN a;
+END
+
+FUNCTION flip_x(a);            // bounce off a vertical surface
+BEGIN
+  RETURN fix_angle(180000 - a);
+END
+
+FUNCTION flip_y(a);            // bounce off a horizontal surface
+BEGIN
+  RETURN fix_angle(-a);
+END
+
+// Direction off the Vaus for a hit at offset off (-1 left end .. 1 right end).
+FUNCTION pad_angle(off);
+BEGIN
+  RETURN clamp(90000 - off * 60000 + rand(-1500, 1500), 30000, 150000);
+END
+
+// ======================================================================
+// Bricks, capsules and effects
+// ======================================================================
+
+PROCESS spark(px, py, col);
+PRIVATE vx = 0.0; vy = 0.0; fx = 0.0; fy = 0.0; life = 30;
+BEGIN
+  n_parts = n_parts + 1;
+  fx = px; fy = py; graph = g_part[col]; z = -4;
+  vx = rand(-30, 30) * 0.1; vy = rand(-35, 10) * 0.1;
+  WHILE (life > 0)
+    fx = fx + vx; fy = fy + vy; vy = vy + 0.15;
+    x = fx; y = fy;
+    alpha = life * 100 / 30;
+    life = life - 1;
+    FRAME;
+  END
+  n_parts = n_parts - 1;
+END
+
+FUNCTION burst(px, py, col, n);
+PRIVATE i;
+BEGIN
+  FOR i = 1 TO n
+    IF (n_parts < 110) spark(px + rand(-8, 8), py + rand(-4, 4), col); END
+  END
+  RETURN 0;
+END
+
+// Shows graphic g at (bx, by) for life frames (forever if life < 0).
+PROCESS banner(g, bx, by, life);
+BEGIN
+  x = bx; y = by; graph = g; z = -20;
+  WHILE (life != 0)
+    life = life - 1;
+    FRAME;
+  END
+END
+
+// One brick. Its state lives in cell[]; the process only shows it and
+// bursts into particles when the cell is emptied.
+PROCESS brick(idx);
+PRIVATE t;
+BEGIN
+  x = GX + (idx % COLS) * BW + 16; y = GY + (idx / COLS) * BH + 8; z = 5;
+  t = cell[idx];
+  LOOP
+    IF (cell[idx] == 0) burst(x, y, t, 5); BREAK; END
+    IF (flash[idx] > 0)
+      flash[idx] = flash[idx] - 1;
+      graph = g_flash[t];
+    ELSE
+      graph = g_brick[t];
+      IF (capc[idx]) graph = g_brickc[t]; END
+      IF (t == 8 AND hp[idx] < 2 + level / 8) graph = g_crack; END
+    END
+    FRAME;
+  END
+END
+
+// Picks a capsule: E C L S D B P, break and extra player are rare.
+FUNCTION pick_cap();
+PRIVATE r;
+BEGIN
+  r = rand(0, 99);
+  IF (r < 20) RETURN 1; END
+  IF (r < 38) RETURN 2; END
+  IF (r < 56) RETURN 3; END
+  IF (r < 76) RETURN 4; END
+  IF (r < 90)
+    IF (nballs > 1) RETURN 4; END
+    RETURN 5;
+  END
+  IF (r < 95) RETURN 6; END
+  RETURN 7;
+END
+
+// A hit on brick i by the ball or a laser. Returns 1 if it broke.
+FUNCTION hit_brick(i);
+PRIVATE t;
+BEGIN
+  t = cell[i];
+  IF (t == 9) flash[i] = 8; st_gold_hits = st_gold_hits + 1; RETURN 0; END
+  IF (t == 8)
+    hp[i] = hp[i] - 1;
+    IF (hp[i] > 0) flash[i] = 6; st_silver_hits = st_silver_hits + 1; RETURN 0; END
+    score = score + 50 * level;
+    st_silver_broken = st_silver_broken + 1;
+  ELSE
+    score = score + 40 + t * 10;
+  END
+  cell[i] = 0;
+  bricks_left = bricks_left - 1;
+  st_broken = st_broken + 1;
+  IF (capc[i] AND n_caps == 0 AND state == 3)
+    capsule(GX + (i % COLS) * BW + 16, GY + (i / COLS) * BH + 8, pick_cap());
+  END
+  RETURN 1;
+END
+
+// What a capsule does when the Vaus catches it.
+FUNCTION apply_cap(k);
+BEGIN
+  score = score + 1000;
+  last_cap = k; st_caps = st_caps + 1;
+  IF (k <= 3) pad_mode = k; END           // enlarge / catch / laser replace each other
+  IF (k == 4) spd = spd_base - 0.5; END   // slow
+  IF (k == 5) split_req = 1; END          // disruption
+  IF (k == 6) warp_open = 1; END          // break
+  IF (k == 7) lives = lives + 1; END      // player
+  RETURN 0;
+END
+
+PROCESS capsule(cx, cy, k);
+PRIVATE t;
+BEGIN
+  x = cx; y = cy; z = -2;
+  n_caps = n_caps + 1;
+  LOOP
+    y = y + 2;
+    t = t + 1;
+    graph = g_cap[(k - 1) * 4 + (t / 6) % 4];
+    IF (pad_alive AND collision(TYPE paddle)) apply_cap(k); BREAK; END
+    IF (y > SH + 10) BREAK; END
+    FRAME;
+  END
+  n_caps = n_caps - 1;
+END
+
+// ======================================================================
+// Enemies and the boss
+// ======================================================================
+
+FUNCTION kill_enemy(e);
+BEGIN
+  burst(e.x, e.y, 10, 8);
+  burst(e.x, e.y, 11, 4);
+  score = score + 100;
+  st_enemy_kills = st_enemy_kills + 1;
+  n_enemies = n_enemies - 1;
+  signal(e, s_kill);
+  RETURN 0;
+END
+
+// Floats out of a ceiling hatch and drifts down in a wavy line.
+PROCESS enemy(k, hx);
+PRIVATE t; x0 = 0.0; fy = 0.0;
+BEGIN
+  n_enemies = n_enemies + 1;
+  x0 = hx; fy = FT + 6; z = -1;
+  LOOP
+    t = t + 1;
+    fy = fy + 0.45;
+    IF (fy > 300) x0 = x0 + (pad_x - x0) * 0.004; END
+    x0 = clamp(x0, FL + 56, FR - 56);
+    x = x0 + sin(t * 1400) * 42;
+    y = fy;
+    graph = g_enemy[k * 4 + (t / 7) % 4];
+    IF (fy > SH + 20) BREAK; END
+    FRAME;
+  END
+  n_enemies = n_enemies - 1;
+END
+
+PROCESS bullet(bx, by, a);
+PRIVATE fx = 0.0; fy = 0.0;
+BEGIN
+  fx = bx; fy = by; graph = g_bullet; z = -3;
+  LOOP
+    fx = fx + get_distx(a, 3.2); fy = fy + get_disty(a, 3.2);
+    x = fx; y = fy;
+    IF (pad_alive AND collision(TYPE paddle)) pad_hit = 1; BREAK; END
+    IF (fy > SH + 10 OR fx < FL OR fx > FR) BREAK; END
+    FRAME;
+  END
+END
+
+// A core hit on the boss (ball or laser); short invulnerability after.
+FUNCTION boss_damage();
+BEGIN
+  IF (boss_flash > 0) RETURN 0; END
+  boss_hp = boss_hp - 1;
+  boss_flash = 18;
+  score = score + 300;
+  st_boss_hits = st_boss_hits + 1;
+  burst(boss_x, boss_y + 30, 10, 6);
+  RETURN 0;
+END
+
+// The mothership: sways over the wall, shoots aimed volleys at the Vaus.
+PROCESS boss();
+PRIVATE t; shoot_t = 120; a; i;
+BEGIN
+  boss_max = 4 + (level / 5) * 2; boss_hp = boss_max;
+  boss_on = 1; boss_dead = 0; boss_flash = 0;
+  graph = g_boss; z = 2;
+  LOOP
+    IF (boss_hp <= 0) BREAK; END
+    t = t + 1;
+    boss_x = 240 + sin(t * 500) * 120;
+    boss_y = 150 + sin(t * 1700) * 8;
+    x = boss_x; y = boss_y;
+    graph = g_boss;
+    IF (boss_flash > 0)
+      boss_flash = boss_flash - 1;
+      IF ((boss_flash / 3) % 2) graph = g_boss_hit; END
+    END
+    IF (state == 3 AND pad_alive)
+      shoot_t = shoot_t - 1;
+      IF (shoot_t <= 0)
+        shoot_t = clamp(110 - level * 3, 50, 110) + rand(0, 40);
+        a = fget_angle(boss_x - 60, boss_y + 20, pad_x, PY);
+        bullet(boss_x - 60, boss_y + 20, a);
+        a = fget_angle(boss_x + 60, boss_y + 20, pad_x, PY);
+        bullet(boss_x + 60, boss_y + 20, a);
+        IF (boss_hp * 2 < boss_max)                  // wounded: an extra spread shot
+          bullet(boss_x, boss_y + 36, 270000 + rand(-25000, 25000));
+        END
+      END
+    END
+    FRAME;
+  END
+  // Death: shake, burst, fade
+  boss_on = 0;
+  signal(TYPE bullet, s_kill);
+  score = score + 5000;
+  FOR i = 0 TO 59
+    x = boss_x + rand(-3, 3);
+    IF (i % 3 == 0) burst(boss_x + rand(-60, 60), boss_y + rand(-30, 30), 11, 5); END
+    alpha = 100 - i * 100 / 60;
+    FRAME;
+  END
+  boss_dead = 1;
+END
+
+// ======================================================================
+// The Vaus, the balls and the lasers
+// ======================================================================
+
+PROCESS laser(lx, ly);
+PRIVATE k; i; e;
+BEGIN
+  x = lx; y = ly; graph = g_laser; z = -3;
+  n_lasers = n_lasers + 1;
+  LOOP
+    y = y - 5;                              // two half steps per frame
+    i = brick_at(x, y - 6);
+    IF (i < 0) y = y - 5; i = brick_at(x, y - 6); END
+    IF (i >= 0)
+      IF (hit_brick(i)) st_laser_hits = st_laser_hits + 1; END
+      BREAK;
+    END
+    k = in_boss(x, y - 6);
+    IF (k) IF (k == 2) boss_damage(); END BREAK; END
+    IF (n_enemies > 0)
+      e = collision(TYPE enemy);
+      IF (e) kill_enemy(e); BREAK; END
+    END
+    IF (y < FT + 6) BREAK; END
+    FRAME;
+  END
+  n_lasers = n_lasers - 1;
+END
+
+PROCESS paddle();
+PRIVATE mx; cool; e; maxx; w;
+BEGIN
+  x = pad_x; y = PY; z = -5;
+  mx = mouse.x;
+  pad_alive = 1;
+  LOOP
+    // Mouse moves the Vaus when it moves; the keys always work
+    IF (mouse.x != mx) mx = mouse.x; pad_x = mx; END
+    IF (key(_left) OR key(_a)) pad_x = pad_x - 7; END
+    IF (key(_right) OR key(_d)) pad_x = pad_x + 7; END
+    pad_w = 64;
+    IF (pad_mode == 1) pad_w = 96; END
+    w = pad_w / 2;
+    maxx = FR - w;
+    IF (warp_open) maxx = FR - w + 4; END
+    pad_x = clamp(pad_x, FL + w, maxx);
+    IF (warp_open AND pad_x >= FR - w + 3 AND state == 3) warped = 1; END
+    x = pad_x;
+    graph = g_pad[pad_mode];
+    // Laser: two shots, one per cannon
+    cool = cool - 1;
+    IF (pad_mode == 3 AND fire AND cool <= 0 AND n_lasers < 6 AND state == 3)
+      laser(pad_x - 26, PY - 10);
+      laser(pad_x + 26, PY - 10);
+      cool = 12;
+    END
+    // Running into an enemy destroys it
+    IF (n_enemies > 0)
+      e = collision(TYPE enemy);
+      IF (e) kill_enemy(e); END
+    END
+    FRAME;
+  END
+END
+
+// A ball. st = 1 starts it held on the Vaus waiting for the serve.
+PROCESS ball(bx, by, a, st);
+PRIVATE fx = 0.0; fy = 0.0; bang; stuck; serve; soff = 0.0; hold_t; rel;
+        n; s; step = 0.0; nx = 0.0; ny = 0.0; dx = 0.0; dy = 0.0;
+        i; hx; hy; k; e; half = 0.0; off = 0.0;
+BEGIN
+  fx = bx; fy = by; bang = a; stuck = st; serve = st;
+  graph = g_ball; z = -3;
+  nballs = nballs + 1;
+  LOOP
+    // Disruption: the first moving ball that sees it becomes three
+    IF (split_req AND stuck == 0)
+      split_req = 0;
+      ball(fx, fy, fix_angle(bang + 25000), 0);
+      ball(fx, fy, fix_angle(bang - 25000), 0);
+    END
+    IF (stuck)
+      // Held on the Vaus: follow it, leave on fire (or after a while)
+      fx = pad_x + soff; fy = PY - 7 - BALL_R;
+      hold_t = hold_t + 1;
+      rel = 0;
+      IF (serve)
+        IF (state == 3 AND (fire OR hold_t > 300)) rel = 1; END
+      ELSE
+        IF (fire OR hold_t > 150 OR pad_mode != 2 OR split_req) rel = 1; END
+      END
+      IF (rel)
+        stuck = 0;
+        IF (serve) bang = 60000; ELSE bang = pad_angle(soff / (pad_w * 0.5 + BALL_R)); END
+        serve = 0;
+      END
+    ELSE
+      // Move in sub-steps shorter than the ball's radius
+      n = int(spd / 3.5) + 1;
+      step = spd / (n + EPS);
+      FOR s = 1 TO n
+        dx = get_distx(bang, step); dy = get_disty(bang, step);
+        nx = fx + dx; ny = fy + dy;
+        // Walls and ceiling
+        IF (nx < FL + BALL_R) nx = FL + BALL_R; bang = flip_x(bang); END
+        IF (nx > FR - BALL_R) nx = FR - BALL_R; bang = flip_x(bang); END
+        IF (ny < FT + BALL_R) ny = FT + BALL_R; bang = flip_y(bang); END
+        // Bricks: find which axis caused the contact, bounce, stay put
+        i = brick_at(nx, ny);
+        IF (i >= 0)
+          hx = brick_at(nx, fy); hy = brick_at(fx, ny);
+          IF (hy >= 0) bang = flip_y(bang); END
+          IF (hx >= 0) bang = flip_x(bang); END
+          IF (hx < 0 AND hy < 0) bang = flip_x(flip_y(bang)); END
+          hit_brick(i);
+          nx = fx; ny = fy;
+        END
+        // The boss: same idea; if it moved onto the ball, push it below
+        IF (boss_on)
+          IF (in_boss(fx, fy))
+            fy = boss_y + 37 + BALL_R; nx = fx; ny = fy;
+            IF (get_disty(bang, 1) < 0) bang = flip_y(bang); END
+          ELSE
+            k = in_boss(nx, ny);
+            IF (k)
+              hx = in_boss(nx, fy); hy = in_boss(fx, ny);
+              IF (hy) bang = flip_y(bang); END
+              IF (hx) bang = flip_x(bang); END
+              IF (hx == 0 AND hy == 0) bang = flip_x(flip_y(bang)); END
+              IF (k == 2) boss_damage(); END
+              nx = fx; ny = fy;
+            END
+          END
+        END
+        // The Vaus: only from above; the angle depends on where it lands
+        IF (dy > 0 AND pad_alive AND fy + BALL_R <= PY - 7 + 0.01 AND ny + BALL_R >= PY - 7)
+          half = pad_w * 0.5 + BALL_R;
+          IF (abs(nx - pad_x) <= half)
+            ny = PY - 7 - BALL_R;
+            off = (nx - pad_x) / (half + EPS);
+            bang = pad_angle(off);
+            st_paddle_hits = st_paddle_hits + 1;
+            IF (pad_mode == 2)
+              stuck = 1; soff = nx - pad_x; hold_t = 0;
+              st_catches = st_catches + 1;
+              fx = nx; fy = ny;
+              BREAK;
+            END
+          END
+        END
+        fx = nx; fy = ny;
+      END
+    END
+    x = fx; y = fy;
+    // Enemies explode and knock the ball away
+    IF (n_enemies > 0 AND stuck == 0)
+      e = collision(TYPE enemy);
+      IF (e)
+        bang = fix_angle(fget_angle(e.x, e.y, fx, fy));
+        kill_enemy(e);
+      END
+    END
+    IF (fy > SH + 12) BREAK; END
+    FRAME;
+  END
+  nballs = nballs - 1;
+  st_lost_balls = st_lost_balls + 1;
+END
+
+// ======================================================================
+// Game flow
+// ======================================================================
+
+// Width in pixels of a number written with text() (6 px per digit).
+FUNCTION num_w(v);
+PRIVATE n = 1;
+BEGIN
+  WHILE (v >= 10) v = v / 10; n = n + 1; END
+  RETURN n * 6;
+END
+
+// Clears everything and generates round `level` (bricks appear row by
+// row while state 1 runs).
+FUNCTION start_level();
+BEGIN
+  let_me_alone();
+  nballs = 0; n_caps = 0; n_enemies = 0; n_lasers = 0; n_parts = 0;
+  split_req = 0; warp_open = 0; warped = 0; pad_mode = 0; pad_w = 64;
+  pad_hit = 0; pad_alive = 0; boss_on = 0; boss_dead = 0; hatch_t = 0;
+  en_t = 400;
+  spd_base = clamp(4.0 + level * 0.15, 4.0, 6.0);
+  spd_max = clamp(7.6 + level * 0.1, 7.6, 9.5);
+  build_r = -3;       // state 1 generates, paints the background, then builds
+  state = 1;
+  RETURN 0;
+END
+
+FUNCTION new_game();
+BEGIN
+  score = 0; lives = 3; level = first_round; last_kind = -1;
+  start_level();
+  RETURN 0;
+END
+
+// A new Vaus with a ball on it, and the round intro.
+FUNCTION serve();
+BEGIN
+  pad_mode = 0; pad_w = 64; pad_hit = 0;
+  pad_x = 240;
+  paddle();
+  ball(pad_x, PY - 12, 60000, 1);
+  spd = spd_base;
+  banner(g_round, 240, 420, 110);
+  banner(g_ready, 240, 460, 110);
+  IF (boss_level) banner(g_boss_lbl, 240, 380, 110); END
+  state = 2; st_t = 110;
+  RETURN 0;
+END
+
+PRIVATE i; c; mprev; go; t;
+BEGIN
+  set_mode(480, 640);
+  set_fps(60, 0);
+  make_graphics();
+  FRAME;
+  make_more_graphics();
+  FRAME;
+  make_bg(1);
+  FRAME;
+  make_frame();
+  put_screen(0, g_bg);
+  // Title: logo and the capsule legend
+  banner(g_logo, 240, 150, -1);
+  banner(g_sub, 240, 198, -1);
+  FOR i = 0 TO 6 banner(g_cap[i * 4], 150, 290 + i * 26, -1); END
+  state = 0;
+  LOOP
+    click = 0;
+    IF (mouse.left AND mprev == 0) click = 1; END
+    mprev = mouse.left;
+    fire = 0;
+    IF (key_pressed(_space) OR click) fire = 1; END
+    go = fire OR key_pressed(_enter);
+    t = t + 1;
+
+    IF (state == 0)                                  // ---- title
+      set_color('#dde');
+      text(176, 286, "ENLARGE");    text(176, 312, "CATCH");
+      text(176, 338, "LASER");      text(176, 364, "SLOW");
+      text(176, 390, "DISRUPTION"); text(176, 416, "BREAK");
+      text(176, 442, "PLAYER");
+      set_color('#8af');
+      text(270, 286, "wide Vaus");  text(270, 312, "sticky Vaus");
+      text(270, 338, "fire: shoot"); text(270, 364, "slower ball");
+      text(270, 390, "three balls"); text(270, 416, "warp gate");
+      text(270, 442, "extra life");
+      set_color('#ff8');
+      text(96, 500, "MOUSE or LEFT/RIGHT (A/D) move the Vaus");
+      text(90, 516, "SPACE or CLICK launch the ball / fire");
+      IF ((t / 30) % 2) text(162, 560, "CLICK OR PRESS SPACE"); END
+      set_color('#99a');
+      text(114, 600, "every round is generated from its number");
+      IF (go) new_game(); END
+    END
+
+    IF (state == 1)                                  // ---- the wall builds up
+      // One heavy job per frame: generate, paint the pattern, the frame
+      IF (build_r == -3) gen_level(level); END
+      IF (build_r == -2) make_bg(level); END
+      IF (build_r == -1)
+        make_frame();
+        put_screen(0, g_bg);
+        IF (g_round) free_graphic(g_round); END
+        g_round = make_label("ROUND " + level, 6 + num_w(level) / 6, 30, 255, 255, 255);
+      END
+      IF (build_r >= 0)
+        FOR c = 0 TO COLS - 1
+          i = build_r * COLS + c;
+          IF (cell[i]) brick(i); END
+        END
+      END
+      build_r = build_r + 1;
+      IF (build_r >= ROWS)
+        IF (boss_level) boss(); END
+        serve();
+      END
+    END
+
+    IF (state == 2)                                  // ---- round intro
+      st_t = st_t - 1;
+      IF (st_t <= 0) state = 3; END
+    END
+
+    IF (state == 3)                                  // ---- play
+      spd = clamp(spd + 0.001, 3.0, spd_max);
+      IF (force_cap > 0) capsule(pad_x, PY - 90, force_cap); force_cap = 0; END
+      // Enemies float out of the ceiling hatches
+      IF (boss_level == 0)
+        en_t = en_t - 1;
+        IF (en_t <= 0)
+          en_t = clamp(700 - level * 25, 300, 700) + rand(0, 200);
+          IF (n_enemies < clamp(1 + level / 3, 1, 3))
+            hatch_x = 136 + rand(0, 1) * 208; hatch_t = 40;
+            enemy(rand(0, 2), hatch_x);
+          END
+        END
+      END
+      IF (nballs <= 0 OR pad_hit)                    // lost the ball or shot down
+        signal(TYPE ball, s_kill); signal(TYPE capsule, s_kill);
+        signal(TYPE laser, s_kill); signal(TYPE bullet, s_kill);
+        signal(TYPE paddle, s_kill);
+        nballs = 0; n_caps = 0; n_lasers = 0; pad_alive = 0;
+        burst(pad_x, PY, 5, 14); burst(pad_x, PY, 11, 10); burst(pad_x, PY, 8, 8);
+        state = 4; st_t = 100;
+      ELSE
+        IF (warped OR (boss_level AND boss_dead) OR (boss_level == 0 AND bricks_left <= 0))
+          IF (warped) score = score + 10000; END
+          signal(TYPE ball, s_kill); signal(TYPE capsule, s_kill);
+          signal(TYPE laser, s_kill); signal(TYPE bullet, s_kill);
+          signal(TYPE enemy, s_kill);
+          nballs = 0; n_caps = 0; n_lasers = 0; n_enemies = 0;
+          banner(g_clear, 240, 430, 140);
+          state = 5; st_t = 140;
+        END
+      END
+    END
+
+    IF (state == 4)                                  // ---- Vaus destroyed
+      st_t = st_t - 1;
+      IF (st_t <= 0)
+        lives = lives - 1;
+        IF (lives <= 0)
+          banner(g_over, 240, 400, -1);
+          state = 6; st_t = 0;
+        ELSE
+          serve();
+        END
+      END
+    END
+
+    IF (state == 5)                                  // ---- round clear
+      st_t = st_t - 1;
+      IF (st_t <= 0) level = level + 1; start_level(); END
+    END
+
+    IF (state == 6)                                  // ---- game over
+      st_t = st_t + 1;
+      IF (st_t > 60 AND (t / 30) % 2)
+        set_color('#ff8');
+        text(150, 440, "CLICK OR PRESS SPACE TO RESTART");
+      END
+      IF (st_t > 60 AND go) new_game(); END
+    END
+
+    // ---- HUD, hatches and the warp gate
+    IF (score > hiscore) hiscore = score; END
+    IF (state != 0)
+      set_color('#f44');
+      text(24, 8, "1UP");
+      text(204, 8, "HIGH SCORE");
+      text(400, 8, "ROUND");
+      set_color('#fff');
+      text(24, 22, score);
+      text(234 - num_w(hiscore) / 2, 22, hiscore);
+      text(415 - num_w(level) / 2, 22, level);
+      FOR i = 1 TO clamp(lives - 1, 0, 4)          // spare Vaus icons
+        draw_rect(44 + i * 26, 22, 22, 7, '#c33');
+        draw_rect(49 + i * 26, 22, 12, 7, '#ccd');
+      END
+      IF (pad_mode == 1) set_color('#6af'); text(300, 22, "ENLARGE"); END
+      IF (pad_mode == 2) set_color('#6e8'); text(300, 22, "CATCH"); END
+      IF (pad_mode == 3) set_color('#f64'); text(300, 22, "LASER"); END
+      IF (hatch_t > 0)
+        hatch_t = hatch_t - 1;
+        draw_rect(hatch_x - 20, FT - 12, 40, 8, '#000');
+      END
+      IF (warp_open)
+        IF ((t / 6) % 2) draw_rect(FR + 2, 556, 12, 64, '#f6f'); ELSE draw_rect(FR + 2, 556, 12, 64, '#a3c'); END
+        draw_rect(FR + 5, 560, 6, 56, '#fff');
+      END
+    END
+    FRAME;
+  END
+END

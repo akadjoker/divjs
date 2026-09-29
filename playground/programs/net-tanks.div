@@ -1,0 +1,395 @@
+PROGRAM net_tanks;
+
+// Two tanks in an arena, online. The two players connect peer to peer by
+// exchanging two codes (option 1 and 2), or play from two tabs of the same
+// browser (3 and 4), or share one keyboard (5).
+//
+// Online, the game runs in lockstep: both computers run this same program
+// and only the players' keys travel over the network. That is why the
+// gameplay reads net_key(player, key) for BOTH tanks and never key(): each
+// side sees exactly the same presses, frame by frame. The arena is made
+// with rand() after net_running(), so both sides build the same one from
+// the seed the host picked. Anything that differs between the two sides on
+// purpose (the menu choice, which tank is "you") lives in PRIVATE
+// variables: GLOBALs are part of the state the two sides compare.
+
+GLOBAL
+  SW = 640; SH = 480;
+  TILE = 32; GW = 20; GH = 15;
+  WIN_SCORE = 5;
+  MAX_SHOTS = 3;
+  walls[299];           // GW * GH cells: 1 wall, 0 floor
+  tx[1]; ty[1];         // tank positions, read by the bullets
+  alive[1];
+  shots[1];             // bullets each tank has in the air
+  score[1];
+  online = 0;           // 1: net_key for both tanks; 0: one keyboard
+  round_no = 0;         // bumped for every new round: tanks go home
+  round_timer = 0;      // frames left of the pause after a hit
+  match_over = 0;       // winner + 1 while the match's result shows
+  wipe = 0;             // 1 for a frame: every bullet removes itself
+  g_tank[1]; g_wreck; g_bullet; g_arena;
+
+// ---------------------------------------------------------------------
+// Input: action 0 left, 1 right, 2 forward, 3 back, 4 fire (the press).
+// ---------------------------------------------------------------------
+
+FUNCTION ctl(p, a);
+BEGIN
+  IF (online)
+    IF (a == 0) RETURN (net_key(p, _left) OR net_key(p, _a)); END
+    IF (a == 1) RETURN (net_key(p, _right) OR net_key(p, _d)); END
+    IF (a == 2) RETURN (net_key(p, _up) OR net_key(p, _w)); END
+    IF (a == 3) RETURN (net_key(p, _down) OR net_key(p, _s)); END
+    RETURN net_key_pressed(p, _space);
+  END
+  IF (p == 0)
+    IF (a == 0) RETURN key(_a); END
+    IF (a == 1) RETURN key(_d); END
+    IF (a == 2) RETURN key(_w); END
+    IF (a == 3) RETURN key(_s); END
+    RETURN key_pressed(_space);
+  END
+  IF (a == 0) RETURN key(_left); END
+  IF (a == 1) RETURN key(_right); END
+  IF (a == 2) RETURN key(_up); END
+  IF (a == 3) RETURN key(_down); END
+  RETURN key_pressed(_enter);
+END
+
+// ---------------------------------------------------------------------
+// Graphics
+// ---------------------------------------------------------------------
+
+FUNCTION draw_tank(r, g, b);
+PRIVATE t = 0;
+BEGIN
+  t = new_graphic(30, 26);
+  gfx_fill_rgba(t, 0, 0, 0, 0);
+  gfx_rect(t, 2, 1, 24, 6, 40, 44, 48);          // tracks
+  gfx_rect(t, 2, 19, 24, 6, 40, 44, 48);
+  gfx_rect(t, 4, 6, 20, 14, r, g, b);            // hull
+  gfx_rect_outline(t, 4, 6, 20, 14, r / 2, g / 2, b / 2);
+  gfx_circle(t, 13, 13, 5, r * 3 / 4, g * 3 / 4, b * 3 / 4);
+  gfx_rect(t, 13, 11, 16, 4, 210, 215, 220);     // gun, pointing right
+  RETURN t;
+END
+
+FUNCTION make_graphics();
+BEGIN
+  g_tank[0] = draw_tank(70, 140, 255);
+  g_tank[1] = draw_tank(255, 90, 70);
+  g_wreck = new_graphic(30, 26);
+  gfx_fill_rgba(g_wreck, 0, 0, 0, 0);
+  gfx_circle(g_wreck, 15, 13, 12, 255, 150, 40);
+  gfx_circle(g_wreck, 15, 13, 7, 255, 240, 170);
+  g_bullet = new_graphic(6, 6);
+  gfx_fill_rgba(g_bullet, 0, 0, 0, 0);
+  gfx_circle(g_bullet, 3, 3, 2, 255, 250, 200);
+  g_arena = new_graphic(SW, SH);
+  RETURN 0;
+END
+
+// ---------------------------------------------------------------------
+// Arena: point-symmetric, so both players get the same map.
+// ---------------------------------------------------------------------
+
+FUNCTION solid(px, py);
+PRIVATE cx = 0; cy = 0;
+BEGIN
+  IF (px < 0 OR py < 0) RETURN 1; END
+  cx = int(px / TILE);
+  cy = int(py / TILE);
+  IF (cx >= GW OR cy >= GH) RETURN 1; END
+  RETURN walls[cy * GW + cx];
+END
+
+FUNCTION set_wall(cx, cy, v);
+BEGIN
+  // Segments may run past the edge: only the interior changes (the border
+  // is always wall).
+  IF (cx < 1 OR cy < 1 OR cx > GW - 2 OR cy > GH - 2) RETURN 0; END
+  walls[cy * GW + cx] = v;
+  walls[(GH - 1 - cy) * GW + (GW - 1 - cx)] = v;
+  RETURN 0;
+END
+
+FUNCTION make_arena();
+PRIVATE cx = 0; cy = 0; n = 0; len = 0; dir = 0; k = 0; shade = 0;
+BEGIN
+  FOR cy = 0 TO GH - 1
+    FOR cx = 0 TO GW - 1
+      walls[cy * GW + cx] = 0;
+      IF (cx == 0 OR cy == 0 OR cx == GW - 1 OR cy == GH - 1)
+        walls[cy * GW + cx] = 1;
+      END
+    END
+  END
+  // Short wall segments in the left half, mirrored into the right half.
+  FOR n = 1 TO 9
+    cx = rand(2, GW / 2 - 1);
+    cy = rand(2, GH - 3);
+    len = rand(1, 3);
+    dir = rand(0, 1);
+    FOR k = 0 TO len
+      IF (dir == 0)
+        set_wall(cx + k, cy, 1);
+      ELSE
+        set_wall(cx, cy + k, 1);
+      END
+    END
+  END
+  // Keep the spawn points and their surroundings open.
+  FOR cy = 5 TO 9
+    FOR cx = 1 TO 4
+      set_wall(cx, cy, 0);
+    END
+  END
+
+  gfx_fill(g_arena, 26, 30, 24);
+  FOR cy = 0 TO GH - 1
+    FOR cx = 0 TO GW - 1
+      IF (walls[cy * GW + cx])
+        gfx_rect(g_arena, cx * TILE, cy * TILE, TILE, TILE, 92, 88, 76);
+        gfx_rect(g_arena, cx * TILE + 3, cy * TILE + 3, TILE - 6, TILE - 6, 120, 114, 98);
+      ELSE
+        shade = 30 + ((cx + cy) MOD 2) * 4;
+        gfx_rect(g_arena, cx * TILE, cy * TILE, TILE, TILE, shade, shade + 6, shade - 4);
+      END
+    END
+  END
+  put_screen(0, g_arena);
+  RETURN 0;
+END
+
+// ---------------------------------------------------------------------
+// Tanks and bullets
+// ---------------------------------------------------------------------
+
+FUNCTION blocked(px, py);
+BEGIN
+  RETURN (solid(px - 11, py - 11) OR solid(px + 11, py - 11) OR
+          solid(px - 11, py + 11) OR solid(px + 11, py + 11));
+END
+
+PROCESS tank(p);
+PRIVATE my_round = -1; spd = 0.0; nx = 0.0; ny = 0.0; reload = 0;
+BEGIN
+  z = -5;
+  LOOP
+    IF (my_round != round_no)
+      my_round = round_no;
+      IF (p == 0) x = 2.5 * TILE; y = 7.5 * TILE; angle = 0;
+      ELSE x = (GW - 2.5) * TILE; y = 7.5 * TILE; angle = 180000; END
+      graph = g_tank[p];
+      alive[p] = 1;
+      reload = 0;
+    END
+    IF (alive[p] AND round_timer == 0 AND match_over == 0)
+      IF (ctl(p, 0)) angle = angle + 4000; END
+      IF (ctl(p, 1)) angle = angle - 4000; END
+      spd = 0.0;
+      IF (ctl(p, 2)) spd = 2.2; END
+      IF (ctl(p, 3)) spd = -1.4; END
+      IF (spd != 0.0)
+        nx = x + cos(angle) * spd;
+        ny = y - sin(angle) * spd;
+        IF (NOT blocked(nx, y)) x = nx; END
+        IF (NOT blocked(x, ny)) y = ny; END
+      END
+      IF (reload > 0) reload = reload - 1; END
+      IF (ctl(p, 4) AND reload == 0 AND shots[p] < MAX_SHOTS)
+        bullet(p, x + cos(angle) * 18, y - sin(angle) * 18, angle);
+        reload = 12;
+      END
+    END
+    IF (NOT alive[p])
+      graph = g_wreck;
+      size = 100 + (round_timer MOD 6) * 8;
+    ELSE
+      size = 100;
+    END
+    tx[p] = x; ty[p] = y;
+    FRAME;
+  END
+END
+
+PROCESS bullet(owner, bx, by, dir);
+PRIVATE vx = 0.0; vy = 0.0; bounces = 0; life = 240; q = 0; nx = 0.0; ny = 0.0;
+BEGIN
+  x = bx; y = by; graph = g_bullet; z = -6;
+  vx = cos(dir) * 5.0;
+  vy = -sin(dir) * 5.0;
+  shots[owner] = shots[owner] + 1;
+  // Fired with the gun inside a wall: gone at once.
+  IF (solid(x, y)) life = 0; END
+  WHILE (life > 0 AND bounces <= 2 AND wipe == 0)
+    nx = x + vx;
+    IF (solid(nx, y)) vx = -vx; bounces = bounces + 1; ELSE x = nx; END
+    ny = y + vy;
+    IF (solid(x, ny)) vy = -vy; bounces = bounces + 1; ELSE y = ny; END
+    FOR q = 0 TO 1
+      // Its own tank only after the first bounce.
+      IF (alive[q] AND round_timer == 0 AND (q != owner OR bounces > 0))
+        IF (fget_distance(x, y, tx[q], ty[q]) < 13)
+          alive[q] = 0;
+          score[1 - q] = score[1 - q] + 1;
+          round_timer = 90;
+          life = 0;
+        END
+      END
+    END
+    life = life - 1;
+    FRAME;
+  END
+  shots[owner] = shots[owner] - 1;
+END
+
+// ---------------------------------------------------------------------
+// Main: menu, connection, match
+// ---------------------------------------------------------------------
+
+FUNCTION new_match();
+BEGIN
+  score[0] = 0; score[1] = 0;
+  match_over = 0;
+  round_timer = 0;
+  make_arena();
+  round_no = round_no + 1;
+  RETURN 0;
+END
+
+PRIVATE choice = 0; st = 0; msg = ''; wait = 0; me = 0;
+BEGIN
+  set_mode(SW, SH);
+  set_fps(60, 0);
+  make_graphics();
+
+  LOOP
+    // ── Menu ─────────────────────────────────────────────────────────
+    online = 0;
+    choice = 0;
+    put_screen(0, 0);
+    screen_color('#10161c');
+    WHILE (choice == 0)
+      set_color('#ffe070');
+      text(250, 90, 'N E T   T A N K S');
+      set_color('#dfe8f0');
+      text(190, 150, '1  Host an online game (send a code)');
+      text(190, 172, '2  Join an online game (paste a code)');
+      text(190, 206, '3  Host in another tab of this browser');
+      text(190, 228, '4  Join from another tab');
+      text(190, 262, '5  Two players, one keyboard');
+      set_color('#8fa4b8');
+      text(150, 330, 'Online: arrows or WASD to drive, SPACE to fire');
+      text(150, 350, 'One keyboard: blue WASD + SPACE, red arrows + ENTER');
+      text(150, 370, 'Bullets bounce twice. First to ' + WIN_SCORE + ' wins.');
+      IF (msg != '') set_color('#ff9080'); text(150, 410, msg); END
+      IF (key_pressed(_1)) choice = 1; END
+      IF (key_pressed(_2)) choice = 2; END
+      IF (key_pressed(_3)) choice = 3; END
+      IF (key_pressed(_4)) choice = 4; END
+      IF (key_pressed(_5)) choice = 5; END
+      FRAME;
+    END
+    msg = '';
+
+    // ── Connecting ───────────────────────────────────────────────────
+    IF (choice <= 4)
+      IF (choice == 1) net_host(); END
+      IF (choice == 2) net_join(); END
+      IF (choice == 3) net_host_local('net-tanks'); END
+      IF (choice == 4) net_join_local('net-tanks'); END
+      st = net_status();
+      WHILE (st == 1)
+        set_color('#dfe8f0');
+        IF (choice == 1 OR choice == 3) text(220, 220, 'Waiting for the other player...');
+        ELSE text(240, 220, 'Connecting to the host...'); END
+        set_color('#8fa4b8');
+        text(250, 250, 'ESC to go back');
+        IF (key_pressed(_esc)) net_close(); END
+        FRAME;
+        st = net_status();
+      END
+      IF (st != 2)
+        IF (st == 3) msg = 'Could not connect (or the other player left).'; END
+        net_close();
+        CONTINUE;
+      END
+      // Both sides call it; only the host's starts the lockstep.
+      net_start(3);
+      WHILE (NOT net_running() AND net_status() == 2)
+        set_color('#dfe8f0');
+        text(250, 220, 'Starting...');
+        FRAME;
+      END
+      IF (NOT net_running())
+        msg = 'The other player left.';
+        net_close();
+        CONTINUE;
+      END
+      online = 1;
+    END
+
+    // ── Match ────────────────────────────────────────────────────────
+    me = net_me();
+    new_match();
+    tank(0);
+    tank(1);
+    LOOP
+      IF (online AND net_status() == 3)
+        msg = 'The other player left.';
+        BREAK;
+      END
+      IF (key_pressed(_esc))
+        BREAK;
+      END
+      wipe = 0;
+      IF (round_timer > 0)
+        round_timer = round_timer - 1;
+        IF (round_timer == 0)
+          IF (score[0] >= WIN_SCORE OR score[1] >= WIN_SCORE)
+            IF (score[0] >= WIN_SCORE) match_over = 1; ELSE match_over = 2; END
+            wait = 240;
+          ELSE
+            round_no = round_no + 1;
+          END
+          wipe = 1;
+        END
+      END
+      IF (match_over)
+        wait = wait - 1;
+        IF (wait <= 0)
+          new_match();
+        END
+      END
+
+      // HUD (this side only: drawing is not part of the simulation).
+      set_color('#78a8ff');
+      text(12, 6, 'BLUE ' + score[0]);
+      set_color('#ff8870');
+      text(SW - 70, 6, 'RED ' + score[1]);
+      IF (online)
+        set_color('#ffffff');
+        text(tx[me] - 12, ty[me] - 30, 'YOU');
+        IF (net_status() == 4)
+          set_color('#ff5050');
+          text(250, 6, 'OUT OF STEP (desync)');
+        END
+      END
+      IF (match_over)
+        set_color('#ffe070');
+        IF (match_over == 1) text(250, 220, 'BLUE WINS THE MATCH');
+        ELSE text(254, 220, 'RED WINS THE MATCH'); END
+      END
+      FRAME;
+    END
+
+    // Back to the menu.
+    wipe = 1;
+    signal(TYPE tank, s_kill);
+    FRAME;
+    wipe = 0;
+    net_close();
+  END
+END

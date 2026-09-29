@@ -1,0 +1,1563 @@
+PROGRAM karate;
+
+// ---------------------------------------------------------------------
+// KARATE-DO - one-on-one karate in the style of International Karate
+// (System 3, 1986).
+//
+// * The karateka are articulated figures: a skeleton of 13 joints
+//   (hip, neck, head, elbows, hands, knees, ankles, toes) whose angles
+//   come from a library of 36 poses. Moves are lists of key poses; the
+//   current pose is blended towards the next key with an eased
+//   interpolation, then forward kinematics places every limb. Each limb
+//   is a shaded capsule sprite rotated about its joint.
+// * 8 directions x fire select the moves, as in the original. Without
+//   fire the stick walks, jumps, somersaults, crouches and blocks.
+// * Scoring: a hit is a half point (WAZA-ARI) or a full point (IPPON)
+//   depending on the technique and on how clean it landed; first to two
+//   points wins. A referee stops the bout after each point. 30 s timer.
+// * CPU opponent that reacts faster, blocks more and counters more
+//   every round; belts from white to black; bonus rounds (deflect the
+//   bouncing balls with a shield, break planks with a timed chop);
+//   four backdrops generated in code (Fuji, harbour, temple, bamboo).
+// * No asset files: every graphic is drawn at start-up with gfx_*.
+// ---------------------------------------------------------------------
+
+GLOBAL
+  // --- World ---------------------------------------------------------
+  GY = 356;                   // ground line of the fighters
+  RGY = 318;                  // ground line of the referee (further back)
+  NP = 14;                    // values per pose
+  // limb lengths (pixels at size 100)
+  L_TH = 28; L_SH = 28; L_FT = 11; L_UA = 21; L_FA = 21;
+  L_TOR = 40; L_SHO = 35; L_NECK = 13;
+
+  // --- Pose library ------------------------------------------------------
+  // Per pose: dx, lift, rot, lean, head, shoulderA, elbowA, shoulderB,
+  // elbowB, hipA, kneeA, hipB, kneeB, turn. Angles in degrees, in the
+  // frame of a fighter facing right: 0 = down, 90 = forward, 180 = up.
+  // A is the lead (far) side, B the rear (near) side. rot turns the whole
+  // body (somersaults, falls); lift raises it off the ground; turn > 0.5
+  // shows the back (spinning kicks).
+  pose[503] =
+     0, 0,   0,   5,  0,   50, 80,   15,120,   28, 24,  -18,  0, 0,  // 0 stance
+     0, 0,   0,   8,  3,   53, 76,   18,116,   30, 28,  -19,  2, 0,  // 1 stance (breathe)
+     0, 0,   0,   5,  0,   48, 82,   18,118,   36, 12,  -26, 22, 0,  // 2 walk 1
+     0, 0,   0,   5,  0,   52, 78,   12,122,   10, 30,   -8,  4, 0,  // 3 walk 2
+     0, 0,   0,  18, -8,   55, 85,   25,115,   95,105,   25,115, 0,  // 4 crouch
+    -2, 0,   0,  -3, -5,   72, 95,   60, 95,   30, 22,  -22,  4, 0,  // 5 block
+     0, 0,   0,  14,  6,   38,  5,   25,115,   36, 30,  -26,  4, 0,  // 6 low block
+    -3, 0,   0,   0,  0,   60, 70,   -5,135,   28, 24,  -18,  0, 0,  // 7 punch chamber
+    14, 0,   0,  12, -5,   20,110,  124,  0,   50, 45,  -35,  0, 0,  // 8 lunge punch
+     0, 0,   0,  -8,  0,   55, 80,   20,115,   95,125,   -5,  8, 0,  // 9 kick chamber
+     6, 0,   0, -15,  5,   50, 90,   20,120,   88,  0,   -4,  6, 0,  // 10 front kick
+    10, 0,   0, -24, 12,   95, 60,  -25, 50,  128,  0,   -8,  4, 0,  // 11 high kick
+    10, 0,   0,   2,  0,   50, 80,   20,120,   55,  0,  -12, 22, 0,  // 12 low kick
+     6, 0,   0,  25,-10,   70, 30,   40, 60,   78,  0,   95, 95, 0,  // 13 sweep
+    16,55,   0, -25, 10,   60, 90,   10,100,   95,  0,   20,115, 0,  // 14 flying kick
+     0,62,   0,   5,  0,   80, 80,   40,110,   70,120,   35,110, 0,  // 15 jump (tucked)
+     0, 0,   0, -10,  0,   55, 80,   20,115,   -5,  8,   85,125, 0,  // 16 roundhouse chamber
+    10, 0,   0, -28, 15,  100, 30,  -30, 40,  -10,  4,  120,  8, 1,  // 17 roundhouse
+    -4, 0,   0, -20, 10,   45, 95,   30,100,    0,  6,   75,130, 1,  // 18 back kick chamber
+     6, 0,   0, -50, 25,   40,100,   80, 80,    5,  8,   92,  0, 1,  // 19 back kick
+     8, 0,   0,  25,-10,   40,100,   95,  0,   95,105,   25,115, 0,  // 20 crouch punch
+     6,55,-120,  30, 10,  100,100,  100,100,  130,150,  120,150, 0,  // 21 tuck, forward 1
+     6,55,-240,  30, 10,  100,100,  100,100,  130,150,  120,150, 0,  // 22 tuck, forward 2
+    -6,55, 120,  30, 10,  100,100,  100,100,  130,150,  120,150, 0,  // 23 tuck, back 1
+    -6,55, 240,  30, 10,  100,100,  100,100,  130,150,  120,150, 0,  // 24 tuck, back 2
+    -8, 0,   8, -25,-25,  100, 20,   60, 30,   35, 10,  -25, 25, 0,  // 25 hit to the head
+    -6, 0,   0,  40, 20,   20, 90,   10,100,   20, 30,  -20, 20, 0,  // 26 hit to the body
+   -40, 0,  88,   0,-10,   60, 20,  120, 10,   30, 60,   10, 10, 0,  // 27 on the floor
+     0, 0,   0,  50, 25,    5,  5,    5,  5,    3,  0,   -3,  0, 0,  // 28 bow
+     0, 0,   0,   0,  0,   12, 10,   -8, 10,    6,  0,   -6,  0, 0,  // 29 ready (at ease)
+     0, 0,   0,  -3, -5,    5, 10,  150,  5,    6,  0,   -6,  0, 0,  // 30 referee points
+     0, 0,   0,   5,  0,   95,  5,   90,  0,    8,  0,   -8,  0, 0,  // 31 referee stops
+     0, 0,   0,  -5,-12,   20,110,  170,  5,   10,  0,  -10,  0, 0,  // 32 victory
+     0, 0,   0,  -5,  0,   60, 70,  200, 30,   30, 25,  -25,  5, 0,  // 33 chop, raised
+     6, 0,   0,  35, 10,   20, 60,   80,  0,   45, 55,  -30, 10, 0,  // 34 chop, down
+     0, 0,   0,   0,  0,   50, 80,   90,  0,   28, 24,  -18,  0, 0;  // 35 shield
+
+  // --- Moves: up to 5 keys (pose, frames) ----------------------------------
+  M_IDLE = 0; M_WALKF = 1; M_WALKB = 2; M_CROUCH = 3; M_BLOCK = 4; M_LBLOCK = 5;
+  M_JUMP = 6; M_SOMF = 7; M_SOMB = 8;
+  M_FKICK = 9; M_PUNCH = 10; M_HKICK = 11; M_FLYK = 12; M_ROUND = 13;
+  M_BKICK = 14; M_LKICK = 15; M_SWEEP = 16; M_LPUNCH = 17;
+  M_HITHEAD = 18; M_HITBODY = 19; M_FALL = 20; M_BOW = 21; M_VICTORY = 22;
+  M_RECOIL = 23; M_READY = 24; M_REFPOINT = 25; M_REFSTOP = 26; M_CHOP = 27;
+  M_SHIELD = 28;
+  mv_p[149]; mv_l[149];            // [move * 5 + key] pose and length
+  mv_n[29]; mv_loop[29];           // key count; 0 back to idle, 1 loop, 2 hold
+  mv_hit[29]; mv_pt[29]; mv_val[29]; mv_ht[29]; mv_reach[29];
+  mv_vx[29]; mv_k0[29]; mv_k1[29];   // travel per frame during keys k0..k1-1
+  // command -> move: [fire * 9 + (vertical + 1) * 3 + (forward + 1)]
+  cmd_mv[17] = 8, 6, 7,   2, 0, 1,   4, 3, 5,
+              13,11,12,  14, 9,10,  17,16,15;
+
+  // --- Skeletons: 0 white, 1 red, 2 referee, 3 scratch --------------------
+  cur[55]; src[55];                // current and blend-start pose values
+  sk_base = 0;                     // (marks the arrays below for the tests)
+  an_m[3]; an_k[3]; an_t[3]; an_len[3]; an_age[3]; an_ser[3];
+  sk_x[3]; sk_gy[3]; sk_dir[3]; sk_sc[3]; sk_gi[3]; sk_belt[3]; sk_vis[3]; sk_z[3];
+  sk_act0 = 0;                     // scalar mirrors for the tests
+  sk_act1 = 0;
+  // joints: 0 hip 1 neck 2 head 3 elbowA 4 handA 5 elbowB 6 handB
+  //         7 kneeA 8 ankleA 9 toeA 10 kneeB 11 ankleB 12 toeB 13 shoulder
+  tx[15]; ty[15]; da[15];
+  pt_x[63]; pt_y[63];
+  piv[12] = 0, 0, 2, 13, 3, 13, 5, 0, 7, 8, 0, 10, 11;   // joint a segment hangs from
+  part_seg[11] = 7, 8, 9, 3, 4, 1, 2, 10, 11, 12, 5, 6;  // draw order, far to near
+  part_dz[11] = 4, 4, 4, 5, 5, 3, 2, 1, 1, 1, 0, 0;
+  pp_x[47]; pp_y[47]; pp_a[47]; pp_g[47]; pp_f[47]; pp_z[47];
+
+  // --- Fighters ------------------------------------------------------------
+  f_base = 0;                      // (marks the arrays below for the tests)
+  f_ctrl[1];                       // 0 arrows, 1 WASD, 2 CPU
+  f_sc[1];                         // points in halves (4 wins)
+  f_done[1];                       // strike of the current move resolved
+  ai_cmd[1]; ai_hold[1]; ai_t[1]; ai_seen[1];
+  wins[1];
+
+  // --- Game state ----------------------------------------------------------
+  // 0 title 1 intro 2 fight 3 point 4 reset 5 round end 6 balls 7 planks 8 over
+  state = 0; st_t = 0; players = 1;
+  round = 1; stage = 0; level = 1; won = 0; score = 0; hiscore = 0;
+  p_belt = 0;
+  bout_t = 0; sudden = 0; winner = -1; scorer = -1; last_val = 0;
+  bub_g = 0; bub_t = 0; ban_g = 0; ban_t = 0; ban_n = 0;
+  // statistics (read by the automated test)
+  n_hits = 0; n_blocks = 0; n_half = 0; n_full = 0; n_cpu_pts = 0; n_p1_pts = 0;
+  n_bonus = 0; n_stages = 0; last_start = -1; last_hit = -1;
+  // AI tuning of the current round
+  ai_react = 30; ai_block = 10; ai_aggr = 35; ai_counter = 10;
+
+  // --- Bonus rounds --------------------------------------------------------
+  sh_x = 0; sh_y = 0; sh_a = 0;              // shield position and angle
+  bn_left = 0; bn_ok = 0; bn_miss = 0; bn_alive = 0; bn_timer = 0;
+  pk_n = 0; pk_try = 0; pk_m = 0; pk_need = 0; pk_pow = -1; pk_broken = 0; pk_x = 0; pk_y = 0;
+  ch_hx = 0; ch_hy = 0;                      // hand of the chop pose, local
+
+  // --- Graphics --------------------------------------------------------------
+  g_part[35]; g_torso[20]; g_head[2]; g_bg[3]; g_dig[9]; g_dot[2]; g_bub[9];
+  g_lab[19]; g_star = 0; g_shadow = 0; g_ball = 0; g_shield = 0; g_plank = 0; g_brick = 0; g_logo = 0;
+  gi_r[2] = 238, 212, 238; gi_g[2] = 238, 42, 238; gi_b[2] = 244, 40, 240;
+  tr_r[2] = 232, 205, 44; tr_g[2] = 232, 38, 44; tr_b[2] = 240, 36, 54;
+  belt_r[6] = 245, 240, 240, 60, 50, 120, 25;
+  belt_g[6] = 245, 215, 140, 170, 90, 70, 25;
+  belt_b[6] = 245, 40, 30, 70, 220, 35, 25;
+  belt_name[6] = "WHITE", "YELLOW", "ORANGE", "GREEN", "BLUE", "BROWN", "BLACK";
+  stage_name[3] = "MOUNT FUJI", "THE HARBOUR", "THE TEMPLE", "BAMBOO GROVE";
+
+// ======================================================================
+// Tables
+// ======================================================================
+
+FUNCTION defmove(m, n, lp, p0, l0, p1, l1, p2, l2, p3, l3, p4, l4);
+BEGIN
+  mv_n[m] = n; mv_loop[m] = lp;
+  mv_p[m * 5] = p0; mv_p[m * 5 + 1] = p1; mv_p[m * 5 + 2] = p2;
+  mv_p[m * 5 + 3] = p3; mv_p[m * 5 + 4] = p4;
+  mv_l[m * 5] = l0; mv_l[m * 5 + 1] = l1; mv_l[m * 5 + 2] = l2;
+  mv_l[m * 5 + 3] = l3; mv_l[m * 5 + 4] = l4;
+  mv_hit[m] = -9;
+  RETURN 0;
+END
+
+// An attack: key where the strike lands, striking joint, value (1 half,
+// 2 full point when clean) and the height it aims at (0 high 1 mid 2 low).
+FUNCTION defatk(m, hk, pt, val, ht);
+BEGIN
+  mv_hit[m] = hk; mv_pt[m] = pt; mv_val[m] = val; mv_ht[m] = ht;
+  RETURN 0;
+END
+
+FUNCTION deftravel(m, vx, k0, k1);
+BEGIN
+  mv_vx[m] = vx; mv_k0[m] = k0; mv_k1[m] = k1;
+  RETURN 0;
+END
+
+FUNCTION init_moves();
+PRIVATE m;
+BEGIN
+  defmove(M_IDLE,   2, 1,  0, 34,  1, 34,  0, 0,  0, 0,  0, 0);
+  defmove(M_WALKF,  2, 1,  2, 9,   3, 9,   0, 0,  0, 0,  0, 0);
+  defmove(M_WALKB,  2, 1,  3, 10,  2, 10,  0, 0,  0, 0,  0, 0);
+  defmove(M_CROUCH, 1, 2,  4, 7,   0, 0,   0, 0,  0, 0,  0, 0);
+  defmove(M_BLOCK,  1, 2,  5, 5,   0, 0,   0, 0,  0, 0,  0, 0);
+  defmove(M_LBLOCK, 1, 2,  6, 5,   0, 0,   0, 0,  0, 0,  0, 0);
+  defmove(M_JUMP,   3, 0,  4, 5,  15, 15,  0, 14, 0, 0,  0, 0);
+  defmove(M_SOMF,   4, 0,  4, 6,  21, 11, 22, 11, 0, 12, 0, 0);
+  defmove(M_SOMB,   4, 0,  4, 6,  23, 11, 24, 11, 0, 12, 0, 0);
+  defmove(M_FKICK,  4, 0,  9, 7,  10, 6,  10, 7,  0, 12, 0, 0);
+  defmove(M_PUNCH,  4, 0,  7, 6,   8, 5,   8, 7,  0, 10, 0, 0);
+  defmove(M_HKICK,  4, 0,  9, 8,  11, 7,  11, 8,  0, 14, 0, 0);
+  defmove(M_FLYK,   5, 0,  4, 7,  15, 8,  14, 7, 14, 8,  0, 12);
+  defmove(M_ROUND,  4, 0, 16, 8,  17, 7,  17, 8,  0, 14, 0, 0);
+  defmove(M_BKICK,  4, 0, 18, 8,  19, 6,  19, 8,  0, 14, 0, 0);
+  defmove(M_LKICK,  4, 0,  9, 6,  12, 5,  12, 6,  0, 10, 0, 0);
+  defmove(M_SWEEP,  5, 0,  4, 7,  13, 7,  13, 7,  4, 7,  0, 10);
+  defmove(M_LPUNCH, 5, 0,  4, 6,  20, 5,  20, 6,  4, 5,  0, 8);
+  defmove(M_HITHEAD,3, 0, 25, 6,  25, 18,  0, 14, 0, 0,  0, 0);
+  defmove(M_HITBODY,3, 0, 26, 6,  26, 18,  0, 14, 0, 0,  0, 0);
+  defmove(M_FALL,   5, 0, 25, 6,  27, 14, 27, 60, 4, 16, 0, 14);
+  defmove(M_BOW,    5, 0, 29, 14, 28, 22, 28, 16, 29, 14, 0, 14);
+  defmove(M_VICTORY,1, 2, 32, 14,  0, 0,   0, 0,  0, 0,  0, 0);
+  defmove(M_RECOIL, 2, 0, 26, 5,   0, 12,  0, 0,  0, 0,  0, 0);
+  defmove(M_READY,  1, 2, 29, 10,  0, 0,   0, 0,  0, 0,  0, 0);
+  defmove(M_REFPOINT,1,2, 30, 10,  0, 0,   0, 0,  0, 0,  0, 0);
+  defmove(M_REFSTOP,1, 2, 31, 8,   0, 0,   0, 0,  0, 0,  0, 0);
+  defmove(M_CHOP,   4, 0, 33, 16, 34, 6,  34, 30, 0, 14, 0, 0);
+  defmove(M_SHIELD, 1, 2, 35, 8,   0, 0,   0, 0,  0, 0,  0, 0);
+  //           move      key joint val height
+  defatk(M_FKICK,  1, 8,  2, 1);
+  defatk(M_PUNCH,  1, 6,  1, 0);
+  defatk(M_HKICK,  1, 8,  2, 0);
+  defatk(M_FLYK,   2, 8,  2, 0);
+  defatk(M_ROUND,  1, 11, 2, 0);
+  defatk(M_BKICK,  1, 11, 2, 1);
+  defatk(M_LKICK,  1, 8,  1, 2);
+  defatk(M_SWEEP,  1, 8,  1, 2);
+  defatk(M_LPUNCH, 1, 6,  1, 1);
+  deftravel(M_WALKF, 1.7, 0, 2);
+  deftravel(M_WALKB, -1.3, 0, 2);
+  deftravel(M_SOMF, 3.4, 1, 3);
+  deftravel(M_SOMB, -3.4, 1, 3);
+  deftravel(M_PUNCH, 1.2, 1, 2);
+  deftravel(M_FLYK, 3.0, 1, 4);
+  deftravel(M_FALL, -2.0, 0, 2);
+  deftravel(M_RECOIL, -1.6, 0, 1);
+  // Reach of every attack: forward kinematics of its strike pose on the
+  // scratch skeleton 3, used by the CPU to pick a move for the distance.
+  sk_x[3] = 0; sk_gy[3] = 0; sk_dir[3] = 1; sk_sc[3] = 1;
+  FOR m = M_FKICK TO M_LPUNCH
+    set_pose(3, mv_p[m * 5 + mv_hit[m]]);
+    fk(3);
+    mv_reach[m] = pt_x[48 + mv_pt[m]];
+  END
+  set_pose(3, 34); fk(3);
+  ch_hx = pt_x[54]; ch_hy = pt_y[54];
+  RETURN 0;
+END
+
+// ======================================================================
+// Animation and forward kinematics
+// ======================================================================
+
+FUNCTION set_pose(s, p);
+PRIVATE j;
+BEGIN
+  FOR j = 0 TO NP - 1 cur[s * NP + j] = pose[p * NP + j]; src[s * NP + j] = cur[s * NP + j]; END
+  RETURN 0;
+END
+
+// Starts key k of the current move: the blend starts from where the body
+// is now. A somersault's rotation is unwound so it keeps turning the same
+// way into the landing instead of spinning back.
+FUNCTION next_key(s, k);
+PRIVATE j; b; p;
+BEGIN
+  an_k[s] = k; an_t[s] = 0;
+  an_len[s] = mv_l[an_m[s] * 5 + k];
+  b = s * NP; p = mv_p[an_m[s] * 5 + k] * NP;
+  FOR j = 0 TO NP - 1 src[b + j] = cur[b + j]; END
+  WHILE (src[b + 2] - pose[p + 2] > 180) src[b + 2] -= 360; END
+  WHILE (src[b + 2] - pose[p + 2] < -180) src[b + 2] += 360; END
+  RETURN 0;
+END
+
+FUNCTION start_move(s, m);
+BEGIN
+  an_m[s] = m; an_age[s] = 0; an_ser[s]++;
+  IF (s < 2) f_done[s] = 0; last_start = m; END
+  next_key(s, 0);
+  RETURN 0;
+END
+
+// One frame of animation: travel, blend towards the key pose, next key.
+FUNCTION anim(s);
+PRIVATE m; k; b; p; j; w;
+BEGIN
+  m = an_m[s]; k = an_k[s];
+  an_t[s]++; an_age[s]++;
+  IF (k >= mv_k0[m] AND k < mv_k1[m]) sk_x[s] += sk_dir[s] * mv_vx[m]; END
+  b = s * NP; p = mv_p[m * 5 + k] * NP;
+  w = smoothstep(0, an_len[s], an_t[s]);
+  FOR j = 0 TO NP - 1 cur[b + j] = src[b + j] + (pose[p + j] - src[b + j]) * w; END
+  IF (an_t[s] >= an_len[s])
+    IF (k + 1 < mv_n[m])
+      next_key(s, k + 1);
+    ELSE
+      IF (mv_loop[m] == 1) next_key(s, 0); END
+      IF (mv_loop[m] == 0) start_move(s, M_IDLE); END
+    END
+  END
+  RETURN 0;
+END
+
+// Point at distance len from joint i along body direction d (0 down,
+// 90 forward) into joint o.
+FUNCTION bone(i, o, d, len);
+BEGIN
+  da[o] = d;
+  tx[o] = tx[i] + sin(d * 1000) * len;
+  ty[o] = ty[i] + cos(d * 1000) * len;
+  RETURN 0;
+END
+
+// Forward kinematics of skeleton s: joints in body space, grounded so
+// the lowest part touches the floor, then mirrored and placed on screen;
+// then the sprite position, angle and graphic of all 12 limbs.
+FUNCTION fk(s);
+PRIVATE b; sc; rot; dT; dD; lo; i; k; d; q; dir; gi; fl;
+BEGIN
+  b = s * NP; sc = sk_sc[s]; dir = sk_dir[s];
+  rot = cur[b + 2];
+  dT = rot + 180 - cur[b + 3];          // torso, upwards and leaning
+  dD = dT - 180;                        // down along the torso (arms hang)
+  tx[0] = cur[b]; ty[0] = 0;
+  bone(0, 1, dT, L_TOR);
+  bone(0, 13, dT, L_SHO);
+  bone(1, 2, dT + cur[b + 4], L_NECK);
+  bone(13, 3, dD + cur[b + 5], L_UA);
+  bone(3, 4, da[3] + cur[b + 6], L_FA);
+  bone(13, 5, dD + cur[b + 7], L_UA);
+  bone(5, 6, da[5] + cur[b + 8], L_FA);
+  bone(0, 7, rot + cur[b + 9], L_TH);
+  bone(7, 8, da[7] - cur[b + 10], L_SH);
+  bone(8, 9, da[8] + 90, L_FT);
+  bone(0, 10, rot + cur[b + 11], L_TH);
+  bone(10, 11, da[10] - cur[b + 12], L_SH);
+  bone(11, 12, da[11] + 90, L_FT);
+  da[1] = dT;
+  // lowest point of the body (with the thickness of each part)
+  lo = ty[0] + 11;
+  IF (ty[1] + 11 > lo) lo = ty[1] + 11; END
+  IF (ty[2] + 10 > lo) lo = ty[2] + 10; END
+  FOR i = 3 TO 12
+    q = ty[i] + 4;
+    IF (q > lo) lo = q; END
+  END
+  FOR i = 0 TO 13
+    pt_x[s * 16 + i] = sk_x[s] + dir * tx[i] * sc;
+    pt_y[s * 16 + i] = sk_gy[s] + (ty[i] - lo - cur[b + 1]) * sc;
+  END
+  IF (s > 2) RETURN 0; END
+  // limb sprites
+  gi = sk_gi[s];
+  FOR k = 0 TO 11
+    i = part_seg[k];
+    q = s * 12 + k;
+    pp_x[q] = pt_x[s * 16 + piv[i]];
+    pp_y[q] = pt_y[s * 16 + piv[i]];
+    d = da[i];
+    IF (dir > 0) pp_a[q] = (d - 90) * 1000; ELSE pp_a[q] = (270 - d) * 1000; END
+    pp_g[q] = g_part[gi * 12 + k];
+    fl = 0;
+    IF (k == 5 OR k == 6)
+      IF (dir < 0) fl = 2; END
+      IF (k == 5)
+        pp_g[q] = g_torso[gi * 7 + sk_belt[s]];
+        IF (cur[b + 13] > 0.5) fl = 2 - fl; END    // spinning: the back shows
+      ELSE
+        pp_g[q] = g_head[gi];
+      END
+    END
+    pp_f[q] = fl;
+    pp_z[q] = sk_z[s] + part_dz[k];
+  END
+  RETURN 0;
+END
+
+// ======================================================================
+// Graphics
+// ======================================================================
+
+// A shaded capsule L long and T thick along +x, pivot on its first joint.
+FUNCTION capsule(L, T, r, gr, b, sk);
+PRIVATE g; h; c;
+BEGIN
+  g = new_graphic(L + T + 2, T + 2);
+  h = T / 2;
+  c = h + 1;
+  gfx_circle(g, c, c, h, r * 35 / 100, gr * 35 / 100, b * 35 / 100);
+  gfx_circle(g, c + L, c, h, r * 35 / 100, gr * 35 / 100, b * 35 / 100);
+  gfx_rect(g, c, 1, L, T, r * 35 / 100, gr * 35 / 100, b * 35 / 100);
+  gfx_circle(g, c, c, h - 1, r * 80 / 100, gr * 80 / 100, b * 80 / 100);
+  gfx_circle(g, c + L, c, h - 1, r * 80 / 100, gr * 80 / 100, b * 80 / 100);
+  gfx_rect(g, c, 2, L, T - 2, r * 80 / 100, gr * 80 / 100, b * 80 / 100);
+  gfx_rect(g, c, 2, L, T / 2, r, gr, b);                 // lit side
+  gfx_rect(g, c, 3, L, 2, r + (255 - r) / 2, gr + (255 - gr) / 2, b + (255 - b) / 2);
+  IF (sk)                                                 // fist / hand at the end
+    gfx_circle(g, c + L, c, h, 60, 38, 25);
+    gfx_circle(g, c + L, c, h - 1, 228, 176, 134);
+    gfx_circle(g, c + L + 1, c - 1, h / 2, 245, 205, 170);
+  END
+  set_point(0, g, 0, c, c);
+  RETURN g;
+END
+
+// Gi jacket (or referee shirt) with lapels and belt of colour bt;
+// +x runs from the hip up to the neck, +y is the chest side.
+FUNCTION torso(set, bt);
+PRIVATE g; r; gr; b; i;
+BEGIN
+  r = gi_r[set]; gr = gi_g[set]; b = gi_b[set];
+  g = new_graphic(52, 30);
+  gfx_circle(g, 10, 15, 12, r * 35 / 100, gr * 35 / 100, b * 35 / 100);
+  gfx_circle(g, 38, 15, 14, r * 35 / 100, gr * 35 / 100, b * 35 / 100);
+  gfx_rect(g, 10, 2, 28, 26, r * 35 / 100, gr * 35 / 100, b * 35 / 100);
+  gfx_circle(g, 10, 15, 11, r * 82 / 100, gr * 82 / 100, b * 82 / 100);
+  gfx_circle(g, 38, 15, 13, r * 82 / 100, gr * 82 / 100, b * 82 / 100);
+  gfx_rect(g, 10, 3, 28, 24, r * 82 / 100, gr * 82 / 100, b * 82 / 100);
+  gfx_rect(g, 6, 15, 40, 11, r, gr, b);                  // chest side lit
+  IF (set < 2)
+    // lapels: a V from the shoulders down to the belt on the chest side
+    FOR i = 0 TO 26
+      gfx_pixel(g, 44 - i, 15 + i / 3, r * 45 / 100, gr * 45 / 100, b * 45 / 100);
+      gfx_pixel(g, 44 - i, 14 - i / 5, r * 55 / 100, gr * 55 / 100, b * 55 / 100);
+    END
+    gfx_rect(g, 38, 12, 8, 8, 222, 170, 130);            // chest skin at the neck
+  ELSE
+    gfx_rect(g, 40, 13, 7, 4, 30, 30, 40);               // bow tie
+    gfx_rect(g, 42, 11, 3, 8, 30, 30, 40);
+    FOR i = 14 TO 38 STEP 6 gfx_pixel(g, i, 22, 150, 150, 160); END
+  END
+  // belt with the knot and tails on the chest side
+  gfx_rect(g, 7, 2, 6, 26, belt_r[bt] * 45 / 100, belt_g[bt] * 45 / 100, belt_b[bt] * 45 / 100);
+  gfx_rect(g, 8, 3, 4, 24, belt_r[bt], belt_g[bt], belt_b[bt]);
+  gfx_rect(g, 6, 22, 7, 6, belt_r[bt] * 70 / 100, belt_g[bt] * 70 / 100, belt_b[bt] * 70 / 100);
+  gfx_line(g, 8, 27, 1, 29, belt_r[bt], belt_g[bt], belt_b[bt]);
+  gfx_line(g, 10, 27, 3, 29, belt_r[bt], belt_g[bt], belt_b[bt]);
+  set_point(0, g, 0, 8, 15);
+  RETURN g;
+END
+
+// Head: +x is the top of the head, +y the face side. Hair, eye, ear and
+// a headband (none for the referee).
+FUNCTION head(set);
+PRIVATE g;
+BEGIN
+  g = new_graphic(32, 32);
+  gfx_circle(g, 16, 16, 11, 40, 25, 20);
+  gfx_circle(g, 16, 16, 10, 25, 20, 20);                  // hair
+  gfx_circle(g, 14, 18, 9, 228, 176, 134);                // face
+  gfx_circle(g, 12, 21, 5, 240, 196, 156);
+  gfx_rect(g, 17, 22, 2, 2, 20, 20, 30);                  // eye
+  gfx_rect(g, 13, 13, 3, 3, 200, 140, 105);               // ear
+  gfx_rect(g, 9, 25, 2, 3, 150, 90, 80);                  // mouth
+  IF (set == 0) gfx_rect(g, 19, 6, 3, 21, 215, 30, 30); gfx_line(g, 20, 7, 14, 1, 215, 30, 30); gfx_line(g, 19, 7, 11, 3, 190, 20, 20); END
+  IF (set == 1) gfx_rect(g, 19, 6, 3, 21, 245, 245, 245); gfx_line(g, 20, 7, 14, 1, 245, 245, 245); gfx_line(g, 19, 7, 11, 3, 215, 215, 215); END
+  set_point(0, g, 0, 16, 16);
+  RETURN g;
+END
+
+// Limb graphics of one gi (12 parts in draw order: the far side darker).
+FUNCTION make_fighter(set);
+PRIVATE k; sh; r; gr; b; tr; tg; tb;
+BEGIN
+  FOR k = 0 TO 11
+    sh = 100;
+    IF (k < 5) sh = 78; END
+    r = gi_r[set] * sh / 100; gr = gi_g[set] * sh / 100; b = gi_b[set] * sh / 100;
+    tr = tr_r[set] * sh / 100; tg = tr_g[set] * sh / 100; tb = tr_b[set] * sh / 100;
+    SWITCH (k)
+      CASE 0, 7 g_part[set * 12 + k] = capsule(L_TH, 14, tr, tg, tb, 0);
+      CASE 1, 8 g_part[set * 12 + k] = capsule(L_SH, 11, tr, tg, tb, 0);
+      CASE 2, 9 g_part[set * 12 + k] = capsule(L_FT, 7, 222 * sh / 100, 170 * sh / 100, 130 * sh / 100, 0);
+      CASE 3, 10 g_part[set * 12 + k] = capsule(L_UA, 11, r, gr, b, 0);
+      CASE 4, 11 g_part[set * 12 + k] = capsule(L_FA, 10, r, gr, b, 1);
+      DEFAULT g_part[set * 12 + k] = 0;
+    END
+  END
+  FOR k = 0 TO 6 g_torso[set * 7 + k] = torso(set, k); END
+  g_head[set] = head(set);
+  RETURN 0;
+END
+
+// A text label with a dark outline (n = its length in characters).
+FUNCTION make_label(s, n, sz, r, gr, b);
+PRIVATE g;
+BEGIN
+  g = new_graphic(n * sz * 62 / 100 + 14, sz + 12);
+  gfx_text(g, 7, 9, s, 0, 0, 0, sz);
+  gfx_text(g, 5, 6, s, 20, 10, 10, sz);
+  gfx_text(g, 9, 6, s, 20, 10, 10, sz);
+  gfx_text(g, 7, 4, s, 20, 10, 10, sz);
+  gfx_text(g, 7, 8, s, 20, 10, 10, sz);
+  gfx_text(g, 7, 6, s, r, gr, b, sz);
+  RETURN g;
+END
+
+// Referee speech bubble: the call in Japanese and its meaning.
+FUNCTION make_bubble(s1, s2, n, n2);
+PRIVATE g; w; i;
+BEGIN
+  w = n * 10 + 24;
+  IF (w < 110) w = 110; END
+  g = new_graphic(w, 58);
+  gfx_rect(g, 2, 2, w - 4, 42, 40, 30, 30);
+  gfx_rect(g, 4, 4, w - 8, 38, 255, 250, 235);
+  FOR i = 0 TO 9 gfx_line(g, w / 2 - 10 + i, 44, w / 2 - 4 + i / 2, 44 + 10 - i, 40, 30, 30); END
+  FOR i = 1 TO 8 gfx_line(g, w / 2 - 9 + i, 42, w / 2 - 4 + i / 2, 42 + 10 - i, 255, 250, 235); END
+  gfx_text(g, w / 2 - n * 5, 7, s1, 170, 20, 20, 17);
+  gfx_text(g, w / 2 - n2 * 7 / 2, 27, s2, 70, 60, 60, 12);
+  RETURN g;
+END
+
+FUNCTION make_graphics();
+PRIVATE i; g;
+BEGIN
+  make_fighter(0); FRAME;
+  make_fighter(1); FRAME;
+  make_fighter(2); FRAME;
+  FOR i = 0 TO 9
+    g_dig[i] = new_graphic(20, 30);
+    gfx_text(g_dig[i], 3, 3, "" + i, 0, 0, 0, 28);
+    gfx_text(g_dig[i], 1, 1, "" + i, 255, 230, 150, 28);
+  END
+  // point markers: empty, half, full
+  FOR i = 0 TO 2
+    g_dot[i] = new_graphic(20, 20);
+    gfx_circle(g_dot[i], 10, 10, 9, 20, 15, 10);
+    gfx_circle(g_dot[i], 10, 10, 7, 70, 60, 50);
+  END
+  gfx_circle(g_dot[1], 10, 10, 7, 255, 200, 60); gfx_rect(g_dot[1], 10, 2, 8, 16, 70, 60, 50);
+  gfx_circle(g_dot[2], 10, 10, 7, 255, 200, 60); gfx_circle(g_dot[2], 8, 8, 3, 255, 240, 170);
+  g_bub[0] = make_bubble("HAJIME!", "FIGHT", 7, 5);
+  g_bub[1] = make_bubble("YAME!", "STOP", 5, 4);
+  g_bub[2] = make_bubble("WAZA-ARI", "HALF POINT", 8, 10);
+  g_bub[3] = make_bubble("IPPON!", "FULL POINT", 6, 10);
+  g_bub[4] = make_bubble("YAME!", "TIME UP", 5, 7);
+  g_bub[5] = make_bubble("ENCHO-SEN", "SUDDEN DEATH", 9, 12);
+  g_bub[6] = make_bubble("SHIRO NO KACHI", "WHITE WINS", 14, 10);
+  g_bub[7] = make_bubble("AKA NO KACHI", "RED WINS", 12, 8);
+  g_bub[8] = make_bubble("REI!", "BOW", 4, 3);
+  g_bub[9] = make_bubble("HIKIWAKE", "DRAW - AGAIN", 8, 12);
+  // spark, ball, shield, plank, brick
+  g_shadow = new_graphic(64, 12);
+  FOR i = 0 TO 11 g = 32 - abs(i * 2 - 11) * 5 / 2; gfx_rect(g_shadow, 32 - g, i, g * 2, 1, 0, 0, 0); END
+  g_star = new_graphic(40, 40);
+  FOR i = 0 TO 7 gfx_line(g_star, 20, 20, 20 + cos(i * 45000) * 19, 20 + sin(i * 45000) * 19, 255, 240, 160); END
+  gfx_circle(g_star, 20, 20, 8, 255, 250, 210); gfx_circle(g_star, 20, 20, 4, 255, 255, 255);
+  g_ball = new_graphic(22, 22);
+  gfx_circle(g_ball, 11, 11, 10, 30, 20, 30); gfx_circle(g_ball, 11, 11, 9, 200, 40, 60);
+  gfx_circle(g_ball, 9, 9, 5, 240, 100, 110); gfx_circle(g_ball, 8, 7, 2, 255, 220, 220);
+  g_shield = new_graphic(34, 34);
+  gfx_circle(g_shield, 17, 17, 16, 40, 30, 20); gfx_circle(g_shield, 17, 17, 14, 170, 130, 60);
+  gfx_circle(g_shield, 17, 17, 9, 215, 180, 90); gfx_circle(g_shield, 17, 17, 4, 120, 80, 40);
+  g_plank = new_graphic(92, 10);
+  gfx_rect(g_plank, 0, 0, 92, 10, 90, 55, 25); gfx_rect(g_plank, 1, 1, 90, 7, 200, 150, 90);
+  FOR i = 0 TO 5 gfx_line(g_plank, 4 + i * 15, 3, 14 + i * 15, 4 + i % 2, 160, 110, 60); END
+  g_brick = new_graphic(30, 34);
+  gfx_rect(g_brick, 0, 0, 30, 34, 60, 60, 66); gfx_rect(g_brick, 1, 1, 28, 32, 140, 140, 150);
+  gfx_rect(g_brick, 6, 8, 18, 7, 90, 90, 100); gfx_rect(g_brick, 6, 20, 18, 7, 90, 90, 100);
+  g_lab[0] = make_label("GAME OVER", 9, 40, 255, 90, 90);
+  g_lab[1] = make_label("YOU WIN!", 8, 36, 255, 230, 120);
+  g_lab[2] = make_label("YOU LOSE", 8, 36, 255, 110, 110);
+  g_lab[3] = make_label("WHITE WINS", 10, 34, 250, 250, 250);
+  g_lab[4] = make_label("RED WINS", 8, 34, 255, 90, 90);
+  g_lab[5] = make_label("BONUS STAGE", 11, 30, 120, 230, 255);
+  g_lab[6] = make_label("PERFECT!", 8, 30, 255, 230, 100);
+  g_lab[7] = make_label("CRACK!", 6, 30, 255, 220, 120);
+  g_lab[8] = make_label("OUCH!", 5, 30, 255, 120, 100);
+  g_lab[10] = make_label("BLOCK", 5, 18, 150, 220, 255);
+  g_logo = new_graphic(460, 110);
+  gfx_text(g_logo, 16, 14, "KARATE-DO", 0, 0, 0, 78);
+  gfx_text(g_logo, 8, 6, "KARATE-DO", 90, 10, 10, 78);
+  gfx_text(g_logo, 5, 3, "KARATE-DO", 250, 240, 225, 78);
+  RETURN 0;
+END
+
+// ======================================================================
+// Backdrops: 640x400, one per stage, generated one per frame at start
+// ======================================================================
+
+FUNCTION sky(g, y0, y1, r0, g0, b0, r1, g1, b1);
+PRIVATE i; n; t;
+BEGIN
+  n = (y1 - y0) / 4;
+  FOR i = 0 TO n
+    t = i / (n + 0.001);
+    gfx_rect(g, 0, y0 + i * 4, 640, 4, r0 + (r1 - r0) * t, g0 + (g1 - g0) * t, b0 + (b1 - b0) * t);
+  END
+  RETURN 0;
+END
+
+// Fighting floor: boards (or tiles) in perspective, darker to the front.
+FUNCTION floor(g, r, gr, b, tiles);
+PRIVATE i; y; t;
+BEGIN
+  sky(g, 318, 400, r, gr, b, r * 60 / 100, gr * 60 / 100, b * 60 / 100);
+  y = 318; t = 3;
+  WHILE (y < 400)
+    gfx_line(g, 0, y, 639, y, r * 45 / 100, gr * 45 / 100, b * 45 / 100);
+    y += t; t += 2;
+  END
+  FOR i = -12 TO 12
+    IF (tiles OR i % 3 == 0)
+      gfx_line(g, 320 + i * 34, 318, 320 + i * 90, 400, r * 50 / 100, gr * 50 / 100, b * 50 / 100);
+    END
+  END
+  gfx_rect(g, 0, 316, 640, 2, r / 3, gr / 3, b / 3);
+  RETURN 0;
+END
+
+// A pine: stacked dark boughs.
+FUNCTION pine(g, px, py, h);
+PRIVATE i;
+BEGIN
+  gfx_rect(g, px - 2, py - h / 3, 4, h / 3, 40, 25, 20);
+  FOR i = 0 TO 4 gfx_circle(g, px + (i % 2) * 4 - 2, py - h / 3 - i * h / 7, h / 4 - i * h / 26, 18, 38 + i * 4, 30); END
+  RETURN 0;
+END
+
+FUNCTION bg_fuji(g);
+PRIVATE x; y; s; d; i;
+BEGIN
+  sky(g, 46, 268, 40, 28, 92, 252, 160, 96);
+  gfx_circle(g, 470, 170, 52, 255, 190, 120);
+  gfx_circle(g, 470, 170, 40, 255, 225, 170);
+  // the mountain: a concave cone with a snow cap, one column at a time
+  FOR x = 0 TO 639 STEP 2
+    d = abs(x - 260);
+    y = 112 + d * 0.5 + d * d * 0.0011;
+    IF (y < 118) y = 118 + sin(x * 20000) * 2; END
+    IF (y < 268)
+      gfx_rect(g, x, y, 2, 268 - y, 72 + d / 12, 62 + d / 14, 118 - d / 16);
+      s = 162 + sin(x * 9000) * 9 + cos(x * 23000) * 5;
+      IF (y < s) gfx_rect(g, x, y, 2, s - y, 236, 236, 250); END
+      IF (x < 260 AND y < s) gfx_rect(g, x, y, 1, s - y, 200, 205, 235); END
+    END
+  END
+  // lake with the sun's reflection
+  sky(g, 268, 318, 60, 50, 110, 30, 30, 70);
+  FOR i = 0 TO 12 gfx_line(g, 470 - 40 + i * 3, 272 + i * 3, 470 + 40 - i * 3, 272 + i * 3, 255, 200, 140); END
+  FOR i = 0 TO 7 pine(g, 20 + i * 30 + rand(0, 10), 318, rand(60, 100)); END
+  FOR i = 0 TO 3 pine(g, 560 + i * 26, 318, rand(70, 110)); END
+  // cherry branch with blossoms, top left
+  gfx_line(g, 0, 70, 120, 96, 60, 30, 30); gfx_line(g, 0, 71, 120, 97, 60, 30, 30);
+  gfx_line(g, 60, 84, 140, 60, 60, 30, 30);
+  FOR i = 0 TO 40 gfx_circle(g, rand(0, 150), rand(50, 110), rand(2, 4), 255, rand(150, 200), rand(190, 220)); END
+  floor(g, 190, 170, 110, 0);
+  RETURN 0;
+END
+
+FUNCTION bg_harbour(g);
+PRIVATE i; x; h; w;
+BEGIN
+  sky(g, 46, 250, 8, 10, 36, 44, 44, 96);
+  FOR i = 0 TO 150 x = rand(40, 240); gfx_pixel(g, rand(0, 639), rand(46, 240), x, x, x + 15); END
+  gfx_circle(g, 120, 100, 24, 245, 240, 205);
+  gfx_circle(g, 131, 94, 21, 16, 18, 50);
+  // city skyline with lit windows
+  x = 0;
+  WHILE (x < 640)
+    w = rand(20, 46); h = rand(30, 90);
+    gfx_rect(g, x, 250 - h, w - 2, h, 26, 26, 52);
+    FOR i = 0 TO h / 5 gfx_pixel(g, x + rand(2, w - 5), 250 - h + rand(3, h - 3), 250, 220, 120); END
+    x += w;
+  END
+  // water with the moon's streak
+  sky(g, 250, 318, 22, 30, 70, 8, 12, 32);
+  FOR i = 0 TO 40 gfx_line(g, 120 - rand(3, 20), 252 + i * 2, 120 + rand(3, 20), 252 + i * 2, 190, 190, 160); END
+  FOR i = 0 TO 30 x = rand(0, 600); h = rand(254, 314); gfx_line(g, x, h, x + rand(8, 30), h, 60, 80, 130); END
+  // ships: hulls, cabins, masts and a harbour crane
+  FOR i = 0 TO 2
+    x = 250 + i * 130;
+    gfx_rect(g, x, 274 - i * 6, 90, 16, 40, 20, 24);
+    gfx_rect(g, x + 8, 262 - i * 6, 40, 12, 180, 180, 170);
+    gfx_line(g, x + 60, 200 - i * 6, x + 60, 274 - i * 6, 120, 110, 100);
+    gfx_line(g, x + 60, 204 - i * 6, x + 88, 272 - i * 6, 80, 80, 80);
+    gfx_pixel(g, x + 60, 199 - i * 6, 255, 60, 60);
+  END
+  FOR i = 0 TO 9 gfx_line(g, 560 + i, 130, 560 + i, 316, 150, 110, 40); END
+  gfx_rect(g, 500, 130, 130, 8, 170, 125, 45);
+  gfx_line(g, 510, 138, 510, 200, 90, 90, 90);
+  // pier: planks, lamp posts
+  floor(g, 120, 86, 58, 0);
+  FOR i = 0 TO 3
+    x = 60 + i * 170;
+    gfx_rect(g, x, 250, 4, 68, 30, 30, 30);
+    gfx_circle(g, x + 2, 248, 12, 70, 60, 30);
+    gfx_circle(g, x + 2, 248, 6, 255, 235, 160);
+  END
+  RETURN 0;
+END
+
+// A pagoda roof tier: an upturned trapezoid of lines.
+FUNCTION roof(g, cx, y, w);
+PRIVATE i;
+BEGIN
+  FOR i = 0 TO 9 gfx_line(g, cx - w / 2 - 10 + i, y + i, cx + w / 2 + 10 - i, y + i, 50 + i * 3, 40, 45); END
+  gfx_line(g, cx - w / 2 - 14, y - 4, cx - w / 2 - 8, y + 2, 50, 40, 45);
+  gfx_line(g, cx + w / 2 + 14, y - 4, cx + w / 2 + 8, y + 2, 50, 40, 45);
+  RETURN 0;
+END
+
+FUNCTION bg_temple(g);
+PRIVATE i; x; y; w;
+BEGIN
+  sky(g, 46, 318, 80, 140, 225, 210, 230, 250);
+  FOR i = 0 TO 5
+    x = rand(0, 640); y = rand(70, 150);
+    FOR w = 0 TO 5 gfx_circle(g, x + w * 14, y + (w % 2) * 5, rand(10, 18), 250, 250, 255); END
+  END
+  FOR x = 0 TO 639 STEP 2
+    y = 230 + sin(x * 600) * 22 + sin(x * 1700) * 9;
+    gfx_rect(g, x, y, 2, 318 - y, 90, 140, 110);
+    y = 262 + sin(x * 900 + 40000) * 14;
+    gfx_rect(g, x, y, 2, 318 - y, 60, 110, 70);
+  END
+  // pagoda: five tiers
+  FOR i = 0 TO 4
+    w = 110 - i * 16;
+    gfx_rect(g, 470 - w / 2, 290 - i * 44, w, 30, 170, 45, 35);
+    gfx_rect(g, 470 - w / 2 + 6, 294 - i * 44, w - 12, 20, 230, 190, 130);
+    roof(g, 470, 280 - i * 44, w);
+  END
+  gfx_rect(g, 468, 50, 4, 58, 190, 150, 60);
+  FOR i = 0 TO 4 gfx_circle(g, 470, 60 + i * 9, 4, 210, 170, 70); END
+  // torii gate on the left
+  gfx_rect(g, 70, 170, 12, 148, 200, 40, 30); gfx_rect(g, 190, 170, 12, 148, 200, 40, 30);
+  gfx_rect(g, 50, 160, 172, 12, 40, 30, 30); gfx_rect(g, 58, 190, 156, 9, 200, 40, 30);
+  gfx_line(g, 44, 154, 50, 160, 40, 30, 30); gfx_line(g, 228, 154, 222, 160, 40, 30, 30);
+  gfx_rect(g, 131, 172, 10, 18, 200, 40, 30);
+  // stone lanterns
+  FOR i = 0 TO 1
+    x = 300 + i * 300;
+    gfx_rect(g, x - 5, 270, 10, 48, 150, 150, 140);
+    gfx_rect(g, x - 14, 258, 28, 14, 170, 170, 160);
+    gfx_rect(g, x - 8, 262, 16, 6, 255, 220, 120);
+    gfx_rect(g, x - 18, 250, 36, 8, 120, 120, 115);
+  END
+  floor(g, 175, 170, 160, 1);
+  RETURN 0;
+END
+
+FUNCTION bg_bamboo(g);
+PRIVATE i; k; x; w; c; y;
+BEGIN
+  sky(g, 46, 318, 170, 205, 160, 70, 110, 70);
+  // three layers of stalks: pale and thin far away, dark and thick near
+  FOR k = 0 TO 2
+    FOR i = 0 TO 22 - k * 6
+      x = rand(0, 640); w = 4 + k * 4; c = 150 - k * 45;
+      gfx_rect(g, x, 46, w, 272, c * 60 / 100, c, c * 55 / 100);
+      gfx_rect(g, x + 1, 46, w / 3, 272, c * 80 / 100, c + 30, c * 70 / 100);
+      FOR y = 60 TO 300 STEP 38 - k * 4 gfx_rect(g, x - 1, y + rand(0, 6), w + 2, 2, c * 40 / 100, c * 70 / 100, c * 40 / 100); END
+      FOR y = 0 TO 3 - k gfx_line(g, x + w / 2, 60 + rand(0, 200), x + w / 2 + rand(-26, 26), 60 + rand(0, 200), 40, c + 20, 40); END
+    END
+    // mist between the layers
+    IF (k < 2) FOR i = 0 TO 8 gfx_circle(g, rand(0, 640), rand(230, 300), rand(30, 60), 150, 185, 150); END END
+  END
+  floor(g, 110, 95, 60, 0);
+  FOR i = 0 TO 60 gfx_circle(g, rand(0, 640), rand(322, 398), rand(1, 3), 150, 140, 110); END
+  RETURN 0;
+END
+
+// Top HUD strip baked into every backdrop.
+FUNCTION hud_strip(g);
+BEGIN
+  gfx_rect(g, 0, 0, 640, 46, 16, 12, 12);
+  gfx_rect(g, 0, 44, 640, 2, 150, 110, 50);
+  gfx_rect(g, 286, 2, 68, 40, 50, 30, 20);
+  gfx_rect(g, 288, 4, 64, 36, 25, 16, 12);
+  RETURN 0;
+END
+
+// ======================================================================
+// Rendering processes
+// ======================================================================
+
+// Limb k of skeleton s: copies what fk() computed.
+PROCESS limb(s, k);
+PRIVATE q;
+BEGIN
+  q = s * 12 + k;
+  LOOP
+    IF (sk_vis[s])
+      x = pp_x[q]; y = pp_y[q]; angle = pp_a[q]; graph = pp_g[q];
+      flags = pp_f[q]; z = pp_z[q]; size = sk_sc[s] * 100;
+    ELSE
+      graph = 0;
+    END
+    FRAME;
+  END
+END
+
+PROCESS shadow(s);
+BEGIN
+  z = 90;
+  LOOP
+    IF (sk_vis[s]) graph = g_shadow; ELSE graph = 0; END
+    x = (pt_x[s * 16 + 8] + pt_x[s * 16 + 11]) / 2; y = sk_gy[s] + 1;
+    size = (100 - cur[s * NP + 1] * 0.8) * sk_sc[s]; alpha = 40;
+    FRAME;
+  END
+END
+
+// Referee bubble and centre banner.
+PROCESS bubble();
+BEGIN
+  z = -40;
+  LOOP
+    IF (bub_t > 0) bub_t--; graph = bub_g; ELSE graph = 0; END
+    x = sk_x[2]; y = RGY - 138;
+    IF (x < 70) x = 70; END
+    FRAME;
+  END
+END
+
+PROCESS banner();
+PRIVATE t;
+BEGIN
+  x = 320; y = 110; z = -50;
+  LOOP
+    IF (ban_t > 0)
+      ban_t--; t++; graph = ban_g;
+      IF (t < 10) size = 40 + t * 6; ELSE size = 100; END
+      IF (ban_t < 15) alpha = ban_t * 7; ELSE alpha = 100; END
+    ELSE
+      graph = 0; t = 0;
+    END
+    FRAME;
+  END
+END
+
+// HUD: timer digit and point markers.
+PROCESS digit(place);
+PRIVATE v;
+BEGIN
+  x = 332 - place * 22; y = 23; z = -30;
+  LOOP
+    v = (bout_t + 59) / 60;
+    IF (state < 1 OR state > 5 OR sudden) graph = 0;
+    ELSE
+      IF (place == 0) graph = g_dig[v % 10]; ELSE graph = g_dig[v / 10]; END
+    END
+    FRAME;
+  END
+END
+
+PROCESS dot(f, k);
+PRIVATE v;
+BEGIN
+  y = 32; z = -30;
+  IF (f == 0) x = 196 + k * 24; ELSE x = 444 - k * 24; END
+  LOOP
+    v = f_sc[f] - k * 2;
+    IF (v < 0) v = 0; END
+    IF (v > 2) v = 2; END
+    IF (state >= 1 AND state <= 5) graph = g_dot[v]; ELSE graph = 0; END
+    FRAME;
+  END
+END
+
+// A burst of light where a blow lands (blue-white when blocked).
+PROCESS spark(px, py, blk);
+PRIVATE t;
+BEGIN
+  x = px; y = py; z = -20; graph = g_star;
+  FOR t = 0 TO 13
+    size = 40 + t * 7; alpha = 100 - t * 7; angle += 9000;
+    IF (blk) size = size * 7 / 10; END
+    FRAME;
+  END
+END
+
+// Floating word (BLOCK!, CRACK!...).
+PROCESS popword(g, px, py);
+PRIVATE t;
+BEGIN
+  x = px; z = -45; graph = g;
+  FOR t = 0 TO 44
+    y = py - t / 2; alpha = 100 - t * 2;
+    FRAME;
+  END
+END
+
+// ======================================================================
+// Fighters: input, CPU, hits
+// ======================================================================
+
+FUNCTION is_free(s);
+BEGIN
+  RETURN an_m[s] <= M_LBLOCK;
+END
+
+FUNCTION is_attack(m);
+BEGIN
+  RETURN m >= M_FKICK AND m <= M_LPUNCH;
+END
+
+// Starts move m if the fighter is free to act (and not already doing it).
+FUNCTION want(s, m);
+BEGIN
+  IF (is_free(s) AND an_m[s] != m) start_move(s, m); RETURN 0; END
+  // a diagonal or fire pressed a moment after UP still turns the jump
+  // (or somersault) into a somersault or an aerial kick
+  IF (an_m[s] >= M_JUMP AND an_m[s] <= M_SOMB AND an_m[s] != m AND an_age[s] < 6 AND (m == M_SOMF OR m == M_SOMB OR m == M_HKICK OR m == M_FLYK OR m == M_ROUND))
+    start_move(s, m);
+  END
+  RETURN 0;
+END
+
+// Human input: 8 directions x fire -> move, forward relative to facing.
+FUNCTION human(f);
+PRIVATE h; v; fire; fw;
+BEGIN
+  h = 0; v = 0; fire = 0;
+  IF (f_ctrl[f] == 0)
+    h = key(_right) - key(_left); v = key(_down) - key(_up);
+    fire = key(_space) OR key(_control) OR key(_z);
+  ELSE
+    h = key(_d) - key(_a); v = key(_s) - key(_w);
+    fire = key(_q);
+  END
+  fw = h * sk_dir[f];
+  IF (fire) fire = 1; END
+  want(f, cmd_mv[fire * 9 + (v + 1) * 3 + fw + 1]);
+  RETURN 0;
+END
+
+// CPU opponent. Reaction time, blocking, aggression and counters all
+// improve with the round; moves are chosen by their reach.
+FUNCTION cpu(f);
+PRIVATE o; dist; om; m; n; pick; r;
+BEGIN
+  o = 1 - f;
+  dist = abs(sk_x[o] - sk_x[f]);
+  om = an_m[o];
+  IF (is_free(f) == 0) RETURN 0; END
+  // an attack is coming: once it has been seen for ai_react frames, maybe defend
+  IF (is_attack(om) AND ai_seen[f] != an_ser[o] AND an_age[o] >= ai_react / 4 AND an_k[o] <= mv_hit[om])
+    ai_seen[f] = an_ser[o];
+    IF (rand(0, 99) < ai_block AND dist < mv_reach[om] + 30)
+      m = M_BLOCK;
+      IF (mv_ht[om] == 0 AND rand(0, 99) < 40) m = M_CROUCH; END
+      IF (mv_ht[om] == 2) m = M_LBLOCK; IF (rand(0, 99) < 30) m = M_JUMP; END END
+      ai_cmd[f] = m; ai_hold[f] = 26; ai_t[f] = 0;
+    END
+  END
+  IF (ai_hold[f] > 0) ai_hold[f]--; want(f, ai_cmd[f]); RETURN 0; END
+  // counter: the opponent is recovering from a missed attack
+  IF (is_attack(om) AND an_k[o] > mv_hit[om] + 1 AND rand(0, 99) < ai_counter)
+    ai_t[f] = 0;
+  END
+  IF (ai_t[f] > 0) ai_t[f]--; want(f, ai_cmd[f]); RETURN 0; END
+  ai_t[f] = ai_react / 2 + rand(0, ai_react);
+  // attacks whose reach suits the distance
+  n = 0; pick = -1;
+  FOR m = M_FKICK TO M_LPUNCH
+    IF (dist >= mv_reach[m] - 16 AND dist <= mv_reach[m] + 4)
+      n++;
+      IF (rand(1, n) == 1) pick = m; END
+    END
+  END
+  r = rand(0, 99);
+  IF (pick >= 0 AND r < ai_aggr) ai_cmd[f] = M_IDLE; want(f, pick); RETURN 0; END
+  IF (dist > 100)
+    ai_cmd[f] = M_WALKF;
+    IF (dist > 220 AND r > 90) ai_cmd[f] = M_SOMF; END
+  ELSE
+    IF (dist < 56) ai_cmd[f] = M_WALKB; ELSE ai_cmd[f] = M_IDLE; END
+    IF (r > 80) ai_cmd[f] = M_WALKF; END
+    IF (r > 94) ai_cmd[f] = M_BLOCK; END
+  END
+  want(f, ai_cmd[f]);
+  RETURN 0;
+END
+
+// Distance from point (px, py) to segment a-b.
+FUNCTION segd(px, py, ax, ay, bx, by);
+PRIVATE dx; dy; t;
+BEGIN
+  dx = bx - ax; dy = by - ay;
+  t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy + 0.001);
+  t = clamp(t, 0, 1);
+  RETURN fget_distance(px, py, ax + dx * t, ay + dy * t);
+END
+
+// Did attacker a's strike land? Head, body, then legs of the defender.
+// A matching block stops it; otherwise a half or full point.
+FUNCTION check_hit(a);
+PRIVATE m; k; d; px; py; b; zone; r; q; val; dm;
+BEGIN
+  m = an_m[a];
+  IF (is_attack(m) == 0 OR f_done[a]) RETURN 0; END
+  k = an_k[a];
+  IF (k < mv_hit[m] OR k > mv_hit[m] + 1) RETURN 0; END
+  IF (k == mv_hit[m] AND an_t[a] * 2 < an_len[a]) RETURN 0; END
+  d = 1 - a; b = d * 16;
+  px = pt_x[a * 16 + mv_pt[m]]; py = pt_y[a * 16 + mv_pt[m]];
+  zone = -1;
+  r = fget_distance(px, py, pt_x[b + 2], pt_y[b + 2]);
+  IF (r < 13) zone = 0; q = 1 - r * 0.077; END
+  IF (zone < 0)
+    // the body from the neck down to the knees counts as mid level
+    r = min4(segd(px, py, pt_x[b], pt_y[b], pt_x[b + 1], pt_y[b + 1]),
+             segd(px, py, pt_x[b], pt_y[b], pt_x[b + 7], pt_y[b + 7]) + 4,
+             segd(px, py, pt_x[b], pt_y[b], pt_x[b + 10], pt_y[b + 10]) + 4, 99);
+    IF (r < 15) zone = 1; q = 1 - r * 0.067; END
+  END
+  IF (zone < 0)
+    r = min4(segd(px, py, pt_x[b + 7], pt_y[b + 7], pt_x[b + 8], pt_y[b + 8]),
+             segd(px, py, pt_x[b + 10], pt_y[b + 10], pt_x[b + 11], pt_y[b + 11]), 99, 99);
+    IF (r < 9) zone = 2; q = 1 - r * 0.111; END
+  END
+  IF (zone < 0) RETURN 0; END
+  f_done[a] = 1;
+  dm = an_m[d];
+  IF ((dm == M_BLOCK AND zone < 2) OR (dm == M_LBLOCK AND zone == 2))
+    n_blocks++;
+    spark(px, py, 1);
+    popword(g_lab[10], px, py - 30);
+    start_move(a, M_RECOIL);
+    RETURN 0;
+  END
+  // full point: a big technique landing deep, or catching the defender mid-attack
+  val = 1;
+  IF (mv_val[m] == 2 AND (q >= 0.35 OR is_attack(dm))) val = 2; END
+  award(a, val, zone, m);
+  spark(px, py, 0);
+  RETURN 1;
+END
+
+FUNCTION min4(a, b, c, d);
+BEGIN
+  IF (b < a) a = b; END
+  IF (c < a) a = c; END
+  IF (d < a) a = d; END
+  RETURN a;
+END
+
+FUNCTION award(a, val, zone, m);
+PRIVATE d;
+BEGIN
+  d = 1 - a;
+  f_sc[a] += val;
+  n_hits++;
+  IF (val == 2) n_full++; ELSE n_half++; END
+  IF (f_ctrl[a] == 2) n_cpu_pts += val; ELSE n_p1_pts += val; END
+  IF (players == 1 AND a == 0) score += val * 200; END
+  IF (val == 2 OR m == M_SWEEP)
+    start_move(d, M_FALL);
+  ELSE
+    IF (zone == 0) start_move(d, M_HITHEAD); ELSE start_move(d, M_HITBODY); END
+  END
+  scorer = a; last_val = val; last_hit = m;
+  ai_cmd[0] = M_IDLE; ai_cmd[1] = M_IDLE; ai_hold[0] = 0; ai_hold[1] = 0; ai_t[0] = 25; ai_t[1] = 25;
+  state = 3; st_t = 0;
+  RETURN 0;
+END
+
+// Fighters may not walk through each other (unless one is in the air)
+// and stay on the screen; they turn to face each other when free.
+FUNCTION keep_apart();
+PRIVATE dx; gap; push;
+BEGIN
+  dx = sk_x[1] - sk_x[0];
+  IF (cur[1] < 25 AND cur[NP + 1] < 25 AND state != 4)
+    gap = 42;
+    IF (abs(dx) < gap)
+      push = (gap - abs(dx)) / 2;
+      IF (dx >= 0) sk_x[0] -= push; sk_x[1] += push; ELSE sk_x[0] += push; sk_x[1] -= push; END
+    END
+  END
+  sk_x[0] = clamp(sk_x[0], 40, 600);
+  sk_x[1] = clamp(sk_x[1], 40, 600);
+  dx = sk_x[1] - sk_x[0];
+  IF (is_free(0) AND dx != 0) sk_dir[0] = sign(dx); END
+  IF (is_free(1) AND dx != 0) sk_dir[1] = -sign(dx); END
+  RETURN 0;
+END
+
+// ======================================================================
+// Per-frame world update and HUD
+// ======================================================================
+
+FUNCTION world();
+PRIVATE s;
+BEGIN
+  FOR s = 0 TO 2 anim(s); END
+  IF (state >= 1 AND state <= 5) keep_apart(); END
+  FOR s = 0 TO 2 fk(s); END
+  sk_act0 = an_m[0]; sk_act1 = an_m[1];
+  hud();
+  RETURN 0;
+END
+
+FUNCTION hud();
+PRIVATE f; x0; b;
+BEGIN
+  IF (state == 0 OR state == 8) RETURN 0; END
+  FOR f = 0 TO 1
+    IF (f == 0) x0 = 14; ELSE x0 = 466; END
+    b = sk_belt[f];
+    draw_rect(x0, 26, 36, 8, "rgb(" + belt_r[b] + "," + belt_g[b] + "," + belt_b[b] + ")");
+    IF (f == 0) set_color('#ffffff'); ELSE set_color('#ff7070'); END
+    IF (f_ctrl[f] == 2)
+      text(x0, 8, "RED - CPU");
+    ELSE
+      IF (f == 0) text(x0, 8, "WHITE - PLAYER 1"); ELSE text(x0, 8, "RED - PLAYER 2"); END
+    END
+    set_color('#c8b890');
+    text(x0 + 44, 26, belt_name[b] + " BELT");
+  END
+  set_color('#ffe0a0');
+  IF (players == 1)
+    text(466, 36, "SCORE " + score);
+    text(14, 36, "ROUND " + round + "   " + stage_name[stage]);
+  ELSE
+    text(14, 36, "BOUTS " + wins[0] + " - " + wins[1] + "   " + stage_name[stage]);
+  END
+  IF (sudden AND state >= 1 AND state <= 5) set_color('#ff8060'); text(298, 18, "SUDDEN"); END
+  RETURN 0;
+END
+
+// ======================================================================
+// Bouts
+// ======================================================================
+
+FUNCTION say(i, t);
+BEGIN
+  bub_g = g_bub[i]; bub_t = t;
+  RETURN 0;
+END
+
+FUNCTION show_banner(g, t);
+BEGIN
+  ban_g = g; ban_t = t;
+  RETURN 0;
+END
+
+// Places the fighters and the referee for a new bout.
+FUNCTION setup_bout();
+PRIVATE s;
+BEGIN
+  FOR s = 0 TO 2 sk_vis[s] = 1; sk_sc[s] = 1; sk_gy[s] = GY; END
+  sk_x[0] = 220; sk_dir[0] = 1; sk_gi[0] = 0; sk_z[0] = 0;
+  sk_x[1] = 420; sk_dir[1] = -1; sk_gi[1] = 1; sk_z[1] = 10;
+  sk_x[2] = 320; sk_dir[2] = 1; sk_gi[2] = 2; sk_z[2] = 40; sk_sc[2] = 0.8; sk_gy[2] = RGY;
+  sk_belt[2] = 6;
+  sk_belt[0] = p_belt;
+  IF (players == 1) sk_belt[1] = min4(level, 6, 6, 6); ELSE sk_belt[1] = 0; END
+  set_pose(0, 29); set_pose(1, 29); set_pose(2, 29);
+  start_move(0, M_BOW); start_move(1, M_BOW); start_move(2, M_READY);
+  f_sc[0] = 0; f_sc[1] = 0;
+  bout_t = 30 * 60; sudden = 0; winner = -1;
+  ai_hold[0] = 0; ai_hold[1] = 0; ai_t[0] = 20; ai_t[1] = 20;
+  // CPU skill for this round
+  ai_react = 34 - level * 3;
+  IF (ai_react < 6) ai_react = 6; END
+  ai_block = min4(12 + level * 9, 85, 85, 85);
+  ai_aggr = min4(34 + level * 6, 90, 90, 90);
+  ai_counter = min4(8 + level * 10, 90, 90, 90);
+  put_screen(0, g_bg[stage]);
+  n_stages++;
+  RETURN 0;
+END
+
+// One frame of the bout state machine.
+FUNCTION bout_step();
+PRIVATE f; w;
+BEGIN
+  st_t++;
+  SWITCH (state)
+    CASE 1                                     // bow, then HAJIME
+      IF (st_t == 10) say(8, 60); END
+      IF (st_t == 90) start_move(2, M_REFSTOP); say(0, 50); END
+      IF (st_t >= 120) start_move(2, M_READY); state = 2; st_t = 0; END
+    CASE 2                                     // fighting
+      FOR f = 0 TO 1
+        IF (f_ctrl[f] == 2) cpu(f); ELSE human(f); END
+      END
+      IF (sudden == 0)
+        bout_t--;
+        IF (bout_t <= 0)
+          bout_t = 0; say(4, 70);
+          IF (f_sc[0] == f_sc[1])
+            sudden = 1; say(5, 90);
+          ELSE
+            IF (f_sc[0] > f_sc[1]) winner = 0; ELSE winner = 1; END
+            state = 5; st_t = 0;
+          END
+        END
+      END
+    CASE 3                                     // a point: YAME, then the call
+      IF (st_t == 8) start_move(2, M_REFSTOP); say(1, 40); END
+      IF (st_t == 50)
+        sk_dir[2] = sign(sk_x[scorer] - sk_x[2]);
+        IF (sk_dir[2] == 0) sk_dir[2] = 1; END
+        start_move(2, M_REFPOINT);
+        say(1 + last_val, 80);
+      END
+      IF (st_t >= 140)
+        IF (f_sc[scorer] >= 4 OR sudden)
+          winner = scorer; state = 5; st_t = 0;
+        ELSE
+          state = 4; st_t = 0; start_move(2, M_READY); sk_dir[2] = 1;
+        END
+      END
+    CASE 4                                     // walk back to the marks
+      w = 0;
+      FOR f = 0 TO 1
+        IF (abs(sk_x[f] - (220 + f * 200)) > 3 AND st_t < 200)
+          w = 1;
+          IF (an_m[f] <= M_LBLOCK)
+            IF ((220 + f * 200 - sk_x[f]) * sk_dir[f] > 0) want(f, M_WALKF); ELSE want(f, M_WALKB); END
+          END
+        ELSE
+          IF (is_free(f)) want(f, M_IDLE); END
+        END
+      END
+      IF (w == 0 AND st_t < 1000)
+        sk_dir[0] = 1; sk_dir[1] = -1;
+        start_move(2, M_REFSTOP); say(0, 45); st_t = 1000;
+      END
+      IF (st_t >= 1035) start_move(2, M_READY); state = 2; st_t = 0; END
+    CASE 5                                     // winner announced
+      IF (st_t == 20)
+        sk_dir[2] = sign(sk_x[winner] - sk_x[2]);
+        IF (sk_dir[2] == 0) sk_dir[2] = 1; END
+        start_move(2, M_REFPOINT);
+        say(6 + winner, 150);
+        start_move(winner, M_VICTORY);
+        IF (players == 1)
+          IF (winner == 0) show_banner(g_lab[1], 150); ELSE show_banner(g_lab[2], 150); END
+        ELSE
+          show_banner(g_lab[3 + winner], 150);
+        END
+      END
+      IF (st_t == 60) start_move(1 - winner, M_BOW); END
+      IF (st_t >= 200) state = 9; END
+  END
+  RETURN 0;
+END
+
+// A whole bout; returns the winner.
+FUNCTION play_bout();
+BEGIN
+  setup_bout();
+  state = 1; st_t = 0;
+  WHILE (state != 9)
+    bout_step();
+    IF (state == 2)
+      IF (check_hit(0) == 0) check_hit(1); END
+    END
+    world();
+    IF (key_pressed(_esc)) state = 9; winner = -2; END
+    FRAME;
+  END
+  RETURN winner;
+END
+
+// ======================================================================
+// Bonus rounds
+// ======================================================================
+
+// A ball bouncing in from one side; deflect it with the shield.
+PROCESS ball(side, spd, bv);
+PRIVATE vx; vy; fx; fy; hit; b;
+BEGIN
+  graph = g_ball; z = -10;
+  bn_alive++;
+  fx = 320 - side * 340; fy = rand(150, 250);
+  vx = side * spd; vy = 0;
+  LOOP
+    vy += 0.16; fx += vx; fy += vy;
+    IF (fy > GY - 10) fy = GY - 10; vy = -bv; END
+    x = fx; y = fy; angle += vx * 3000;
+    IF (hit == 0)
+      b = 0;
+      IF (fget_distance(fx, fy, sh_x, sh_y) < 21)
+        hit = 1; vx = -vx * 1.4; vy = -4 - rand(0, 3); bn_ok++;
+        spark(fx, fy, 1);
+      ELSE
+        IF (segd(fx, fy, pt_x[0], pt_y[0], pt_x[1], pt_y[1]) < 18 OR fget_distance(fx, fy, pt_x[2], pt_y[2]) < 18)
+          bn_miss++; spark(fx, fy, 0);
+          start_move(0, M_HITBODY);
+          bn_alive--;
+          RETURN;
+        END
+      END
+    END
+    IF (fx < -30 OR fx > 670 OR state != 6) bn_alive--; RETURN; END
+    FRAME;
+  END
+END
+
+PROCESS shield();
+BEGIN
+  graph = g_shield; z = -5;
+  WHILE (state == 6)
+    x = sh_x; y = sh_y;
+    FRAME;
+  END
+END
+
+FUNCTION bonus_balls();
+PRIVATE h; v; t; dD;
+BEGIN
+  state = 6; st_t = 0; n_bonus++;
+  sk_vis[1] = 0; sk_vis[2] = 0;
+  sk_x[0] = 320; sk_dir[0] = 1;
+  start_move(0, M_SHIELD);
+  put_screen(0, g_bg[(stage + 1) % 4]);
+  show_banner(g_lab[5], 120);
+  bn_left = 10 + level; bn_ok = 0; bn_miss = 0; bn_alive = 0; bn_timer = 130;
+  sh_a = 0;
+  shield();
+  WHILE (bn_left > 0 OR bn_alive > 0)
+    st_t++;
+    h = key(_right) - key(_left) + key(_d) - key(_a);
+    v = key(_up) - key(_down) + key(_w) - key(_s);
+    IF (h != 0 OR v != 0) sh_a = fget_angle(0, 0, h, -v); END
+    bn_timer--;
+    IF (bn_timer <= 0 AND bn_left > 0)
+      bn_left--;
+      t = 1; IF (rand(0, 1)) t = -1; END
+      ball(t, 2.2 + level * 0.12 + rand(0, 8) * 0.1, 4.8 + rand(0, 25) * 0.1);
+      bn_timer = 75 - level * 3 + rand(0, 30);
+      IF (bn_timer < 35) bn_timer = 35; END
+    END
+    // the rear arm holds the shield out in the chosen direction
+    IF (an_m[0] == M_SHIELD)
+      dD = cur[2] - cur[3];
+      cur[7] = 90 + sh_a / 1000 - dD; cur[8] = 0;
+    ELSE
+      IF (an_m[0] == M_IDLE) start_move(0, M_SHIELD); END
+    END
+    anim(0); fk(0);
+    sh_x = pt_x[6]; sh_y = pt_y[6];
+    draw_rect(222, 54, 216, 50, 'rgba(0,0,0,0.55)');
+    set_color('#ffffff');
+    text(231, 60, "DEFLECT THE BALLS WITH THE SHIELD");
+    text(258, 74, "ARROWS POINT THE SHIELD");
+    text(262, 90, "DEFLECTED " + bn_ok + "   HIT " + bn_miss);
+    FRAME;
+  END
+  score += bn_ok * 100;
+  IF (bn_miss == 0) score += 1000; show_banner(g_lab[6], 90); END
+  FOR t = 0 TO 90
+    set_color('#ffe0a0'); text(262, 120, "BONUS  " + bn_ok + " x 100");
+    anim(0); fk(0); FRAME;
+  END
+  RETURN 0;
+END
+
+// Planks on two bricks; they fly apart when broken.
+PROCESS plank(k);
+PRIVATE vx; vy; t;
+BEGIN
+  graph = g_plank; z = 5;
+  LOOP
+    IF (state != 7 OR k >= pk_n) RETURN; END
+    IF (k < pk_broken)
+      IF (t == 0) vx = rand(-3, 3) + (k % 2) * 2 - 1; vy = -rand(3, 7); END
+      t++; vy += 0.3; x += vx; y += vy; angle += vx * 4000;
+      IF (t > 80) RETURN; END
+    ELSE
+      x = pk_x; y = pk_y + (pk_n - 1 - k) * -10;
+    END
+    FRAME;
+  END
+END
+
+PROCESS brick(px);
+BEGIN
+  graph = g_brick; z = 6; x = px; y = GY - 17;
+  WHILE (state == 7) FRAME; END
+END
+
+FUNCTION bonus_planks();
+PRIVATE t; i; spd; pressed;
+BEGIN
+  state = 7; st_t = 0; n_bonus++;
+  sk_vis[1] = 0; sk_vis[2] = 0;
+  sk_x[0] = 250; sk_dir[0] = 1;
+  start_move(0, M_IDLE);
+  put_screen(0, g_bg[(stage + 1) % 4]);
+  show_banner(g_lab[5], 120);
+  // the planks sit where the chopping hand comes down
+  pk_x = 250 + ch_hx; pk_y = GY - 38;
+  brick(pk_x - 32); brick(pk_x + 32);
+  FOR pk_try = 0 TO 2
+    pk_n = 3 + pk_try + level / 4; pk_broken = 0; pk_pow = -1;
+    pk_need = 55 + pk_n * 7;
+    IF (pk_need > 94) pk_need = 94; END
+    FOR i = 0 TO pk_n - 1 plank(i); END
+    spd = 1.6 + pk_try * 0.5 + level * 0.1;
+    t = 0; pressed = 0;
+    WHILE (pressed < 110)
+      t++;
+      IF (pressed == 0)
+        pk_m = ping_pong(t * spd, 100);
+        IF (t > 20 AND (key_pressed(_space) OR key_pressed(_control) OR key_pressed(_z) OR key_pressed(_q)))
+          pk_pow = pk_m; pressed = 1; start_move(0, M_CHOP);
+        END
+      ELSE
+        pressed++;
+        IF (pressed == 22)
+          IF (pk_pow >= pk_need)
+            pk_broken = pk_n; score += pk_n * 150; spark(pk_x, pk_y - 10, 0); popword(g_lab[7], pk_x, pk_y - 70);
+          ELSE
+            spark(pk_x, pk_y - 20, 1); popword(g_lab[8], pk_x, pk_y - 70);
+          END
+        END
+      END
+      // power meter with the zone that breaks the stack
+      draw_rect(220, 70, 204, 18, '#000000');
+      draw_rect(222 + pk_need * 2, 72, 200 - pk_need * 2, 14, '#40c050');
+      draw_rect(222, 72, pk_m * 2, 14, '#ffd040');
+      draw_rect(220 + pk_need * 2, 66, 2, 26, '#ffffff');
+      set_color('#ffffff');
+      text(222, 96, "PRESS FIRE IN THE GREEN   ATTEMPT " + (pk_try + 1) + "/3   " + pk_n + " PLANKS");
+      anim(0); fk(0);
+      FRAME;
+    END
+    signal(TYPE plank, s_kill);
+  END
+  RETURN 0;
+END
+
+// ======================================================================
+// Screens
+// ======================================================================
+
+// Title: the two karateka show their techniques on Mount Fuji.
+FUNCTION title();
+PRIVATE t; k;
+BEGIN
+  state = 0;
+  put_screen(0, g_bg[0]);
+  setup_bout();
+  n_stages--;
+  sk_vis[2] = 0;
+  sk_x[0] = 250; sk_x[1] = 390;
+  start_move(0, M_READY); start_move(1, M_READY);
+  t = 0;
+  REPEAT
+    t++;
+    IF (t % 70 == 0)
+      k = M_FKICK + (t / 70) % 9;
+      start_move(0, k); start_move(1, M_FKICK + (t / 70 + 4) % 9);
+    END
+    FOR k = 0 TO 1 anim(k); fk(k); END
+    draw_rect(150, 150, 340, 46, 'rgba(0,0,0,0.55)');
+    draw_rect(0, 338, 640, 62, 'rgba(0,0,0,0.65)');
+    set_color('#ffe0a0');
+    text(212, 12, "A TRIBUTE TO INTERNATIONAL KARATE (1986)");
+    text(270, 28, "HI-SCORE " + hiscore);
+    set_color('#ffffff');
+    IF ((t / 30) % 2) text(214, 158, "ENTER / SPACE  -  ONE PLAYER VS CPU"); END
+    text(214, 176, "2              -  TWO PLAYERS");
+    set_color('#ffe0a0');
+    text(12, 344, "P1 ARROWS + SPACE/CTRL/Z    P2 WASD + Q    ESC quits a bout");
+    set_color('#d0c8b8');
+    text(12, 356, "NO FIRE: walk, up jump, up-diagonal somersault, down crouch, down-back block, down-fwd low block");
+    text(12, 368, "FIRE +  none front kick, fwd lunge punch, up high kick, up-fwd flying kick, up-back roundhouse,");
+    text(12, 380, "        back back kick, down sweep, down-fwd low kick, down-back crouch punch");
+    FRAME;
+  UNTIL (key_pressed(_enter) OR key_pressed(_space) OR key_pressed(_1) OR key_pressed(_2))
+  players = 1;
+  IF (key_pressed(_2)) players = 2; END
+  RETURN 0;
+END
+
+PROCESS logo_view();
+PRIVATE t;
+BEGIN
+  x = 320; z = -50; graph = g_logo;
+  WHILE (state == 0)
+    t++; y = 100 + sin(t * 3000) * 4;
+    FRAME;
+  END
+END
+
+FUNCTION game_over();
+PRIVATE t;
+BEGIN
+  state = 8;
+  IF (score > hiscore) hiscore = score; END
+  show_banner(g_lab[0], 100000);
+  t = 0;
+  REPEAT
+    t++;
+    world();
+    draw_rect(200, 200, 240, 86, 'rgba(0,0,0,0.6)');
+    set_color('#ffffff');
+    IF (players == 1)
+      text(262, 214, "SCORE " + score);
+      text(262, 228, "BELT  " + belt_name[p_belt]);
+      text(262, 242, "ROUNDS WON " + won);
+    ELSE
+      IF (wins[0] > wins[1]) text(250, 214, "WHITE WINS THE MATCH"); ELSE text(256, 214, "RED WINS THE MATCH"); END
+      text(284, 228, wins[0] + " - " + wins[1]);
+    END
+    IF (t > 40 AND (t / 30) % 2) text(254, 270, "PRESS ENTER TO RESTART"); END
+    FRAME;
+  UNTIL (t > 40 AND (key_pressed(_enter) OR key_pressed(_space) OR key_pressed(_esc)))
+  ban_t = 0;
+  RETURN 0;
+END
+
+// ======================================================================
+// Main
+// ======================================================================
+
+PRIVATE i; s; w;
+BEGIN
+  set_mode(640, 400);
+  set_fps(60, 0);
+  rand_seed(1986);
+  FOR i = 0 TO 20 rand(0, 99); END
+  init_moves();
+  make_graphics();
+  // one backdrop per frame (each is a few thousand drawing calls)
+  FOR i = 0 TO 3
+    g_bg[i] = new_graphic(640, 400);
+    SWITCH (i)
+      CASE 0 bg_fuji(g_bg[i]);
+      CASE 1 bg_harbour(g_bg[i]);
+      CASE 2 bg_temple(g_bg[i]);
+      CASE 3 bg_bamboo(g_bg[i]);
+    END
+    hud_strip(g_bg[i]);
+    FRAME;
+  END
+  rand_seed();
+  FOR s = 0 TO 2
+    FOR i = 0 TO 11 limb(s, i); END
+    shadow(s);
+  END
+  bubble(); banner(); digit(0); digit(1);
+  dot(0, 0); dot(0, 1); dot(1, 0); dot(1, 1);
+  LOOP
+    logo_view();
+    title();
+    ban_t = 0;
+    round = 1; level = 1; won = 0; score = 0; p_belt = 0;
+    wins[0] = 0; wins[1] = 0;
+    f_ctrl[0] = 0;
+    IF (players == 1) f_ctrl[1] = 2; ELSE f_ctrl[1] = 1; END
+    LOOP
+      stage = (round - 1) % 4;
+      w = play_bout();
+      IF (w == -2) BREAK; END                       // ESC: back to the title
+      IF (players == 2)
+        wins[w]++;
+        round++;
+        IF (wins[w] >= 3) BREAK; END
+      ELSE
+        IF (w != 0) BREAK; END
+        won++; round++; level++;
+        score += bout_t / 60 * 20;                  // time bonus
+        IF (p_belt < 6) p_belt++; END
+        IF (won % 2 == 0)
+          IF ((won / 2) % 2) bonus_balls(); ELSE bonus_planks(); END
+        END
+      END
+    END
+    IF (w != -2) game_over(); END
+  END
+END

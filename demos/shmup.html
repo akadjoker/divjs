@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DivJS — Space Shooter</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      gap: 6px;
+    }
+    canvas { display: block; border: 1px solid #1a2a3a; }
+    p { color: #4a6a8a; font: 11px/1.4 monospace; text-align: center; }
+    .error { color: #f87171; }
+  </style>
+</head>
+<body>
+<canvas id="c" width="360" height="520"></canvas>
+<p id="error" class="error" hidden></p>
+<p>Setas / WASD para mover · Z ou ESPAÇO para disparar</p>
+
+<script type="module">
+import { runDivDemo } from '../divjs.js';
+
+// The DIV program lives in playground/programs/shmup.div, shared with the
+// online playground so there is a single copy of it.
+const source = await (await fetch('../playground/programs/shmup.div')).text();
+const errorEl = document.getElementById('error');
+
+// Exposed so the running program can be inspected from the browser console.
+window.divDemo = runDivDemo({
+  canvas: 'c',
+  source,
+  clearColor: '#020408',
+  onError: (err) =>
+  {
+    errorEl.textContent = err?.message || String(err);
+    errorEl.hidden = false;
+    console.error(err);
+  }
+});
+</script>
+</body>
+</html>

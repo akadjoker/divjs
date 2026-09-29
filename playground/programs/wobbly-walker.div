@@ -1,0 +1,894 @@
+PROGRAM wobbly_walker;
+
+// WOBBLY WALKER - a QWOP style running game. The runner is a ragdoll of
+// rigid bodies (phys_*): torso, head, two arms, two thighs and two calves
+// with their feet. Every limb is joined to its parent with phys_pin, its
+// range of movement is set with phys_limits and it is driven by a
+// phys_motor: holding a key sets the motor's speed with a strong torque,
+// releasing it leaves a weak motor at speed 0 that holds the pose a little.
+//
+//   Q / W   swing the thighs (hips) one way / the other way
+//   O / P   bend and straighten the knees, one way / the other way
+//
+// Nothing keeps the runner upright but the legs, so it is deliberately
+// hard. The track is new on every attempt: small bumps (static phys_edge
+// segments, one process per 640 pixels) and two hurdles that tip over
+// when kicked (a dynamic body pinned to the world at its foot, limited to
+// a quarter turn). The head or the torso touching the track ends the
+// attempt; the runner then goes limp and flops about while the crowd
+// goes "ooh". 100 metres is the finish.
+//
+// A body touches another only when no joint links them: the two legs and
+// the arms are tied to each other with slack ropes (phys_slack) that are
+// far too long to ever pull, only so that the limbs pass each other
+// instead of colliding, the way the two legs of a runner seen from the
+// side do.
+//
+// Sounds are made by the engine (sfx, sfx_tone) and the music is a small
+// step sequencer song; both start with the first key press.
+
+GLOBAL
+  PX_M = 64;                 // pixels per metre (the runner is 1.9 m tall)
+  M_PX = 0.015625;           // metres per pixel (1 / 64; '1.0 / 64' may be integer division)
+  START_X = 300;             // hip x at the start line
+  FINISH_X = 6700;           // START_X + 100 m
+  GROUND = 400;              // track height (world y) before the bumps
+  SEG = 40;                  // pixels between track vertices
+  X0 = -200;                 // x of track vertex 0
+  NV = 200;                  // track vertices (X0 .. X0 + 199 * 40 = 7760)
+  CW = 640;                  // chunk width: 16 segments
+
+  // ---- motors: speeds in DIV angle units per second, torques in N m
+  HIP_SPEED = 220000;
+  HIP_TORQUE = 1.4;
+  HIP_BACK = 0.5;            // share of it for the thigh swinging back
+  KNEE_SPEED = 300000;
+  KNEE_TORQUE = 0.8;
+  IDLE_HIP = 0.45;           // the weak motor that holds a released joint
+  IDLE_KNEE = 0.35;
+  ARM_TORQUE = 0.25;
+  ASSIST = 4.0;              // the hand that keeps the head over the feet:
+  ASSIST_MAX = 120;          // force per pixel of lean, and its limit,
+  ASSIST_LEAN = 12;          // towards a slight forward lean (pixels)
+
+  // ---- the track of this attempt
+  hts[255];                  // vertex heights (world y)
+  hurdle_x[1];
+
+  // ---- the runner: process ids and joints (index 0 far side, 1 near side)
+  torso_id = 0; head_id = 0;
+  thigh_id[1]; calf_id[1]; arm_id[1];
+  j_hip[1]; j_knee[1]; j_arm[1]; j_neck = 0;
+
+  // ---- game state
+  run_id = 0;                // bumped for each attempt: old processes quit
+  over = 0;                  // 0 running, 1 fell, 2 finished
+  over_t = 0;                // frames since the attempt ended
+  started = 0;               // 1 once a control key was pressed
+  run_frames = 0;            // frames since the first control key
+  dist = 0.0;                // metres, live
+  final_dist = 0.0;          // metres when the attempt ended
+  best = 0.0;                // best final distance
+  best_before = 0.0;         // best when this attempt started
+  record_cheered = 0;
+  attempts = 0;
+  steps = 0;                 // footsteps heard this attempt
+  flail = 0;                 // frames of comic flailing left after a fall
+  cam_x = 0.0;
+  painting = 0;              // the chunk painting its graphic now (one at a time)
+  ctl_q = 0; ctl_w = 0; ctl_o = 0; ctl_p = 0;
+
+  // ---- messages
+  msg_k = -1; msg_t = 0; msg_sub = ""; msg_seq = 0; msg_len = 0;
+
+  // ---- graphics
+  g_back = 0; g_torso = 0; g_head = 0; g_dizzy = 0; g_star = 0;
+  g_thigh[1]; g_calf[1]; g_arm[1];
+  g_hurdle = 0; g_finish = 0; g_hud = 0; g_help = 0; g_sub = 0; g_again = 0;
+  g_msg[7];                  // 0-4 fall messages, 5 finish, 6 new record, 7 go
+
+  // ---- sounds
+  s_step = 0; s_step2 = 0; s_thud = 0; s_slide = 0; s_clonk = 0;
+  s_ooh[3]; s_cheer = 0; s_cheer2 = 0; s_fanfare = 0;
+  song = 0;
+
+  // ---- measurements (read by the browser test)
+  fps_now = 0; bodies = 0; max_dist = 0.0; falls = 0;
+
+// =====================================================================
+// Small helpers
+// =====================================================================
+
+// A number with one decimal, as text ("12.3", "-0.4")
+FUNCTION fmt1(v);
+PRIVATE t, s;
+BEGIN
+  t = round(v * 10);
+  s = "";
+  IF (t < 0) s = "-"; t = -t; END
+  RETURN s + int(t / 10) + "." + (t % 10);
+END
+
+// Wraps an angle difference into -180000..180000
+FUNCTION adiff(a);
+BEGIN
+  WHILE (a > 180000) a -= 360000; END
+  WHILE (a < -180000) a += 360000; END
+  RETURN a;
+END
+
+// Track surface y at any x: the same straight segments as the edges
+FUNCTION ground_y(px);
+PRIVATE i, f;
+BEGIN
+  f = (px - X0) * 0.025;                   // / SEG
+  i = clamp(floor(f), 0, NV - 2);
+  f = f - i;
+  RETURN hts[i] + (hts[i + 1] - hts[i]) * f;
+END
+
+// =====================================================================
+// Graphics, all drawn in code
+// =====================================================================
+
+// A big banner text with a shadow (monospace: about 0.6 x size per char)
+FUNCTION banner(t, n, size, r, g, b);
+PRIVATE gr, w;
+BEGIN
+  w = int(n * size * 0.62) + 18;
+  gr = new_graphic(w, size + 12);
+  gfx_text(gr, 11, 8, t, 20, 20, 30, size);
+  gfx_text(gr, 8, 5, t, r, g, b, size);
+  RETURN gr;
+END
+
+// The stadium behind the track, one 640 x 480 tile that repeats sideways:
+// sky, floodlights, a roof, the stands full of people, advertising boards
+// and the infield. Built over a few frames (thousands of little heads).
+FUNCTION make_backdrop();
+PRIVATE g, i, j, t, yy, xx, c;
+BEGIN
+  g = new_graphic(640, 480);
+  // sky
+  FOR i = 0 TO 29
+    t = i * 0.0333;
+    gfx_rect(g, 0, i * 4, 640, 4, lerp(90, 170, t), lerp(160, 215, t), lerp(235, 250, t));
+  END
+  gfx_circle(g, 70, 40, 14, 255, 255, 255);
+  gfx_circle(g, 88, 34, 18, 255, 255, 255);
+  gfx_circle(g, 108, 42, 13, 255, 255, 255);
+  gfx_circle(g, 400, 58, 11, 250, 252, 255);
+  gfx_circle(g, 416, 52, 15, 250, 252, 255);
+  gfx_circle(g, 434, 60, 10, 250, 252, 255);
+  // floodlight towers
+  FOR i = 0 TO 1
+    xx = 180 + i * 320;
+    gfx_rect(g, xx - 3, 12, 6, 110, 110, 115, 125);
+    gfx_rect(g, xx - 22, 6, 44, 20, 70, 75, 85);
+    FOR j = 0 TO 3
+      gfx_circle(g, xx - 15 + j * 10, 12, 3, 255, 250, 210);
+      gfx_circle(g, xx - 15 + j * 10, 20, 3, 255, 250, 210);
+    END
+  END
+  // roof and the back wall of the stands
+  gfx_rect(g, 0, 104, 640, 14, 60, 64, 80);
+  gfx_rect(g, 0, 116, 640, 4, 200, 60, 60);
+  gfx_rect(g, 0, 120, 640, 210, 70, 74, 92);
+  FRAME;
+  // tiers of seats with the crowd: rows of heads and shirts
+  FOR yy = 0 TO 17
+    t = 124 + yy * 11;
+    gfx_rect(g, 0, t + 8, 640, 3, 95, 100, 120);
+    FOR xx = 0 TO 79
+      IF (rand(0, 9) > 1)
+        c = rand(0, 5);
+        i = xx * 8 + 4 + rand(-1, 1);
+        // soft colours, so the crowd stays in the background
+        IF (c == 0) gfx_rect(g, i - 3, t + 3, 6, 5, 170, 95, 95); END
+        IF (c == 1) gfx_rect(g, i - 3, t + 3, 6, 5, 95, 115, 165); END
+        IF (c == 2) gfx_rect(g, i - 3, t + 3, 6, 5, 180, 165, 100); END
+        IF (c == 3) gfx_rect(g, i - 3, t + 3, 6, 5, 100, 145, 110); END
+        IF (c == 4) gfx_rect(g, i - 3, t + 3, 6, 5, 165, 168, 180); END
+        IF (c == 5) gfx_rect(g, i - 3, t + 3, 6, 5, 135, 100, 150); END
+        c = rand(0, 3);
+        IF (c == 0) gfx_circle(g, i, t + 1, 3, 200, 175, 155); END
+        IF (c == 1) gfx_circle(g, i, t + 1, 3, 170, 135, 110); END
+        IF (c == 2) gfx_circle(g, i, t + 1, 3, 125, 95, 75); END
+        IF (c == 3) gfx_circle(g, i, t + 1, 3, 90, 70, 55); END
+      END
+    END
+    IF (yy % 6 == 5) FRAME; END
+  END
+  // aisles
+  FOR i = 0 TO 3
+    gfx_rect(g, 76 + i * 160, 120, 8, 208, 120, 124, 140);
+  END
+  // advertising boards
+  gfx_rect(g, 0, 326, 640, 30, 30, 34, 44);
+  FOR i = 0 TO 3
+    xx = i * 160;
+    IF (i == 0) gfx_rect(g, xx + 4, 329, 152, 24, 230, 70, 60); gfx_text(g, xx + 36, 332, "DIVJS", 255, 255, 255, 18); END
+    IF (i == 1) gfx_rect(g, xx + 4, 329, 152, 24, 250, 210, 60); gfx_text(g, xx + 26, 333, "QWOP ON!", 60, 40, 20, 16); END
+    IF (i == 2) gfx_rect(g, xx + 4, 329, 152, 24, 60, 130, 220); gfx_text(g, xx + 16, 333, "KEEP CALM", 255, 255, 255, 16); END
+    IF (i == 3) gfx_rect(g, xx + 4, 329, 152, 24, 80, 180, 100); gfx_text(g, xx + 32, 333, "STAND UP", 255, 255, 255, 16); END
+  END
+  // infield grass with mowing stripes, down to the track
+  FOR i = 0 TO 15
+    IF (i % 2 == 0) c = 0; ELSE c = 12; END
+    gfx_rect(g, 0, 356 + i * 8, 640, 8, 80 + c, 160 + c, 80 + c);
+  END
+  RETURN g;
+END
+
+// The runner's parts, each centred on its body's centre. Side 0 is the
+// far side (a little darker), side 1 the near side.
+FUNCTION make_runner();
+PRIVATE s, d;
+BEGIN
+  // torso 15 x 40: a red vest with a number, white shorts at the hip
+  g_torso = new_graphic(19, 44);
+  gfx_rect(g_torso, 2, 2, 15, 40, 215, 50, 50);
+  gfx_rect(g_torso, 2, 2, 15, 4, 245, 110, 100);
+  gfx_rect(g_torso, 4, 12, 11, 10, 250, 250, 245);
+  gfx_text(g_torso, 5, 12, "7", 30, 30, 40, 10);
+  gfx_rect(g_torso, 2, 32, 15, 10, 245, 245, 250);
+  gfx_rect_outline(g_torso, 2, 2, 15, 40, 120, 25, 25);
+  // head, radius 9, looking right: skin, hair, headband, eye, nose
+  g_head = new_graphic(24, 24);
+  gfx_circle(g_head, 12, 12, 9, 245, 200, 160);
+  gfx_circle(g_head, 10, 8, 7, 90, 55, 35);
+  gfx_circle(g_head, 14, 13, 7, 245, 200, 160);
+  gfx_rect(g_head, 3, 7, 18, 3, 240, 220, 60);
+  gfx_circle(g_head, 17, 12, 2, 40, 40, 50);
+  gfx_rect(g_head, 20, 13, 3, 3, 225, 170, 130);
+  gfx_line(g_head, 15, 18, 19, 17, 150, 60, 50);
+  // the same head after a fall: crossed eyes and a tongue
+  g_dizzy = new_graphic(24, 24);
+  gfx_circle(g_dizzy, 12, 12, 9, 245, 200, 160);
+  gfx_circle(g_dizzy, 10, 8, 7, 90, 55, 35);
+  gfx_circle(g_dizzy, 14, 13, 7, 245, 200, 160);
+  gfx_rect(g_dizzy, 3, 7, 18, 3, 240, 220, 60);
+  gfx_line(g_dizzy, 15, 10, 19, 14, 40, 40, 50);
+  gfx_line(g_dizzy, 15, 14, 19, 10, 40, 40, 50);
+  gfx_rect(g_dizzy, 16, 18, 4, 3, 230, 80, 90);
+  g_star = new_graphic(9, 9);
+  gfx_line(g_star, 4, 0, 4, 8, 255, 230, 60);
+  gfx_line(g_star, 0, 4, 8, 4, 255, 230, 60);
+  gfx_line(g_star, 1, 1, 7, 7, 255, 245, 150);
+  gfx_line(g_star, 7, 1, 1, 7, 255, 245, 150);
+  FOR s = 0 TO 1
+    IF (s == 0) d = 45; ELSE d = 0; END
+    // thigh 10 x 30: white shorts at the top, then skin
+    g_thigh[s] = new_graphic(14, 34);
+    gfx_rect(g_thigh[s], 2, 2, 10, 30, 240 - d, 195 - d, 155 - d);
+    gfx_rect(g_thigh[s], 1, 1, 12, 11, 245 - d, 245 - d, 250 - d);
+    gfx_rect_outline(g_thigh[s], 2, 2, 10, 30, 150 - d, 105 - d, 80 - d);
+    // calf 9 x 28 with the foot (22 x 6 at +2, +16): sock and a blue shoe
+    g_calf[s] = new_graphic(30, 40);
+    gfx_rect(g_calf[s], 11, 6, 9, 28, 240 - d, 195 - d, 155 - d);
+    gfx_rect(g_calf[s], 11, 26, 9, 7, 250 - d, 250 - d, 250 - d);
+    gfx_rect_outline(g_calf[s], 11, 6, 9, 28, 150 - d, 105 - d, 80 - d);
+    gfx_rect(g_calf[s], 6, 33, 22, 6, 50, 110 - d, 220 - d);
+    gfx_rect(g_calf[s], 6, 37, 22, 2, 240 - d, 240 - d, 240 - d);
+    gfx_rect(g_calf[s], 21, 33, 4, 2, 250 - d, 200 - d, 60);
+    // arm 6 x 30 with the hand (radius 4 at 0, +16): red sleeve, skin
+    g_arm[s] = new_graphic(12, 44);
+    gfx_rect(g_arm[s], 3, 7, 6, 30, 240 - d, 195 - d, 155 - d);
+    gfx_rect(g_arm[s], 2, 6, 8, 9, 215 - d, 50, 50);
+    gfx_circle(g_arm[s], 6, 38, 4, 240 - d, 195 - d, 155 - d);
+  END
+  RETURN 0;
+END
+
+FUNCTION make_things();
+PRIVATE i;
+BEGIN
+  // hurdle: a foot, a post and a striped top bar, seen from the side;
+  // the graphic is centred on the body's origin (the middle of the post)
+  g_hurdle = new_graphic(40, 48);
+  gfx_rect(g_hurdle, 4, 44, 32, 4, 90, 90, 100);
+  gfx_rect(g_hurdle, 18, 6, 4, 40, 200, 200, 210);
+  gfx_rect(g_hurdle, 9, 16, 3, 30, 150, 150, 160);
+  FOR i = 0 TO 3
+    IF (i % 2 == 0) gfx_rect(g_hurdle, 2 + i * 9, 2, 9, 8, 250, 250, 250);
+    ELSE gfx_rect(g_hurdle, 2 + i * 9, 2, 9, 8, 30, 30, 36); END
+  END
+  gfx_rect_outline(g_hurdle, 2, 2, 36, 8, 60, 60, 70);
+  // the finish arch
+  g_finish = new_graphic(160, 200);
+  gfx_rect(g_finish, 4, 30, 8, 170, 230, 230, 235);
+  gfx_rect(g_finish, 148, 30, 8, 170, 230, 230, 235);
+  gfx_rect(g_finish, 0, 20, 160, 36, 30, 60, 160);
+  gfx_rect_outline(g_finish, 0, 20, 160, 36, 250, 210, 60);
+  gfx_text(g_finish, 22, 26, "FINISH", 255, 230, 70, 24);
+  FOR i = 0 TO 15
+    IF (i % 2 == 0) gfx_rect(g_finish, i * 10, 56, 10, 6, 255, 255, 255);
+    ELSE gfx_rect(g_finish, i * 10, 56, 10, 6, 20, 20, 20); END
+  END
+  g_hud = new_graphic(640, 46);
+  g_sub = new_graphic(360, 26);
+  g_again = new_graphic(300, 26);
+  gfx_rect(g_again, 0, 0, 300, 26, 250, 210, 70);
+  gfx_text(g_again, 22, 5, "SPACE or R to try again", 40, 30, 20, 15);
+  g_help = new_graphic(640, 26);
+  gfx_fill_rgba(g_help, 20, 24, 40, 60);
+  gfx_text(g_help, 12, 6, "Q/W thighs   O/P calves   R restart", 255, 255, 255, 13);
+  gfx_text(g_help, 380, 6, "head or torso down = fall", 255, 220, 140, 13);
+  g_msg[0] = banner("OUCH!", 5, 44, 255, 90, 70);
+  g_msg[1] = banner("FACEPLANT!", 10, 40, 255, 120, 60);
+  g_msg[2] = banner("WHOOPS!", 7, 44, 255, 200, 60);
+  g_msg[3] = banner("SPLAT!", 6, 44, 255, 80, 140);
+  g_msg[4] = banner("NOT AGAIN!", 10, 40, 180, 140, 255);
+  g_msg[5] = banner("FINISH!", 7, 48, 120, 255, 120);
+  g_msg[6] = banner("NEW RECORD!", 11, 34, 255, 230, 70);
+  g_msg[7] = banner("GO!", 3, 48, 255, 255, 255);
+  RETURN 0;
+END
+
+// Sound effects from recipes, and a short, silly looping tune
+FUNCTION make_sounds();
+BEGIN
+  s_step = sfx_tone(wave_noise, 900, 250, 55, 40);
+  s_step2 = sfx_tone(wave_triangle, 150, 70, 60, 45);
+  s_thud = sfx_tone(wave_noise, 300, 40, 300, 90);
+  s_slide = sfx_tone(wave_triangle, 700, 110, 1200, 55);   // the "wooooop" of a fall
+  s_clonk = sfx_tone(wave_square, 240, 120, 110, 40);
+  // the crowd's "ooh": a few voices sliding down together
+  s_ooh[0] = sfx_tone(wave_sine, 392, 300, 1400, 45);
+  s_ooh[1] = sfx_tone(wave_sine, 494, 380, 1400, 35);
+  s_ooh[2] = sfx_tone(wave_triangle, 330, 250, 1400, 35);
+  s_ooh[3] = sfx_tone(wave_noise, 600, 300, 1300, 18);
+  s_cheer = sfx_tone(wave_noise, 2600, 1800, 1500, 40);
+  s_cheer2 = sfx_tone(wave_noise, 1800, 2400, 900, 30);
+  s_fanfare = sfx(sfx_powerup, 3);
+
+  song = song_new(128);
+  song_track(song, inst_pluck,
+    "C5 . E5 . G5 . E5 . | F5 . A5 . G5 - . . | E5 . C5 . D5 . G4 . | C5 - - . . . . . |" +
+    "C5 . E5 . G5 . C6 . | B5 . G5 . A5 - . . | F5 . D5 . G5 . B4 . | C5 - - . . . . . ", 40);
+  song_track(song, inst_bass,
+    "C3 . . C3 G3 . . . | F3 . . F3 C4 . . . | A3 . . A3 G3 . . . | C3 . G3 . C3 . . . ", 55);
+  song_track(song, inst_drums, "k . h . s . h . | k . h k s . h h ", 45);
+  RETURN 0;
+END
+
+// =====================================================================
+// The track
+// =====================================================================
+
+// A new track: gentle waves, a few humps and two hurdles, flat at the start
+FUNCTION make_track();
+PRIVATE i, px, m, amp, p1, p2, h, k, hx;
+BEGIN
+  p1 = rand(0, 359999); p2 = rand(0, 359999);
+  FOR i = 0 TO NV - 1
+    px = X0 + i * SEG;
+    m = (px - START_X) * M_PX;             // metres from the start
+    amp = clamp((m - 4) * 0.12, 0, 1) * (2 + m * 0.05);
+    hts[i] = GROUND - amp * (sin(p1 + i * 23000) * 0.6 + sin(p2 + i * 61000) * 0.4);
+  END
+  // humps: a smooth rise and fall, 3-5 of them, higher further on
+  FOR k = 0 TO rand(2, 4)
+    hx = START_X + rand(10, 92) * PX_M;
+    h = rand(5, 9) + (hx - START_X) * M_PX * 0.06;
+    FOR i = 0 TO NV - 1
+      px = X0 + i * SEG;
+      IF (abs(px - hx) < 160)
+        hts[i] -= h * (0.5 + 0.5 * cos((px - hx) * 1125));   // 180000 / 160
+      END
+    END
+  END
+  hurdle_x[0] = START_X + rand(28, 42) * PX_M;
+  hurdle_x[1] = START_X + rand(60, 82) * PX_M;
+  RETURN 0;
+END
+
+// One 640 px piece of track: its physics edges and its painted strip,
+// with the distance signs, the start and finish lines and the best flag.
+PROCESS chunk(ci);
+PRIVATE my_run, cl, i, j, top, h, g, a, b, sy, gx, top_h, m, px, sh;
+BEGIN
+  my_run = run_id;
+  ctype = c_scroll; z = 40;
+  cl = X0 + ci * CW;
+  top_h = 99999;
+  FOR i = 0 TO 16
+    IF (ci * 16 + i < NV AND hts[ci * 16 + i] < top_h) top_h = hts[ci * 16 + i]; END
+  END
+  top = floor(top_h) - 70;                 // room for the signs
+  h = 500 - top;
+  h = h + h % 2;
+  x = cl + CW / 2; y = top + h / 2;
+  FOR i = 0 TO 15
+    IF (ci * 16 + i + 1 < NV)
+      phys_edge(i * SEG - CW / 2, hts[ci * 16 + i] - y, i * SEG + SEG - CW / 2, hts[ci * 16 + i + 1] - y);
+    END
+  END
+  IF (ci == 0) phys_edge(-CW / 2, -600, -CW / 2, hts[0] - y); END      // wall behind the start
+  phys_material(1, 0.9, 0);
+  // paint only when the camera comes near, and one chunk at a time, so
+  // a new attempt does not make and paint the whole track in one frame
+  FRAME;
+  WHILE (my_run == run_id AND (cl > cam_x + 1200 OR painting != 0)) FRAME; END
+  IF (my_run != run_id) RETURN; END
+  painting = id;
+  g = new_graphic(CW, h);
+  // paint the columns, 4 px wide, half the chunk per frame
+  FOR j = 0 TO 1
+    FOR i = j * 80 TO j * 80 + 79
+      gx = i * 4;
+      sy = ground_y(cl + gx + 2) - top;
+      gfx_rect(g, gx, sy, 4, 3, 235, 125, 95);             // top edge of the lanes
+      gfx_rect(g, gx, sy + 3, 4, 11, 200, 82, 58);         // the far lanes
+      gfx_rect(g, gx, sy + 14, 4, 2, 250, 250, 245);       // a lane line
+      gfx_rect(g, gx, sy + 16, 4, 16, 190, 74, 52);        // the near lane
+      gfx_rect(g, gx, sy + 32, 4, 2, 250, 250, 245);
+      gfx_rect(g, gx, sy + 34, 4, 6, 175, 175, 180);       // the kerb
+      gfx_rect(g, gx, sy + 40, 4, h - sy - 40, 70, 150, 72);
+      IF ((gx + cl) % 64 < 8) gfx_rect(g, gx, sy + 34, 4, 6, 230, 230, 235); END
+    END
+    FRAME;
+  END
+  painting = 0;
+  // every 10 m a sign, and the start and finish lines
+  FOR m = 0 TO 100 STEP 10
+    px = START_X + m * PX_M;
+    IF (px >= cl + 16 AND px < cl + CW - 16)
+      gx = px - cl; sy = ground_y(px) - top;
+      IF (m == 0 OR m == 100)
+        FOR j = 0 TO 7
+          IF (j % 2 == 0) gfx_rect(g, gx - 3, sy + 3 + j * 4, 6, 4, 255, 255, 255);
+          ELSE gfx_rect(g, gx - 3, sy + 3 + j * 4, 6, 4, 25, 25, 30); END
+        END
+      ELSE
+        gfx_rect(g, gx - 1, sy + 3, 3, 30, 250, 250, 245);
+      END
+      // a little board in the grass, below the runner's feet
+      gfx_rect(g, gx - 20, sy + 44, 40, 18, 250, 250, 245);
+      gfx_rect_outline(g, gx - 20, sy + 44, 40, 18, 60, 60, 70);
+      IF (m < 10) sh = -4; END
+      IF (m >= 10 AND m < 100) sh = 0; END
+      IF (m == 100) sh = 4; END
+      gfx_text(g, gx - 13 - sh, sy + 47, "" + m + "m", 40, 40, 60, 13);
+    END
+  END
+  px = START_X + best * PX_M;
+  IF (best >= 1 AND px >= cl AND px < cl + CW - 40)
+    gx = px - cl; sy = ground_y(px) - top;
+    gfx_rect(g, gx - 1, sy - 56, 3, 58, 60, 60, 60);
+    gfx_rect(g, gx + 2, sy - 56, 36, 16, 250, 210, 50);
+    gfx_text(g, gx + 5, sy - 54, "BEST", 60, 40, 20, 11);
+  END
+  graph = g;
+  WHILE (my_run == run_id) FRAME; END
+  graph = 0;
+  free_graphic(g);
+END
+
+// A hurdle: a dynamic body pinned to the world at the front of its foot,
+// so a kick tips it forward (up to a quarter turn) and it stays down.
+PROCESS hurdle(hx);
+PRIVATE my_run, j, gy, hit_t;
+BEGIN
+  my_run = run_id;
+  ctype = c_scroll; z = 20; graph = g_hurdle;
+  gy = ground_y(hx);
+  x = hx; y = gy - 24;
+  phys_box(4, 40);                         // the post
+  phys_add_box(0, -20, 36, 8);             // the bar on top
+  phys_add_box(0, 22, 32, 4);              // the foot
+  phys_material(0.4, 0.5, 0.1);
+  j = phys_pin(0, x + 15, gy);
+  phys_limits(j, -90000, 0);
+  LOOP
+    IF (my_run != run_id) BREAK; END
+    IF (hit_t > 0) hit_t--; END
+    IF (hit_t == 0 AND phys_impact() > 60)
+      play_sound(s_clonk, 70, rand(85, 115), 0);
+      hit_t = 20;
+    END
+    FRAME;
+  END
+END
+
+// The finish arch (only a picture), standing over the finish line
+PROCESS finish_arch();
+PRIVATE my_run;
+BEGIN
+  my_run = run_id;
+  ctype = c_scroll; z = 30; graph = g_finish;
+  x = FINISH_X; y = ground_y(FINISH_X) - 96;
+  WHILE (my_run == run_id) FRAME; END
+END
+
+// =====================================================================
+// The runner
+// =====================================================================
+
+// One body part. kind: 0 torso, 1 head, 2 thigh, 3 calf (with foot),
+// 4 arm (with hand). It pins itself to `parent` at (px, py) and sets its
+// joint's limits; the joint angle is 0 in the standing pose it is made in.
+// Positive angles turn the part counter-clockwise: a thigh forward, a
+// calf forward (straightening the knee), an arm forward.
+PROCESS part(kind, side, x, y, parent, px, py);
+PRIVATE my_run, j, touch, was, imp, w, k;
+BEGIN
+  my_run = run_id;
+  ctype = c_scroll;
+  IF (side == 0) z = 10 + kind; ELSE z = -10 - kind; END
+  IF (kind == 0)
+    graph = g_torso; z = 0;
+    phys_box(15, 40); phys_material(1.0, 0.6, 0.0);
+    torso_id = id;
+  END
+  IF (kind == 1)
+    graph = g_head; z = -1;
+    phys_circle(9); phys_material(1.0, 0.6, 0.15);
+    head_id = id;
+    j = phys_pin(parent, px, py);
+    phys_limits(j, -30000, 25000);
+    phys_motor(j, 0, 0.08);                // the neck holds the head a little
+    j_neck = j;
+  END
+  IF (kind == 2)
+    graph = g_thigh[side];
+    phys_box(10, 30); phys_material(1.2, 0.6, 0.0);
+    thigh_id[side] = id;
+    j = phys_pin(parent, px, py);
+    phys_limits(j, -55000, 85000);
+    j_hip[side] = j;
+  END
+  IF (kind == 3)
+    graph = g_calf[side];
+    phys_box(9, 28); phys_add_box(2, 16, 22, 6); phys_material(1.2, 1.0, 0.0);
+    calf_id[side] = id;
+    j = phys_pin(parent, px, py);
+    phys_limits(j, -140000, 3000);
+    j_knee[side] = j;
+  END
+  IF (kind == 4)
+    graph = g_arm[side];
+    phys_box(6, 30); phys_add_circle(0, 16, 4); phys_material(0.8, 0.6, 0.0);
+    arm_id[side] = id;
+    j = phys_pin(parent, px, py);
+    phys_limits(j, -80000, 160000);
+    j_arm[side] = j;
+  END
+  // no collisions between the limbs of the two sides (see the top)
+  IF (side == 1)
+    IF (kind == 2 OR kind == 3)
+      phys_slack(thigh_id[0], 3000); phys_slack(calf_id[0], 3000);
+      IF (kind == 3) phys_slack(thigh_id[1], 3000); END
+    END
+    IF (kind == 4) phys_slack(arm_id[0], 3000); END
+  END
+  IF (kind == 4)
+    FOR k = 0 TO 1 phys_slack(thigh_id[k], 3000); phys_slack(calf_id[k], 3000); END
+  END
+  IF (kind == 3 AND side == 0) phys_slack(thigh_id[1], 3000); END
+
+  prev = angle;
+  LOOP
+    IF (my_run != run_id) BREAK; END
+    // feet: a step sound when a foot lands (first contact, hard enough)
+    IF (kind == 3)
+      touch = 0;
+      IF (phys_contact(TYPE chunk)) touch = 1; END
+      imp = phys_impact();
+      IF (touch AND NOT was AND imp > 35)
+        IF (over == 0) steps++; END
+        play_sound(s_step, clamp(imp * 0.5, 25, 90), rand(80, 125), (side * 2 - 1) * 20);
+        IF (imp > 140) play_sound(s_step2, 70, rand(90, 110), 0); END
+      END
+      was = touch;
+    END
+    // the head or the torso on the ground: the attempt is over
+    IF ((kind == 0 OR kind == 1) AND over == 0 AND phys_contact(TYPE chunk))
+      fall_now();
+    END
+    // a little help staying upright: an invisible hand pushes the head
+    // back over the feet, with a limited force, so a small lean recovers
+    // and a big one still ends on the floor (QWOP's runner has none)
+    IF (kind == 1 AND over == 0)
+      k = calf_id[0]; j = calf_id[1];      // (the neck joint is not needed any more)
+      w = x - (k.x + j.x) * 0.5 - ASSIST_LEAN;
+      phys_force(clamp(-w * ASSIST, -ASSIST_MAX, ASSIST_MAX), 0);
+    END
+    FRAME;
+  END
+END
+
+// Makes the runner standing at the start, hip at (hx, hy)
+FUNCTION make_runner_bodies(hx, hy);
+PRIVATE t, a;
+BEGIN
+  t = part(0, 0, hx, hy - 18, 0, 0, 0);
+  part(1, 0, hx + 1, hy - 48, t, hx, hy - 39);
+  a = part(2, 0, hx, hy + 14, t, hx, hy);
+  part(3, 0, hx, hy + 42, a, hx, hy + 28);
+  a = part(2, 1, hx, hy + 14, t, hx, hy);
+  part(3, 1, hx, hy + 42, a, hx, hy + 28);
+  part(4, 0, hx, hy - 21, t, hx, hy - 33);
+  part(4, 1, hx, hy - 21, t, hx, hy - 33);
+  RETURN t;
+END
+
+// The motors, from the keys (or random flailing after a fall)
+FUNCTION drive();
+PRIVATE s, dir, k;
+BEGIN
+  IF (over == 0)
+    // Q: far thigh forward, near thigh back; W the other way round
+    dir = ctl_q - ctl_w;
+    FOR s = 0 TO 1
+      k = dir * (1 - 2 * s);
+      // the thigh going forward pulls harder than the one pushing back,
+      // or the leg on the ground would just tip the torso over backwards
+      IF (k > 0) phys_motor(j_hip[s], HIP_SPEED, HIP_TORQUE); END
+      IF (k < 0) phys_motor(j_hip[s], -HIP_SPEED, HIP_TORQUE * HIP_BACK); END
+      IF (k == 0) phys_motor(j_hip[s], 0, IDLE_HIP); END
+      // arms swing against the legs, like a real runner's
+      phys_motor(j_arm[s], -k * 200000, ARM_TORQUE);
+    END
+    // O: far knee bends, near knee straightens; P the other way round
+    dir = ctl_p - ctl_o;
+    FOR s = 0 TO 1
+      k = dir * (1 - 2 * s);
+      IF (k != 0) phys_motor(j_knee[s], k * KNEE_SPEED, KNEE_TORQUE);
+      ELSE phys_motor(j_knee[s], 0, IDLE_KNEE); END
+    END
+    RETURN 0;
+  END
+  IF (over == 2)
+    // finished: arms up in triumph, legs relaxed
+    FOR s = 0 TO 1
+      phys_motor(j_arm[s], 300000, 0.6);
+      phys_motor(j_hip[s], 0, 0.15);
+      phys_motor(j_knee[s], 0, 0.1);
+    END
+    RETURN 0;
+  END
+  // fallen: flail wildly for a moment, then go completely limp
+  IF (flail > 0)
+    flail--;
+    IF (flail % 9 == 0)
+      FOR s = 0 TO 1
+        phys_motor(j_hip[s], rand(-500000, 500000), 0.9);
+        phys_motor(j_knee[s], rand(-600000, 600000), 0.5);
+        phys_motor(j_arm[s], rand(-700000, 700000), 0.3);
+      END
+    END
+    IF (flail == 0)
+      FOR s = 0 TO 1
+        phys_motor(j_hip[s], 0, 0.02);
+        phys_motor(j_knee[s], 0, 0.02);
+        phys_motor(j_arm[s], 0, 0.01);
+      END
+      phys_motor(j_neck, 0, 0);
+    END
+  END
+  RETURN 0;
+END
+
+// The end of an attempt by falling: sounds, a message, the distance
+FUNCTION fall_now();
+PRIVATE i;
+BEGIN
+  over = 1; over_t = 0; falls++;
+  final_dist = dist;
+  flail = 80;
+  head_id.graph = g_dizzy;
+  play_sound(s_thud, 100, 100, 0);
+  play_sound(s_slide, 70, 100, 0);
+  FOR i = 0 TO 3 play_sound(s_ooh[i], 80, rand(95, 105), (i - 1) * 40); END
+  msg_k = rand(0, 4); msg_t = 150;
+  IF (final_dist > best_before AND final_dist >= 1)
+    msg_sub = "new best: " + fmt1(final_dist) + " m!"; msg_seq++;
+    msg_len = 13 + fmt1_len(final_dist);
+    play_sound(s_cheer, 70, 100, -30);
+    play_sound(s_cheer2, 60, 100, 30);
+  ELSE
+    msg_sub = fmt1(final_dist) + " m"; msg_seq++;
+    msg_len = 2 + fmt1_len(final_dist);
+  END
+  IF (final_dist > best) best = final_dist; END
+  FOR i = 0 TO 2 dizzy_star(i); END
+  RETURN 0;
+END
+
+// A little star circling over the fallen runner's head
+PROCESS dizzy_star(k);
+PRIVATE my_run, t;
+BEGIN
+  my_run = run_id;
+  ctype = c_scroll; z = -30; graph = g_star;
+  FOR t = 0 TO 239
+    IF (my_run != run_id) BREAK; END
+    x = head_id.x + cos(t * 6000 + k * 120000) * 13;
+    y = head_id.y - 15 + sin(t * 6000 + k * 120000) * 4;
+    FRAME;
+  END
+END
+
+// =====================================================================
+// Screen: HUD, messages
+// =====================================================================
+
+PROCESS hud();
+PRIVATE t, secs;
+BEGIN
+  x = 320; y = 23; z = -50; graph = g_hud;
+  LOOP
+    IF (t % 5 == 0)
+      gfx_fill_rgba(g_hud, 0, 0, 0, 0);
+      gfx_fill_rgba(g_hud, 15, 20, 40, 80);
+      gfx_text(g_hud, 12, 8, fmt1(dist) + " m", 255, 255, 255, 26);
+      gfx_text(g_hud, 210, 6, "BEST " + fmt1(best) + " m", 255, 215, 80, 14);
+      secs = run_frames * 0.0166667;
+      gfx_text(g_hud, 210, 25, "TIME " + fmt1(secs) + " s", 200, 215, 240, 14);
+      gfx_text(g_hud, 420, 6, "ATTEMPT " + attempts, 200, 215, 240, 14);
+      gfx_text(g_hud, 420, 25, "GOAL 100 m", 150, 240, 150, 14);
+    END
+    t++;
+    FRAME;
+  END
+END
+
+PROCESS help_bar();
+BEGIN
+  x = 320; y = 467; z = -50; graph = g_help;
+  LOOP FRAME; END
+END
+
+// A big message in the middle of the screen while msg_t runs
+PROCESS banner_show();
+PRIVATE t;
+BEGIN
+  x = 320; y = 150; z = -60;
+  LOOP
+    IF (msg_t > 0 AND msg_k >= 0)
+      graph = g_msg[msg_k]; msg_t--; t++;
+      size = 100 + 10 * sin(t * 12000);
+    ELSE
+      graph = 0; t = 0; size = 100;
+    END
+    FRAME;
+  END
+END
+
+// The message's second line, on a dark strip, redrawn when it changes
+// (msg_seq); msg_len is its length in characters, for centring
+PROCESS sub_line();
+PRIVATE seq, w;
+BEGIN
+  x = 320; y = 194; z = -60;
+  seq = -1;
+  LOOP
+    IF (msg_t > 0 AND msg_len > 0)
+      IF (seq != msg_seq)
+        seq = msg_seq;
+        w = int(msg_len * 9.7) + 24;
+        gfx_fill_rgba(g_sub, 0, 0, 0, 0);
+        gfx_rect(g_sub, 180 - w / 2, 0, w, 26, 25, 30, 50);
+        gfx_rect_outline(g_sub, 180 - w / 2, 0, w, 26, 250, 210, 70);
+        gfx_text(g_sub, 180 - w / 2 + 12, 4, msg_sub, 255, 255, 255, 16);
+      END
+      graph = g_sub;
+    ELSE
+      graph = 0;
+    END
+    FRAME;
+  END
+END
+
+// "SPACE or R to try again", once an attempt is over
+PROCESS again_line();
+BEGIN
+  x = 320; y = 236; z = -60;
+  LOOP
+    IF (over != 0 AND over_t > 40 AND (over_t / 20) % 3 != 0) graph = g_again; ELSE graph = 0; END
+    FRAME;
+  END
+END
+
+// Characters in fmt1(v)
+FUNCTION fmt1_len(v);
+PRIVATE t, n;
+BEGIN
+  t = abs(round(v * 10));
+  n = 3;
+  WHILE (t >= 100) t = int(t / 10); n++; END
+  IF (v < -0.05) n++; END
+  RETURN n;
+END
+
+// =====================================================================
+// Attempts
+// =====================================================================
+
+FUNCTION start_attempt();
+PRIVATE i, gy;
+BEGIN
+  make_track();
+  over = 0; over_t = 0; started = 0; run_frames = 0;
+  dist = 0; final_dist = 0; best_before = best; record_cheered = 0;
+  steps = 0; flail = 0;
+  attempts++;
+  FOR i = 0 TO (NV - 1) / 16 chunk(i); END
+  hurdle(hurdle_x[0]); hurdle(hurdle_x[1]);
+  finish_arch();
+  gy = ground_y(START_X);
+  make_runner_bodies(START_X, gy - 62);
+  cam_x = START_X - 250;
+  msg_k = 7; msg_t = 45; msg_sub = "Q W O P"; msg_seq++; msg_len = 7;
+  RETURN 0;
+END
+
+// =====================================================================
+// Main
+// =====================================================================
+
+PRIVATE tx;
+BEGIN
+  set_mode(640, 480);
+  set_fps(60, 0);
+  phys_scale(PX_M);
+  phys_gravity(0, 640);
+  phys_iterations(10, 4);
+  phys_substeps(2);
+  make_runner();
+  make_things();
+  make_sounds();
+  g_back = make_backdrop();
+  music_volume(25);
+  song_play(song);
+  start_scroll(0, 0, 0, g_back, 0, 0);
+  hud(); help_bar(); banner_show(); sub_line(); again_line();
+  start_attempt();
+
+  LOOP
+    ctl_q = key(_q); ctl_w = key(_w); ctl_o = key(_o); ctl_p = key(_p);
+    IF (over == 0 AND started == 0 AND (ctl_q OR ctl_w OR ctl_o OR ctl_p)) started = 1; END
+    drive();
+
+    // distance: the torso's progress from the start line
+    IF (over == 0)
+      dist = (torso_id.x - START_X) * M_PX;
+      IF (started) run_frames++; END
+      IF (dist > max_dist) max_dist = dist; END
+      // passing the old record during the run: the crowd cheers
+      IF (record_cheered == 0 AND best_before >= 1 AND dist > best_before)
+        record_cheered = 1;
+        msg_k = 6; msg_t = 90; msg_sub = ""; msg_seq++; msg_len = 0;
+        play_sound(s_cheer, 60, 100, -30);
+        play_sound(s_fanfare, 50, 100, 0);
+      END
+      IF (torso_id.x >= FINISH_X)
+        over = 2; over_t = 0; final_dist = 100;
+        IF (final_dist > best) best = final_dist; END
+        msg_k = 5; msg_t = 400; msg_sub = "100 m in " + fmt1(run_frames * 0.0166667) + " s"; msg_seq++;
+        msg_len = 11 + fmt1_len(run_frames * 0.0166667);
+        play_sound(s_fanfare, 80, 100, 0);
+        play_sound(s_cheer, 80, 100, -30); play_sound(s_cheer2, 70, 100, 30);
+      END
+    ELSE
+      over_t++;
+    END
+
+    // the camera follows the torso, leading a little
+    tx = torso_id.x - 250;
+    cam_x += (tx - cam_x) * 0.1;
+    scroll.x0 = cam_x; scroll.y0 = 0;
+    scroll.x1 = cam_x * 0.35; scroll.y1 = 0;
+
+    IF (key_pressed(_r) OR (over != 0 AND over_t > 40 AND key_pressed(_space)))
+      run_id++;                            // the old runner and track quit
+      msg_t = 0;
+      FRAME;
+      start_attempt();
+    END
+    fps_now = get_fps();
+    bodies = phys_bodies();
+    FRAME;
+  END
+END

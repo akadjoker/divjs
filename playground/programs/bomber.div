@@ -1,0 +1,1582 @@
+PROGRAM bomber;
+
+// ---------------------------------------------------------------------
+// BOMBER ARENA - a Bomberman-style battle game.
+//
+// * The arena is a 15 x 13 grid: an outer wall, pillars on every even
+//   (x, y) cell and soft blocks from a seeded random generator. Blocks are
+//   decided in one quadrant and mirrored to the other three, so every
+//   corner start is equally fair; corners and their neighbours stay free.
+// * Four themes: CLASSIC, PITS (holes you cannot walk over), CONVEYOR (a
+//   belt ring that carries bombers) and WARP (pads that teleport you).
+// * Bombs explode in a cross after a fuse. Flames stop at walls, destroy
+//   the first soft block they hit, set off other bombs (chain reactions)
+//   and kill bombers. Blocks hide power-ups: extra bomb, bigger flame,
+//   speed, kick, remote detonator - and the skull, a random curse that
+//   jumps to whoever you touch.
+// * CPU bombers share a DANGER MAP: for every cell, the frame the flames
+//   will arrive (ds) and the frame they will be gone (de). It is rebuilt
+//   only when something changes, taking the bombs in order of explosion
+//   time so a chain reaction brings forward the fuses it reaches. Each CPU
+//   plans with a breadth-first search that knows WHEN it would stand on
+//   each cell, so it only crosses a blast zone if it is out before the
+//   flames. Before dropping a bomb it runs a second search, on the next
+//   frame to spread the work, pretending the bomb is already there: the
+//   bomb is dropped only if good hiding places can be reached in time.
+// * Rounds last 90 seconds, then walls fall in a spiral (sudden death).
+//   First to N round wins takes the match. The title screen runs a CPU
+//   battle behind the menu. Every graphic is drawn in code.
+// ---------------------------------------------------------------------
+
+GLOBAL
+  // --- Arena: 15 x 13 cells of 32 px below the HUD band; cell = y*GW+x
+  GW = 15; GH = 13; NC = 195; CS = 32; OX = 80; OY = 56;
+  // --- Timing, in frames at 60 fps -------------------------------------
+  FUSE = 150;       // bomb fuse
+  FL = 32;          // how long flames burn
+  CHAIN = 4;        // delay before a bomb hit by flames goes off
+  RFUSE = 600;      // a player's remote bomb goes off by itself after 10 s
+  RDANGER = 90;     // a remote bomb may blow from here on (CPUs wait for it)
+  SD_GAP = 9;       // sudden death: one wall every SD_GAP frames
+  ROUND_T = 5400;   // 90 seconds before sudden death
+  INF = 999999;
+
+  // --- Cell layers -------------------------------------------------------
+  cell[194];        // 0 floor, 1 wall, 2 soft block, 3 pit, 4 block burning
+  hid[194];         // power-up hidden in a soft block (0 none, 1-6)
+  itm[194];         // power-up lying on the floor
+  bombc[194];       // bomb slot + 1 sitting on the cell, 0 none
+  fend[194];        // tick at which the flame on the cell dies out
+  fown[194];        // player whose bomb lit that flame
+  conv[194];        // conveyor direction + 1, 0 none
+  wpart[194];       // warp partner cell, -1 none
+  ds[194]; de[194]; // danger map: flames arrive at ds and last until de
+  // search scratch (shared: processes run one after another)
+  vst[194]; dist[194]; par[194]; que[194]; hb[194];
+  bstamp = 0; hstamp = 0; qn = 0; think_tick = -1; en_c[3]; en_x[3]; en_y[3]; en_h[3]; en_n = 0;
+
+  // Directions: 0 right, 1 down, 2 left, 3 up
+  doff[3]; dxs[3] = 1, 0, -1, 0; dys[3] = 0, 1, 0, -1;
+  fang[3] = 0, 270000, 180000, 90000;       // flame tip angle per direction
+  fseq[9] = 0, 1, 2, 3, 3, 3, 2, 2, 1, 0;   // flame frame over its life
+  fth[3] = 5, 9, 12, 8;                     // flame half-thickness per frame
+  keys[11];                                 // P1 then P2: R D L U bomb remote
+
+  // --- Bombs: a pool of 40 slots ---------------------------------------
+  b_on[39]; b_cell[39]; b_fire[39]; b_time[39]; b_own[39]; b_rem[39];
+  b_placed[39]; b_kick[39]; b_pid[39]; b_et[39]; b_done[39];
+
+  // --- Players: slot 0 top-left, 1 bottom-right, 2 top-right, 3 bottom-left
+  p_on[3]; p_alive[3]; p_x[3]; p_y[3];
+  p_ctl[3];         // 1 arrows, 2 WASD, 3 CPU
+  p_bmax[3]; p_bout[3]; p_fire[3]; p_spd[3]; p_kick[3]; p_rem[3];
+  p_curse[3]; p_ctime[3]; p_wins[3];
+  pcol[11] = 70, 120, 255,  235, 60, 60,  60, 190, 80,  245, 200, 40;
+  spawn_c[3] = 16, 178, 28, 166;
+  hud_x[3] = 6, 136, 378, 508;
+
+  // --- CPU brains (up to 40 path cells each) ---------------------------
+  ai_path[159]; ai_len[3]; ai_idx[3]; ai_phase[3]; ai_seen[3]; ai_react[3];
+  ai_next[3]; ai_badc[3]; ai_badt[3]; ai_want[3]; ai_bomb[3]; ai_det[3]; ai_tgt[3]; ai_wcool[3];
+  // per difficulty: easy, normal, hard
+  d_gap[2] = 26, 12, 4;       // frames between idle re-plans
+  d_react[2] = 8, 4, 1;       // frames to notice a changed danger map
+  d_margin[2] = 10, 9, 8;     // safety margin of the timing checks
+  d_aggr[2] = 6, 20, 40;      // wish to bomb an enemy
+  d_item[2] = 18, 40, 60;     // wish for power-ups
+  d_hunt[2] = 0, 3, 6;        // pull towards the nearest enemy
+  d_human[2] = 0, 2, 4;       // how much nearer a human enemy looks
+
+  // --- Sudden death ---------------------------------------------------------
+  sd_list[194]; sd_n = 0; sd_i = 0; sd_next = 0; sd_on = 0;
+
+  // --- Themes: floor A, floor B, wall, block, side, accent (RGB) --------
+  pal[71] = 64,140,72,  58,128,66,  128,132,148, 184,116,64,  26,52,32,   240,220,120,
+            200,168,112, 188,156,102, 120,96,84,  160,100,64,  62,44,32,   255,200,120,
+            92,98,112,  84,90,104,  70,84,110,   196,150,70,  28,32,42,   255,190,40,
+            58,62,120,  52,56,110,  112,156,210, 150,96,180,  14,14,38,   150,220,255;
+
+  // --- Graphics ---------------------------------------------------------------
+  g_pl[35]; g_bomb[2]; g_fl[11]; g_item[5]; g_wallt[3]; g_softt[3]; g_part[5];
+  g_burn = 0; g_warp = 0; g_bg = 0; g_logo = 0; g_ready = 0; g_go = 0; g_hurry = 0;
+
+  // --- Game state ---------------------------------------------------------------
+  state = 0;        // 0 building, 1 intro, 2 playing, 3 round over, 4 match over
+  attract = 1;      // 1 while the title screen shows a CPU battle
+  tick = 0; tleft = 0; dirty = 0; dver = 0; state_t = 0; end_t = 0;
+  theme = 0; seed = 0; round = 0; winner = -1; match_seed = 0; diff = 1;
+  menu = 0; opt_cpu = 3; opt_p2 = 0; opt_diff = 1; opt_arena = 0; opt_wins = 3;
+
+  // --- Statistics (not shown; read by the automated tests) -------------------
+  st_bombs = 0; st_expl = 0; st_chain = 0; st_blocks = 0; st_pick[5];
+  st_deaths = 0; st_cpudeath = 0; st_selfkill = 0; st_hdeath = 0; st_cpukill_h = 0;
+  st_sdkill = 0; st_kicks = 0; st_warps = 0; st_remote = 0; st_curses = 0;
+  st_rounds = 0; st_draws = 0;
+
+// ======================================================================
+// Small helpers
+// ======================================================================
+
+FUNCTION mn(a, b); BEGIN IF (a < b) RETURN a; END RETURN b; END
+FUNCTION cxp(c); BEGIN RETURN OX + (c % GW) * CS + 16; END   // cell centre
+FUNCTION cyp(c); BEGIN RETURN OY + (c / GW) * CS + 16; END
+FUNCTION pcell(fx, fy); BEGIN RETURN int((fy - OY) / CS) * GW + int((fx - OX) / CS); END
+FUNCTION shade(v, pct); BEGIN RETURN clamp(v * pct / 100, 0, 255); END
+FUNCTION walkable(n); BEGIN IF (cell[n] == 0 AND bombc[n] == 0) RETURN 1; END RETURN 0; END
+FUNCTION keyh(ctl, k); BEGIN RETURN key(keys[ctl * 6 - 6 + k]); END
+FUNCTION keyp(ctl, k); BEGIN RETURN key_pressed(keys[ctl * 6 - 6 + k]); END
+
+FUNCTION player_at(n);
+PRIVATE k;
+BEGIN
+  FOR k = 0 TO 3
+    IF (p_alive[k] AND pcell(p_x[k], p_y[k]) == n) RETURN 1; END
+  END
+  RETURN 0;
+END
+
+FUNCTION pname(k);
+BEGIN
+  IF (p_ctl[k] == 3) RETURN 'CPU' + (k + 1); END
+  RETURN 'P' + p_ctl[k];
+END
+
+FUNCTION theme_name(t);
+BEGIN
+  IF (t == 1) RETURN 'PITS'; END
+  IF (t == 2) RETURN 'CONVEYOR'; END
+  IF (t == 3) RETURN 'WARP'; END
+  RETURN 'CLASSIC';
+END
+
+FUNCTION diff_name(d);
+BEGIN
+  IF (d == 0) RETURN 'EASY'; END
+  IF (d == 2) RETURN 'HARD'; END
+  RETURN 'NORMAL';
+END
+
+// ======================================================================
+// Tiles, drawn into the background graphic (or into a sprite)
+// ======================================================================
+
+FUNCTION tile_wall(g, px, py);
+PRIVATE h; r; gg; b;
+BEGIN
+  h = theme * 18 + 6; r = pal[h]; gg = pal[h + 1]; b = pal[h + 2];
+  gfx_rect(g, px, py, 32, 32, shade(r, 50), shade(gg, 50), shade(b, 50));
+  gfx_rect(g, px, py, 31, 31, shade(r, 140), shade(gg, 140), shade(b, 140));
+  gfx_rect(g, px + 2, py + 2, 28, 28, r, gg, b);
+  gfx_rect(g, px + 2, py + 2, 28, 4, shade(r, 116), shade(gg, 116), shade(b, 116));
+  gfx_rect_outline(g, px + 7, py + 9, 18, 15, shade(r, 78), shade(gg, 78), shade(b, 78));
+  gfx_rect(g, px + 4, py + 4, 2, 2, 230, 230, 230);
+  gfx_rect(g, px + 26, py + 4, 2, 2, 230, 230, 230);
+  RETURN 0;
+END
+
+// Soft block: three courses of bricks, every other one offset
+FUNCTION tile_soft(g, px, py);
+PRIVATE h; r; gg; b; row; bx; xa; xb; yy;
+BEGIN
+  h = theme * 18 + 9; r = pal[h]; gg = pal[h + 1]; b = pal[h + 2];
+  gfx_rect(g, px, py, 32, 32, shade(r, 45), shade(gg, 45), shade(b, 45));
+  FOR row = 0 TO 2
+    yy = py + 1 + row * 10;
+    FOR bx = -1 TO 2
+      xa = px + bx * 16 + (row % 2) * 8 + 1; xb = xa + 14;
+      IF (xa < px + 1) xa = px + 1; END
+      IF (xb > px + 31) xb = px + 31; END
+      IF (xb > xa)
+        gfx_rect(g, xa, yy, xb - xa, 9, r, gg, b);
+        gfx_rect(g, xa, yy, xb - xa, 2, shade(r, 128), shade(gg, 128), shade(b, 128));
+        gfx_rect(g, xa, yy + 8, xb - xa, 1, shade(r, 75), shade(gg, 75), shade(b, 75));
+      END
+    END
+  END
+  RETURN 0;
+END
+
+// Floor: checker, a speck of texture, conveyor chevrons or a warp pad,
+// and the shadow of a block standing above it
+FUNCTION tile_floor(g, px, py, c);
+PRIVATE h; r; gg; b; d; k; o; mx; my; qx; qy;
+BEGIN
+  h = theme * 18 + ((c % GW + c / GW) % 2) * 3;
+  r = pal[h]; gg = pal[h + 1]; b = pal[h + 2];
+  gfx_rect(g, px, py, 32, 32, r, gg, b);
+  k = (c * 7) % 23;
+  gfx_rect(g, px + 4 + k, py + 6 + (c * 3) % 17, 2, 2, shade(r, 84), shade(gg, 84), shade(b, 84));
+  gfx_rect(g, px + 24 - k, py + 25 - (c * 5) % 13, 2, 2, shade(r, 114), shade(gg, 114), shade(b, 114));
+  IF (conv[c] > 0)
+    d = conv[c] - 1; h = theme * 18 + 15;
+    gfx_rect(g, px + 1, py + 1, 30, 30, 44, 46, 54);
+    gfx_rect(g, px + 1, py + 1, 30, 2, 70, 72, 84);
+    qx = -dys[d]; qy = dxs[d];               // across the belt
+    FOR o = -8 TO 6 STEP 14
+      mx = px + 16 + dxs[d] * o; my = py + 16 + dys[d] * o;
+      FOR k = 0 TO 2
+        gfx_line(g, mx + qx * 7 - dxs[d] * k, my + qy * 7 - dys[d] * k, mx + dxs[d] * (5 - k), my + dys[d] * (5 - k), pal[h], pal[h + 1], pal[h + 2]);
+        gfx_line(g, mx - qx * 7 - dxs[d] * k, my - qy * 7 - dys[d] * k, mx + dxs[d] * (5 - k), my + dys[d] * (5 - k), pal[h], pal[h + 1], pal[h + 2]);
+      END
+    END
+  END
+  IF (wpart[c] >= 0)
+    gfx_circle(g, px + 16, py + 16, 14, 24, 16, 50);
+    gfx_circle_outline(g, px + 16, py + 16, 14, 190, 120, 255);
+    gfx_circle_outline(g, px + 16, py + 16, 10, 120, 220, 255);
+    gfx_circle(g, px + 16, py + 16, 5, 200, 240, 255);
+  END
+  IF (cell[c - GW] == 1 OR cell[c - GW] == 2)
+    gfx_rect(g, px, py, 32, 5, shade(r, 62), shade(gg, 62), shade(b, 62));
+  END
+  RETURN 0;
+END
+
+FUNCTION draw_cell(c);
+PRIVATE px; py; h;
+BEGIN
+  px = OX + (c % GW) * CS; py = OY + (c / GW) * CS;
+  SWITCH (cell[c])
+    CASE 1 tile_wall(g_bg, px, py);
+    CASE 2 tile_soft(g_bg, px, py);
+    CASE 3                                  // pit
+      h = theme * 18;
+      gfx_rect(g_bg, px, py, 32, 32, shade(pal[h], 60), shade(pal[h + 1], 60), shade(pal[h + 2], 60));
+      gfx_rect(g_bg, px + 3, py + 3, 26, 26, 30, 22, 26);
+      gfx_rect(g_bg, px + 5, py + 8, 22, 19, 10, 8, 12);
+    DEFAULT tile_floor(g_bg, px, py, c);
+  END
+  RETURN 0;
+END
+
+// ======================================================================
+// Sprites
+// ======================================================================
+
+// A bomber of colour p looking down (dv 0), up (1) or right (2), walk
+// frame fr (0 standing, 1 left foot up, 2 right foot up)
+FUNCTION make_player(p, dv, fr);
+PRIVATE g; r; gg; b; lf = 0; rf = 0;
+BEGIN
+  r = pcol[p * 3]; gg = pcol[p * 3 + 1]; b = pcol[p * 3 + 2];
+  g = new_graphic(32, 32);
+  lf = 0; rf = 0;
+  IF (fr == 1) lf = -2; END
+  IF (fr == 2) rf = -2; END
+  gfx_rect(g, 9, 26 + lf, 6, 5, 60, 36, 80);          // boots
+  gfx_rect(g, 17, 26 + rf, 6, 5, 60, 36, 80);
+  gfx_rect(g, 10, 17, 12, 10, r, gg, b);              // body and belt
+  gfx_rect(g, 10, 23, 12, 2, shade(r, 50), shade(gg, 50), shade(b, 50));
+  gfx_circle(g, 8, 21 + rf, 3, 255, 150, 170);        // gloves swing
+  gfx_circle(g, 24, 21 + lf, 3, 255, 150, 170);
+  gfx_circle(g, 16, 11, 10, 246, 246, 252);           // helmet, antenna, pom
+  gfx_circle(g, 13, 7, 3, 255, 255, 255);
+  gfx_line(g, 16, 0, 16, 2, 90, 90, 90);
+  gfx_circle(g, 16, 2, 2, r, gg, b);
+  IF (dv == 0)                                        // face
+    gfx_rect(g, 9, 9, 14, 8, 255, 208, 164);
+    gfx_rect(g, 12, 10, 2, 5, 20, 20, 50); gfx_rect(g, 18, 10, 2, 5, 20, 20, 50);
+  END
+  IF (dv == 1) gfx_rect(g, 11, 12, 10, 3, r, gg, b); END
+  IF (dv == 2)
+    gfx_rect(g, 15, 9, 10, 8, 255, 208, 164); gfx_rect(g, 21, 10, 2, 5, 20, 20, 50);
+  END
+  RETURN g;
+END
+
+// Flame piece: 0 centre, 1 middle (horizontal), 2 end pointing right;
+// three layers, orange to white
+FUNCTION make_flame(piece, fr);
+PRIVATE g; l; hh; gg; b;
+BEGIN
+  g = new_graphic(32, 32);
+  FOR l = 0 TO 2
+    hh = fth[fr] * (100 - l * 34) / 100;
+    gg = 100 + l * 78; b = 20 + l * l * 50;
+    IF (piece == 0)
+      gfx_rect(g, 0, 16 - hh, 32, hh * 2, 255, gg, b);
+      gfx_rect(g, 16 - hh, 0, hh * 2, 32, 255, gg, b);
+      gfx_circle(g, 16, 16, hh + 3, 255, gg, b);
+    END
+    IF (piece == 1) gfx_rect(g, 0, 16 - hh, 32, hh * 2, 255, gg, b); END
+    IF (piece == 2)
+      gfx_rect(g, 0, 16 - hh, 20, hh * 2, 255, gg, b);
+      gfx_circle(g, 20, 16, hh, 255, gg, b);
+    END
+  END
+  RETURN g;
+END
+
+// Power-up icon t (1 bomb, 2 flame, 3 speed, 4 kick, 5 remote, 6 skull)
+FUNCTION make_item(t);
+PRIVATE g;
+BEGIN
+  g = new_graphic(32, 32);
+  gfx_rect(g, 3, 3, 26, 26, 20, 20, 30);
+  SWITCH (t)
+    CASE 1 gfx_rect(g, 4, 4, 24, 24, 50, 90, 210);
+    CASE 2 gfx_rect(g, 4, 4, 24, 24, 200, 50, 40);
+    CASE 3 gfx_rect(g, 4, 4, 24, 24, 40, 160, 70);
+    CASE 4 gfx_rect(g, 4, 4, 24, 24, 140, 70, 190);
+    CASE 5 gfx_rect(g, 4, 4, 24, 24, 30, 150, 160);
+    CASE 6 gfx_rect(g, 4, 4, 24, 24, 50, 16, 60);
+  END
+  gfx_rect(g, 4, 4, 24, 3, 255, 255, 255);
+  IF (t == 1 OR t == 5)
+    gfx_circle(g, 15, 18, 7, 20, 20, 30); gfx_circle(g, 12, 15, 2, 140, 140, 170);
+    gfx_line(g, 17, 11, 21, 7, 240, 200, 90);
+    IF (t == 5) gfx_circle(g, 22, 7, 3, 255, 60, 60); gfx_text(g, 12, 13, 'R', 255, 255, 255, 11); END
+  END
+  IF (t == 2)
+    gfx_circle(g, 16, 20, 7, 255, 130, 20); gfx_circle(g, 16, 14, 5, 255, 200, 40);
+    gfx_circle(g, 16, 21, 3, 255, 255, 210);
+  END
+  IF (t == 3) gfx_text(g, 6, 9, '>>', 255, 255, 255, 17); END
+  IF (t == 4)
+    gfx_rect(g, 11, 8, 7, 12, 255, 255, 255); gfx_rect(g, 11, 17, 13, 6, 255, 255, 255);
+    gfx_rect(g, 11, 21, 13, 2, 80, 40, 110);
+  END
+  IF (t == 6)
+    gfx_circle(g, 16, 14, 8, 236, 236, 236); gfx_rect(g, 12, 18, 9, 7, 236, 236, 236);
+    gfx_circle(g, 13, 14, 2, 0, 0, 0); gfx_circle(g, 19, 14, 2, 0, 0, 0);
+    gfx_line(g, 14, 21, 14, 24, 60, 30, 70); gfx_line(g, 18, 21, 18, 24, 60, 30, 70);
+  END
+  RETURN g;
+END
+
+// A text picture with a dark outline, for banners and the logo
+FUNCTION make_label(s, w, sz, r, gg, b);
+PRIVATE g; i;
+BEGIN
+  g = new_graphic(w, sz + 16);
+  FOR i = 0 TO 3 gfx_text(g, 6 + dxs[i] * 3, 6 + dys[i] * 3, s, 20, 12, 30, sz); END
+  gfx_text(g, 6, 6, s, r, gg, b, sz);
+  RETURN g;
+END
+
+FUNCTION make_players();
+PRIVATE i;
+BEGIN
+  FOR i = 0 TO 35 g_pl[i] = make_player(i / 9, (i / 3) % 3, i % 3); END
+  RETURN 0;
+END
+
+FUNCTION make_graphics();
+PRIVATE i;
+BEGIN
+  FOR i = 0 TO 11 g_fl[i] = make_flame(i / 4, i % 4); END
+  FOR i = 0 TO 5 g_item[i] = make_item(i + 1); END
+  FOR i = 0 TO 2                            // bombs: normal, remote, about to blow
+    g_bomb[i] = new_graphic(32, 32);
+    gfx_circle(g_bomb[i], 16, 18, 11, 28 + (i / 2) * 122, 28, 40 - (i / 2) * 10);
+    gfx_circle(g_bomb[i], 12, 14, 3, 150, 150, 180);
+    gfx_rect(g_bomb[i], 13, 5, 6, 4, 100, 100, 110);
+    gfx_line(g_bomb[i], 16, 5, 20, 1, 220, 180, 100);
+    gfx_circle(g_bomb[i], 21, 1, 2, 255, 230, 80);
+    IF (i == 1) gfx_text(g_bomb[i], 12, 12, 'R', 255, 70, 70, 12); END
+  END
+  FOR i = 0 TO 3                            // themed falling walls, blocks, debris
+    theme = i;
+    g_wallt[i] = new_graphic(32, 32); tile_wall(g_wallt[i], 0, 0);
+    g_softt[i] = new_graphic(32, 32); tile_soft(g_softt[i], 0, 0);
+    g_part[2 + i] = new_graphic(5, 5);
+    gfx_fill(g_part[2 + i], pal[i * 18 + 9], pal[i * 18 + 10], pal[i * 18 + 11]);
+  END
+  theme = 0;
+  g_part[0] = new_graphic(4, 4); gfx_fill(g_part[0], 255, 220, 90);            // spark
+  g_part[1] = new_graphic(7, 7); gfx_circle(g_part[1], 3, 3, 3, 150, 150, 160); // smoke
+  g_burn = new_graphic(32, 32);
+  gfx_circle(g_burn, 16, 16, 15, 255, 110, 30); gfx_circle(g_burn, 16, 16, 9, 255, 220, 90);
+  g_warp = new_graphic(32, 32);
+  gfx_circle_outline(g_warp, 16, 16, 13, 240, 150, 255);
+  gfx_rect(g_warp, 15, 1, 3, 5, 255, 255, 255); gfx_rect(g_warp, 15, 26, 3, 5, 255, 255, 255);
+  g_logo = make_label('BOMBER ARENA', 420, 48, 255, 210, 60);
+  g_ready = make_label('READY?', 200, 40, 255, 255, 255);
+  g_go = make_label('GO!', 110, 48, 120, 255, 120);
+  g_hurry = make_label('HURRY UP!', 270, 40, 255, 90, 70);
+  RETURN 0;
+END
+
+// ======================================================================
+// Arena generation (seeded, spread over a few frames by the builder)
+// ======================================================================
+
+// 1 on the corner starts and their two neighbours, which stay empty
+FUNCTION reserved(x, y);
+BEGIN
+  IF (x > 7) x = GW - 1 - x; END
+  IF (y > 6) y = GH - 1 - y; END
+  IF (x + y <= 3 AND x >= 1 AND y >= 1) RETURN 1; END
+  RETURN 0;
+END
+
+// Sets cell (x, y) of the top-left quadrant and its three mirror images
+FUNCTION put4(x, y, v);
+BEGIN
+  cell[y * GW + x] = v; cell[y * GW + GW - 1 - x] = v;
+  cell[(GH - 1 - y) * GW + x] = v; cell[(GH - 1 - y) * GW + GW - 1 - x] = v;
+  RETURN 0;
+END
+
+// Outer wall and pillars; the generator is seeded here
+FUNCTION gen_base();
+PRIVATE x; y; c;
+BEGIN
+  rand_seed(seed);
+  FOR c = 0 TO NC - 1
+    x = c % GW; y = c / GW;
+    cell[c] = 0; hid[c] = 0; itm[c] = 0; bombc[c] = 0; fend[c] = 0;
+    fown[c] = -1; conv[c] = 0; wpart[c] = -1;
+    IF (x == 0 OR y == 0 OR x == GW - 1 OR y == GH - 1 OR (x % 2 == 0 AND y % 2 == 0))
+      cell[c] = 1;
+    END
+  END
+  RETURN 0;
+END
+
+// PITS theme, one attempt: a few mirrored holes. A flood fill from (1, 1)
+// checks they do not cut the arena apart; if they do they are filled in
+// again and 0 is returned (the builder tries again next frame).
+FUNCTION try_pits();
+PRIVATE x; y; c; k; n; free = 0; head = 0; tail = 1;
+BEGIN
+  FOR k = 0 TO rand(3, 5)
+    x = rand(1, 6); y = rand(1, 5);
+    IF (cell[y * GW + x] == 0 AND reserved(x, y) == 0) put4(x, y, 3); END
+  END
+  free = 0;
+  FOR c = 0 TO NC - 1 IF (cell[c] != 1 AND cell[c] != 3) free++; END END
+  bstamp++; que[0] = 16; vst[16] = bstamp;
+  WHILE (head < tail)
+    c = que[head]; head++;
+    FOR k = 0 TO 3
+      n = c + doff[k];
+      IF (vst[n] != bstamp AND cell[n] != 1 AND cell[n] != 3)
+        vst[n] = bstamp; que[tail] = n; tail++;
+      END
+    END
+  END
+  IF (tail == free) RETURN 1; END
+  FOR c = 0 TO NC - 1 IF (cell[c] == 3) cell[c] = 0; END END
+  RETURN 0;
+END
+
+// Theme features, soft blocks and the hidden power-ups
+FUNCTION gen_rest();
+PRIVATE x; y; c; k; t; tries; dens;
+BEGIN
+  IF (theme == 1)                     // PITS: also knock down a few pillars
+    FOR k = 0 TO 1 put4(rand(1, 3) * 2, rand(1, 2) * 2, 0); END
+  END
+  IF (theme == 2)                     // CONVEYOR: clockwise belt ring
+    FOR x = 3 TO 10 conv[3 * GW + x] = 1; conv[9 * GW + 14 - x] = 3; END
+    FOR y = 3 TO 8 conv[y * GW + 11] = 2; conv[(12 - y) * GW + 3] = 4; END
+  END
+  IF (theme == 3)                     // WARP: two pad pairs, opposite sides
+    wpart[6 * GW + 1] = 6 * GW + 13; wpart[6 * GW + 13] = 6 * GW + 1;
+    wpart[GW + 7] = 11 * GW + 7; wpart[11 * GW + 7] = GW + 7;
+  END
+  // soft blocks, decided in one quadrant and mirrored (never on belts/pads)
+  dens = rand(55, 75);
+  FOR y = 1 TO 6
+    FOR x = 1 TO 7
+      c = y * GW + x;
+      IF (cell[c] == 0 AND reserved(x, y) == 0 AND rand(0, 99) < dens) put4(x, y, 2); END
+    END
+  END
+  FOR c = 0 TO NC - 1
+    IF ((wpart[c] >= 0 OR conv[c] > 0) AND cell[c] == 2) cell[c] = 0; END
+  END
+  // hide the power-ups: 5 bombs, 5 flames, 3 speed, 2 kick, 1 remote, 2 skulls
+  FOR k = 0 TO 17
+    t = 1 + (k >= 5) + (k >= 10) + (k >= 13) + (k >= 15) + (k >= 16);
+    FOR tries = 0 TO 60
+      c = rand(GW + 1, NC - GW - 2);
+      IF (cell[c] == 2 AND hid[c] == 0) hid[c] = t; BREAK; END
+    END
+  END
+  rand_seed();                        // unseeded randomness for the game itself
+  RETURN 0;
+END
+
+// Generates and paints the arena over several frames, then starts the round
+PROCESS builder();
+PRIVATE x; y; c; k; h;
+BEGIN
+  gen_base();
+  FRAME;
+  IF (theme == 1)
+    FOR k = 0 TO 4
+      IF (try_pits()) BREAK; END
+      FRAME;
+    END
+  END
+  gen_rest();
+  FRAME;
+  // side panels with stripes, HUD band with a panel per bomber
+  h = theme * 18 + 12;
+  gfx_fill(g_bg, pal[h], pal[h + 1], pal[h + 2]);
+  FOR k = 0 TO 30
+    gfx_line(g_bg, 0, 60 + k * 16, 80, k * 16 - 20, shade(pal[h], 160), shade(pal[h + 1], 160), shade(pal[h + 2], 160));
+    gfx_line(g_bg, 560, k * 16 - 20, 640, 60 + k * 16, shade(pal[h], 160), shade(pal[h + 1], 160), shade(pal[h + 2], 160));
+  END
+  gfx_rect(g_bg, 0, 0, 640, 48, 18, 18, 30);
+  gfx_rect(g_bg, 0, 47, 640, 2, pal[h + 3], pal[h + 4], pal[h + 5]);
+  FOR k = 0 TO 3
+    IF (p_on[k])
+      x = hud_x[k];
+      gfx_rect(g_bg, x, 4, 126, 40, 34, 34, 52);
+      gfx_circle(g_bg, x + 18, 24, 12, 246, 246, 252);
+      gfx_rect(g_bg, x + 11, 21, 14, 8, 255, 208, 164);
+      gfx_circle(g_bg, x + 18, 11, 3, pcol[k * 3], pcol[k * 3 + 1], pcol[k * 3 + 2]);
+      gfx_rect(g_bg, x, 40, 126, 4, pcol[k * 3], pcol[k * 3 + 1], pcol[k * 3 + 2]);
+    END
+  END
+  gfx_rect(g_bg, 272, 6, 96, 36, 10, 10, 18);
+  FRAME;
+  FOR y = 0 TO GH - 1                 // the arena, a row per frame
+    FOR x = 0 TO GW - 1 draw_cell(y * GW + x); END
+    FRAME;
+  END
+  FOR c = 0 TO NC - 1 IF (wpart[c] >= 0) warpfx(c); END END
+  FOR k = 0 TO 3 IF (p_on[k]) bomber(k); END END
+  IF (attract) logo(); END
+  banner(g_ready, 60, 0);
+  state = 1; state_t = 0;
+END
+
+// ======================================================================
+// Danger map and path finding for the CPUs
+// ======================================================================
+
+FUNCTION mark(c, t, e);
+BEGIN
+  IF (t < ds[c]) ds[c] = t; END
+  IF (e > de[c]) de[c] = e; END
+  RETURN 0;
+END
+
+// Rebuilds ds/de from the flames, the bombs and the next sudden-death
+// walls. Bombs are taken in order of explosion time; a blast that reaches
+// another bomb brings that bomb's time forward before it is processed.
+FUNCTION rebuild();
+PRIVATE c; k; best; t; e; d; r; n; sl; i;
+BEGIN
+  FOR c = 0 TO NC - 1
+    ds[c] = INF; de[c] = -1;
+    IF (fend[c] > tick) ds[c] = 0; de[c] = fend[c]; END
+  END
+  FOR k = 0 TO 39
+    b_done[k] = 0;
+    IF (b_on[k])
+      b_et[k] = b_time[k];
+      IF (b_rem[k]) b_et[k] = mn(b_et[k], b_placed[k] + RDANGER); END
+    END
+  END
+  LOOP
+    best = -1;
+    FOR k = 0 TO 39
+      IF (b_on[k] AND b_done[k] == 0)
+        IF (best < 0) best = k; ELSE IF (b_et[k] < b_et[best]) best = k; END END
+      END
+    END
+    IF (best < 0) BREAK; END
+    b_done[best] = 1;
+    // a remote bomb may blow any time from b_et until its own fuse ends
+    // (a player's has none worth trusting; a CPU's keeps the normal fuse)
+    t = b_et[best]; e = t + FL + CHAIN;
+    IF (b_rem[best]) e = b_time[best] + FL + CHAIN; END
+    IF (b_rem[best] AND b_time[best] > tick + 1 AND p_ctl[b_own[best]] != 3) e = INF; END
+    c = b_cell[best];
+    mark(c, t, e);
+    FOR d = 0 TO 3
+      n = c;
+      FOR r = 1 TO b_fire[best]
+        n = n + doff[d];
+        IF (cell[n] == 1 OR cell[n] == 4) BREAK; END
+        mark(n, t, e);
+        IF (cell[n] == 2 OR itm[n] > 0) BREAK; END
+        IF (bombc[n])
+          sl = bombc[n] - 1;
+          IF (b_done[sl] == 0 AND b_et[sl] > t + CHAIN) b_et[sl] = t + CHAIN; END
+          BREAK;
+        END
+      END
+    END
+  END
+  IF (sd_on)
+    FOR i = sd_i TO mn(sd_i + 40, sd_n - 1)     // about 6 s ahead
+      mark(sd_list[i], sd_next + (i - sd_i) * SD_GAP, INF);
+    END
+  END
+  dver++; dirty = 0;
+  RETURN 0;
+END
+
+// Marks (in hb) the blast of a would-be bomb at c with flame length f
+FUNCTION mark_blast(c, f);
+PRIVATE d; r; n;
+BEGIN
+  hstamp++; hb[c] = hstamp;
+  FOR d = 0 TO 3
+    n = c;
+    FOR r = 1 TO f
+      n = n + doff[d];
+      IF (cell[n] == 1 OR cell[n] == 4) BREAK; END
+      hb[n] = hstamp;
+      IF (cell[n] == 2 OR bombc[n] OR itm[n] > 0) BREAK; END
+    END
+  END
+  RETURN 0;
+END
+
+// Breadth-first search from cell st for CPU pi. A cell is entered only if
+// no flames will be on it while we pass: roughly from step-1 to step+1
+// cell-times (fpc frames each) from now, widened by the margin mg. With
+// hyp >= 0 a bomb of ours is assumed on that cell. Stepping on a warp pad
+// continues from its partner. Result: que[0..qn-1] in distance order,
+// dist[] and par[].
+FUNCTION bfs(pi, st, hyp, fpc, mg);
+PRIVATE head = 0; tail = 1; c; ec; k; n; w; step; t0; t1; s; e; ht; he; rot;
+BEGIN
+  bstamp++;
+  IF (hyp >= 0)
+    mark_blast(hyp, p_fire[pi]);
+    ht = tick + FUSE; he = ht + FL + CHAIN;
+    IF (p_rem[pi]) ht = tick + RDANGER; END
+  END
+  vst[st] = bstamp; dist[st] = 0; par[st] = -1; que[0] = st;
+  rot = rand(0, 3);
+  WHILE (head < tail)
+    c = que[head]; head++;
+    IF (dist[c] < 24)
+      ec = c;
+      IF (c != st AND wpart[c] >= 0) IF (walkable(wpart[c])) ec = wpart[c]; END END
+      step = dist[c] + 1;
+      t0 = tick + (step - 1) * fpc - mg;
+      t1 = tick + (step + 1) * fpc + mg;
+      FOR k = 0 TO 3
+        n = ec + doff[(k + rot) % 4];
+        IF (vst[n] != bstamp AND cell[n] == 0 AND bombc[n] == 0 AND itm[n] != 6 AND (wpart[n] < 0 OR tick > ai_wcool[pi]))
+          s = ds[n]; e = de[n];
+          IF (hyp >= 0 AND hb[n] == hstamp)
+            IF (ht < s) s = ht; END
+            IF (he > e) e = he; END
+          END
+          w = wpart[n];                       // a pad: we come out on its partner
+          IF (w >= 0) IF (walkable(w)) s = mn(s, ds[w]); IF (de[w] > e) e = de[w]; END END END
+          IF (s > t1 OR e < t0)
+            vst[n] = bstamp; dist[n] = step; par[n] = c;
+            que[tail] = n; tail++;
+          END
+        END
+      END
+    END
+  END
+  qn = tail;
+  RETURN 0;
+END
+
+// 1 if a CPU may stop on cell n: safe, and not a pad that would send it away
+FUNCTION rest_ok(n);
+BEGIN
+  IF (ds[n] != INF OR wpart[n] >= 0) RETURN 0; END
+  RETURN 1;
+END
+
+// Cells (and columns, rows) of pi's living enemies into en_c/en_x/en_y
+FUNCTION list_enemies(pi);
+PRIVATE e; c;
+BEGIN
+  en_n = 0;
+  FOR e = 0 TO 3
+    IF (e != pi AND p_alive[e])
+      c = pcell(p_x[e], p_y[e]);
+      en_c[en_n] = c; en_x[en_n] = c % GW; en_y[en_n] = c / GW;
+      en_h[en_n] = 0; IF (p_ctl[e] != 3) en_h[en_n] = d_human[diff]; END   // humans look nearer
+      en_n++;
+    END
+  END
+  RETURN 0;
+END
+
+// Grid distance from cell n to the nearest enemy; with hum 1 humans count
+// d_human cells nearer (CPUs go for the players first). Inline maths: this
+// runs for many cells.
+FUNCTION enemy_dist(n, hum);
+PRIVATE i; x; y; m; best = 99;
+BEGIN
+  best = 99; x = n % GW; y = n / GW;
+  FOR i = 0 TO en_n - 1
+    m = abs(en_x[i] - x) + abs(en_y[i] - y) - en_h[i] * hum;
+    IF (m < best) best = m; END
+  END
+  RETURN best;
+END
+
+// How good a hiding place n is: open safe neighbours (not cornered in a
+// dead end) and no enemy close enough to bomb us in
+FUNCTION hide_score(n);
+PRIVATE k; m; v = 0;
+BEGIN
+  v = 0;
+  FOR k = 0 TO 3
+    m = n + doff[k];
+    IF (walkable(m) AND ds[m] == INF AND hb[m] != hstamp) v += 3; END
+  END
+  IF (enemy_dist(n, 0) <= 2) v -= 8; END
+  RETURN v;
+END
+
+// What a bomb on cell c would achieve for pi: soft blocks not already
+// doomed, and enemies in the line of fire or close by
+FUNCTION bomb_value(pi, c);
+PRIVATE v = 0; k; n; ec; d; ok; x; y; f;
+BEGIN
+  v = 0; x = c % GW; y = c / GW; f = p_fire[pi];
+  FOR k = 0 TO 3
+    n = c + doff[k];
+    IF (cell[n] == 2 AND ds[n] == INF) v += 10; END
+  END
+  FOR k = 0 TO en_n - 1
+    ec = en_c[k]; d = -1;
+    IF (en_y[k] == y AND abs(en_x[k] - x) <= f) d = 0; IF (ec < c) d = 2; END END
+    IF (en_x[k] == x AND abs(en_y[k] - y) <= f) d = 1; IF (ec < c) d = 3; END END
+    IF (ec == c) d = -1; v += d_aggr[diff]; END
+    IF (d >= 0)
+      ok = 1; n = c;
+      WHILE (n != ec)
+        n = n + doff[d];
+        IF (cell[n] != 0 AND cell[n] != 3) ok = 0; BREAK; END
+      END
+      IF (ok) v += d_aggr[diff] * 2; END
+    ELSE
+      IF (abs(en_x[k] - x) + abs(en_y[k] - y) <= 2) v += d_aggr[diff] / 2; END
+    END
+  END
+  RETURN v;
+END
+
+// Stores the BFS path from the search start to tgt as pi's route
+FUNCTION set_path(pi, tgt);
+PRIVATE n; len = 0; i;
+BEGIN
+  n = tgt; len = 0;
+  WHILE (par[n] >= 0) len++; n = par[n]; END
+  IF (len > 40) len = 40; END
+  n = tgt;
+  FOR i = len - 1 TO 0 STEP -1 ai_path[pi * 40 + i] = n; n = par[n]; END
+  ai_len[pi] = len; ai_idx[pi] = 0; ai_tgt[pi] = tgt;
+  RETURN 0;
+END
+
+// Best hiding place in the last search (outside the would-be blast hb)
+// that is reached within lim frames; -1 if there are fewer than need
+FUNCTION pick_hide(pi, wd, lim, fpc, need);
+PRIVATE i; n; s; bs; tgt = -1; m = 0;
+BEGIN
+  bs = -INF; tgt = -1; m = 0;
+  FOR i = 1 TO qn - 1
+    n = que[i];
+    IF (m >= need AND 18 - dist[n] * wd < bs) BREAK; END   // (queue order: only farther now)
+    IF (rest_ok(n) AND hb[n] != hstamp AND dist[n] * fpc <= lim)
+      m++;
+      s = hide_score(n) - dist[n] * wd;
+      IF (n == ai_tgt[pi]) s += 6; END       // do not dither between hideouts
+      IF (s > bs) bs = s; tgt = n; END
+    END
+  END
+  IF (m < need) RETURN -1; END
+  RETURN tgt;
+END
+
+// One decision of CPU pi standing (roughly) on cell c
+FUNCTION think(pi, c, fpc, sp);
+PRIVATE i; n; best; bs; s; v; bv; bw; mg; tgt; m; e; k; x; y;
+BEGIN
+  mg = d_margin[diff];
+  list_enemies(pi);
+  IF (ai_phase[pi] == 1)
+    // second half of a bomb decision: pretend the bomb is here already and
+    // look for hiding places, with extra margin for surprises on the way
+    ai_phase[pi] = 0;
+    bfs(pi, c, c, fpc, mg + 12);
+    // (with an enemy about, two hideouts, in case one gets blocked)
+    tgt = pick_hide(pi, 2, FUSE * 2 / 3, fpc, 1 + (enemy_dist(c, 0) <= 5));
+    IF (tgt >= 0 AND ds[c] == INF AND bombc[c] == 0)
+      ai_bomb[pi] = 1;
+      set_path(pi, tgt);
+    ELSE
+      ai_badc[pi] = c; ai_badt[pi] = tick + 150;   // no way out: not here
+    END
+    RETURN 0;
+  END
+  bfs(pi, c, -1, fpc, mg);
+  IF (ds[c] != INF)
+    // in a blast zone: run for the best nearby hiding place
+    hstamp++;
+    tgt = pick_hide(pi, 4, INF, fpc, 1);
+    IF (tgt < 0)
+      // none in time: search again assuming full speed and no margin,
+      // and as a last resort go where the flames arrive last
+      bfs(pi, c, -1, CS / sp, 0);
+      tgt = pick_hide(pi, 4, INF, fpc, 1);
+      IF (tgt < 0)
+        bs = ds[c];
+        FOR i = 1 TO qn - 1 n = que[i]; IF (ds[n] > bs) bs = ds[n]; tgt = n; END END
+      END
+    END
+    IF (tgt >= 0) set_path(pi, tgt); END
+    RETURN 0;
+  END
+  // safe: pick the best reachable cell (power-up or bombing spot); nearer
+  // is better, and so is closer to an enemy (digging towards them)
+  bw = (p_bout[pi] < p_bmax[pi] AND p_curse[pi] != 5);
+  best = -1; bs = -INF; bv = 0;
+  FOR i = 0 TO qn - 1
+    n = que[i];
+    IF (dist[n] > 14 OR i > 60) BREAK; END   // the 60 nearest cells are plenty
+    IF (ds[n] == INF AND wpart[n] < 0)
+      v = 0; m = 0; e = 99; x = n % GW; y = n / GW;   // e: distance to the nearest enemy
+      FOR k = 0 TO en_n - 1
+        m = abs(en_x[k] - x) + abs(en_y[k] - y) - en_h[k];
+        IF (m < e) e = m; END
+      END
+      m = 0;
+      IF (itm[n] > 0 AND itm[n] < 6) v = d_item[diff]; END
+      IF (bw AND (n != ai_badc[pi] OR tick > ai_badt[pi]))
+        IF (e <= p_fire[pi] + 2 OR cell[n + 1] == 2 OR cell[n - 1] == 2 OR cell[n + GW] == 2 OR cell[n - GW] == 2)
+          m = bomb_value(pi, n);
+        END
+      END
+      v += m;
+      IF (v > 0)
+        s = v * 4 - dist[n] * 3 - e * d_hunt[diff] + rand(0, 3);
+        IF (s > bs) bs = s; best = n; bv = m; END
+      END
+    END
+  END
+  IF (best == c AND bv > 0) ai_phase[pi] = 1; RETURN 0; END   // escape check next frame
+  IF (best < 0)
+    // nothing to do: close in on the nearest enemy (if it gains 2 steps)
+    bs = enemy_dist(c, 1) - 1;
+    FOR i = 0 TO qn - 1
+      n = que[i];
+      IF (rest_ok(n))
+        m = enemy_dist(n, 1) + rand(0, 1);
+        IF (m < bs) bs = m; best = n; END
+      END
+    END
+  END
+  IF (best >= 0 AND best != c) set_path(pi, best); END
+  ai_next[pi] = tick + d_gap[diff];
+  RETURN 0;
+END
+
+// Moves CPU pi toward the centre of cell t: lines up on the axis that is
+// off by less, then spends what is left of the step on the other one.
+// Returns 1 once it is there.
+FUNCTION steer(pi, t, sp);
+PRIVATE ddx; ddy; m; pass;
+BEGIN
+  FOR pass = 0 TO 1
+    ddx = cxp(t) - p_x[pi]; ddy = cyp(t) - p_y[pi];
+    IF (sp > 0.001)
+      IF (abs(ddx) >= 0.01 AND (abs(ddy) < 0.01 OR abs(ddx) <= abs(ddy)))
+        m = mn(sp, abs(ddx)); p_x[pi] += sign(ddx) * m; sp -= m;
+        ai_want[pi] = 0; IF (ddx < 0) ai_want[pi] = 2; END
+      ELSE
+        IF (abs(ddy) >= 0.01)
+          m = mn(sp, abs(ddy)); p_y[pi] += sign(ddy) * m; sp -= m;
+          ai_want[pi] = 1; IF (ddy < 0) ai_want[pi] = 3; END
+        END
+      END
+    END
+  END
+  IF (abs(cxp(t) - p_x[pi]) < 0.01 AND abs(cyp(t) - p_y[pi]) < 0.01)
+    p_x[pi] = cxp(t); p_y[pi] = cyp(t);
+    RETURN 1;
+  END
+  RETURN 0;
+END
+
+// Per-frame CPU control: fills ai_want / ai_bomb / ai_det and moves
+FUNCTION ai_update(pi, sp);
+PRIVATE c; nx; k; fpc;
+BEGIN
+  ai_want[pi] = -1; ai_bomb[pi] = 0; ai_det[pi] = 0;
+  c = pcell(p_x[pi], p_y[pi]);
+  fpc = CS / sp;
+  IF (theme == 2) fpc = CS / (sp - 0.6); END   // a belt may be pushing against us
+  // a changed danger map is noticed after the reaction delay
+  IF (ai_seen[pi] != dver)
+    IF (ai_react[pi] < 0) ai_react[pi] = tick + d_react[diff]; END
+    IF (tick >= ai_react[pi])
+      ai_seen[pi] = dver; ai_react[pi] = -1;
+      ai_len[pi] = 0; ai_phase[pi] = 0; ai_next[pi] = 0;
+    END
+  END
+  // follow the route
+  IF (ai_idx[pi] < ai_len[pi])
+    nx = ai_path[pi * 40 + ai_idx[pi]];
+    IF (nx != c AND walkable(nx) == 0)
+      ai_len[pi] = 0; ai_next[pi] = 0;        // blocked meanwhile: re-plan
+    ELSE
+      IF (steer(pi, nx, sp)) ai_idx[pi]++; END
+      RETURN 0;
+    END
+  END
+  IF (ds[c] != INF) ai_next[pi] = 0; END      // in danger: think right now
+  IF (tick < ai_next[pi] AND ai_phase[pi] == 0)
+    // idle in the middle of the cell; fire our remote bombs once we stand
+    // there clear of every blast (with an up-to-date map)
+    IF (steer(pi, c, sp) AND p_rem[pi] AND ds[c] == INF AND dirty == 0 AND ai_seen[pi] == dver)
+      FOR k = 0 TO 39
+        IF (b_on[k] AND b_own[k] == pi AND b_rem[k] AND tick > b_placed[k] + RDANGER) ai_det[pi] = 1; END
+      END
+    END
+    RETURN 0;
+  END
+  // one unhurried decision per frame among all CPUs, to spread the work
+  IF (ds[c] == INF AND ai_phase[pi] == 0 AND think_tick == tick) steer(pi, c, sp); RETURN 0; END
+  think_tick = tick;
+  think(pi, c, fpc, sp);
+  IF (ai_idx[pi] >= ai_len[pi]) steer(pi, c, sp); END   // no route: hold (belts!)
+  RETURN 0;
+END
+
+// ======================================================================
+// Bombs, flames and the things they hit
+// ======================================================================
+
+FUNCTION add_flame(c, piece, d, o);
+PRIVATE a = 0;
+BEGIN
+  fend[c] = tick + FL; fown[c] = o;
+  a = 0;
+  IF (piece == 1 AND d % 2 == 1) a = 90000; END
+  IF (piece == 2) a = fang[d]; END
+  flame(c, piece, a);
+  RETURN 0;
+END
+
+FUNCTION puff(c, g, n);
+PRIVATE i;
+BEGIN
+  FOR i = 1 TO n
+    particle(cxp(c) + rand(-8, 8), cyp(c) + rand(-8, 8), g, rand(-20, 20) * 0.1, rand(-35, -5) * 0.1, rand(18, 30));
+  END
+  RETURN 0;
+END
+
+// Bomb slot k goes off: a cross of flames, each arm stopped by a wall, by
+// the first soft block (destroyed), by a bomb (set off) or by an item
+FUNCTION explode(k);
+PRIVATE c; o; f; d; r; n; sl;
+BEGIN
+  c = b_cell[k]; o = b_own[k]; f = b_fire[k];
+  b_on[k] = 0; bombc[c] = 0;
+  IF (p_bout[o] > 0) p_bout[o]--; END
+  st_expl++;
+  add_flame(c, 0, 0, o);
+  FOR d = 0 TO 3
+    n = c;
+    FOR r = 1 TO f
+      n = n + doff[d];
+      IF (cell[n] == 1 OR cell[n] == 4) BREAK; END
+      IF (cell[n] == 2) cell[n] = 4; st_blocks++; burn(n); BREAK; END
+      IF (bombc[n])
+        sl = bombc[n] - 1;
+        IF (b_time[sl] > tick + CHAIN) b_time[sl] = tick + CHAIN; st_chain++; END
+        BREAK;
+      END
+      IF (itm[n] > 0) itm[n] = 0; add_flame(n, 2, d, o); puff(n, 1, 4); BREAK; END
+      IF (r == f) add_flame(n, 2, d, o); ELSE add_flame(n, 1, d, o); END
+    END
+  END
+  dirty = 1;
+  RETURN 0;
+END
+
+FUNCTION place_bomb(pi, c);
+PRIVATE k;
+BEGIN
+  FOR k = 0 TO 39
+    IF (b_on[k] == 0)
+      b_on[k] = 1; b_cell[k] = c; b_own[k] = pi; b_rem[k] = p_rem[pi];
+      b_fire[k] = p_fire[pi];
+      IF (p_curse[pi] == 6) b_fire[k] = 1; END      // short-flame curse
+      b_placed[k] = tick; b_kick[k] = 0;
+      b_time[k] = tick + FUSE;
+      IF (b_rem[k] AND p_ctl[pi] != 3) b_time[k] = tick + RFUSE; END
+      bombc[c] = k + 1; p_bout[pi]++;
+      b_pid[k] = bomb(k);
+      dirty = 1; st_bombs++;
+      RETURN 1;
+    END
+  END
+  RETURN 0;
+END
+
+FUNCTION detonate(pi);
+PRIVATE k; n = 0;
+BEGIN
+  FOR k = 0 TO 39
+    IF (b_on[k] AND b_own[k] == pi AND b_rem[k] AND b_time[k] > tick + 1) b_time[k] = tick; n++; END
+  END
+  IF (n) st_remote++; END
+  RETURN 0;
+END
+
+// by: the player whose flame it was, -2 a sudden-death wall
+FUNCTION kill_player(k, by);
+BEGIN
+  p_alive[k] = 0; st_deaths++;
+  IF (by == -2) st_sdkill++; END
+  IF (p_ctl[k] == 3)
+    st_cpudeath++;
+    IF (by == k) st_selfkill++; END
+  ELSE
+    st_hdeath++;
+    IF (by >= 0 AND by != k) IF (p_ctl[by] == 3) st_cpukill_h++; END END
+  END
+  RETURN 0;
+END
+
+FUNCTION pick_up(pi, t);
+BEGIN
+  SWITCH (t)
+    CASE 1 p_bmax[pi] = mn(p_bmax[pi] + 1, 8);
+    CASE 2 p_fire[pi] = mn(p_fire[pi] + 1, 8);
+    CASE 3 p_spd[pi] = mn(p_spd[pi] + 1, 4);
+    CASE 4 p_kick[pi] = 1;
+    CASE 5 p_rem[pi] = 1;
+    CASE 6 p_curse[pi] = rand(1, 6); p_ctime[pi] = 600; st_curses++;
+  END
+  st_pick[t - 1]++;
+  RETURN 0;
+END
+
+// Human movement with corner sliding: moving along a row you line up with
+// it on the way; blocked straight ahead but already leaning towards an
+// open lane, you slide round the corner into it.
+FUNCTION move(pi, d, amt);
+PRIVATE fx; fy; c; n; off; s; side; m;
+BEGIN
+  fx = p_x[pi]; fy = p_y[pi];
+  c = pcell(fx, fy); n = c + doff[d];
+  IF (dxs[d] != 0) off = fy - cyp(c); side = GW; ELSE off = fx - cxp(c); side = 1; END
+  s = sign(off);
+  IF (walkable(n))
+    m = mn(amt, abs(off));
+    IF (dxs[d] != 0) fy -= s * m; ELSE fx -= s * m; END
+    fx += dxs[d] * (amt - m); fy += dys[d] * (amt - m);
+  ELSE
+    IF (abs(off) >= 2 AND walkable(c + s * side) AND walkable(c + s * side + doff[d]))
+      IF (dxs[d] != 0) fy += s * amt; ELSE fx += s * amt; END
+    ELSE
+      // walk up to the middle of the cell and stop there
+      IF (dxs[d] != 0) m = (cxp(c) - fx) * dxs[d]; ELSE m = (cyp(c) - fy) * dys[d]; END
+      IF (m > 0) m = mn(amt, m); fx += dxs[d] * m; fy += dys[d] * m; END
+    END
+  END
+  p_x[pi] = fx; p_y[pi] = fy;
+  RETURN 0;
+END
+
+// A bomber with the kick power walking into a bomb sends it sliding
+FUNCTION try_kick(pi, d);
+PRIVATE c; n; nn; sl;
+BEGIN
+  IF (p_kick[pi] == 0) RETURN 0; END
+  c = pcell(p_x[pi], p_y[pi]); n = c + doff[d]; nn = n + doff[d];
+  IF (abs(p_x[pi] - cxp(c)) > 3 OR abs(p_y[pi] - cyp(c)) > 3 OR bombc[n] == 0) RETURN 0; END
+  sl = bombc[n] - 1;
+  IF (b_kick[sl] == 0 AND walkable(nn) AND itm[nn] == 0 AND player_at(nn) == 0)
+    b_kick[sl] = d + 1; st_kicks++;
+  END
+  RETURN 0;
+END
+
+// ======================================================================
+// Processes
+// ======================================================================
+
+PROCESS bomber(pi);
+PRIVATE c; lc; want; bk; dk; lastd = 3; face = 1; ani = 0; walk = 0; sp; k; n; dv; fr; t;
+BEGIN
+  z = -5;
+  c = spawn_c[pi]; lc = c;
+  p_x[pi] = cxp(c); p_y[pi] = cyp(c);
+  LOOP
+    IF (state == 2)
+      c = pcell(p_x[pi], p_y[pi]);
+      IF (fend[c] > tick) kill_player(pi, fown[c]); END
+    END
+    IF (p_alive[pi] == 0) BREAK; END
+    walk = 0;
+    IF (state == 2)
+      IF (c != lc)                          // warp pads: out of the partner
+        n = wpart[c];
+        IF (n >= 0)
+          IF (walkable(n))
+            p_x[pi] = cxp(n); p_y[pi] = cyp(n); c = n;
+            ai_len[pi] = 0; ai_wcool[pi] = tick + 240; st_warps++;   // CPUs: no warping back at once
+            puff(c, 0, 6);
+          END
+        END
+        lc = c;
+      END
+      IF (itm[c] > 0) pick_up(pi, itm[c]); itm[c] = 0; puff(c, 0, 5); END
+      IF (p_curse[pi])
+        p_ctime[pi]--;
+        IF (p_ctime[pi] <= 0) p_curse[pi] = 0; END
+      END
+      IF (conv[c] > 0) move(pi, conv[c] - 1, 0.6); END
+      // speed: 1.6 px/frame plus 0.4 per skate; slow and fast curses
+      sp = 1.6 + p_spd[pi] * 0.4;
+      IF (p_curse[pi] == 1) sp = 0.8; END
+      IF (p_curse[pi] == 2) sp = 4.0; END
+      bk = 0; dk = 0;
+      IF (p_ctl[pi] == 3)
+        ai_update(pi, sp);
+        bk = ai_bomb[pi]; dk = ai_det[pi];
+        IF (ai_want[pi] >= 0) walk = 1; face = ai_want[pi]; END
+      ELSE
+        // the most recently pressed direction wins while it is held
+        want = -1;
+        FOR k = 0 TO 3 IF (keyp(p_ctl[pi], k)) lastd = k; END END
+        IF (keyh(p_ctl[pi], lastd))
+          want = lastd;
+        ELSE
+          FOR k = 0 TO 3 IF (keyh(p_ctl[pi], k)) want = k; END END
+        END
+        bk = keyp(p_ctl[pi], 4); dk = keyp(p_ctl[pi], 5);
+        IF (want >= 0)
+          IF (p_curse[pi] == 3) want = (want + 2) % 4; END    // reversed controls
+          try_kick(pi, want);
+          move(pi, want, sp);
+          walk = 1; face = want;
+        END
+      END
+      IF (p_curse[pi] == 4) bk = 1; END      // bombs drop by themselves
+      IF (p_curse[pi] == 5) bk = 0; END      // no bombs at all
+      c = pcell(p_x[pi], p_y[pi]);
+      IF (bk AND p_bout[pi] < p_bmax[pi] AND walkable(c)) place_bomb(pi, c); END
+      IF (dk) detonate(pi); END
+      IF (p_curse[pi])                       // the skull is catching
+        FOR k = 0 TO 3
+          IF (k != pi AND p_alive[k] AND p_curse[k] == 0 AND abs(p_x[k] - p_x[pi]) < 20 AND abs(p_y[k] - p_y[pi]) < 20)
+            p_curse[k] = p_curse[pi]; p_ctime[k] = p_ctime[pi];
+          END
+        END
+      END
+    END
+    // sprite: front, back or side (mirrored for left); walk cycle 0 1 0 2
+    IF (walk) ani++; END
+    fr = 0;
+    IF (walk) fr = (ani / 7) % 4; IF (fr == 2) fr = 0; END IF (fr == 3) fr = 2; END END
+    dv = 2;
+    IF (face == 1) dv = 0; END
+    IF (face == 3) dv = 1; END
+    graph = g_pl[pi * 9 + dv * 3 + fr];
+    flags = 0; IF (face == 2) flags = 1; END
+    x = p_x[pi]; y = p_y[pi] - 3;
+    alpha = 100;
+    IF (p_curse[pi] AND (tick / 5) % 2 == 0) alpha = 45; END
+    FRAME;
+  END
+  FOR t = 1 TO 40                            // death: spin, shrink and fade
+    angle += 24000; size = 100 - t * 2; alpha = 100 - t * 2;
+    FRAME;
+  END
+END
+
+PROCESS bomb(slot);
+PRIVATE c; fx; fy; kd; nc; nb; age = 0;
+BEGIN
+  c = b_cell[slot]; fx = cxp(c); fy = cyp(c);
+  z = 5;
+  LOOP
+    IF (state == 2)
+      age++;
+      IF (b_kick[slot] > 0)
+        // kicked: slides 4 px a frame and stops in front of anything
+        kd = b_kick[slot] - 1;
+        fx += dxs[kd] * 4; fy += dys[kd] * 4;
+        nc = pcell(fx, fy);
+        IF (nc != c) bombc[c] = 0; bombc[nc] = slot + 1; c = nc; b_cell[slot] = c; dirty = 1; END
+        IF (fx == cxp(c) AND fy == cyp(c))
+          nb = c + doff[kd];
+          IF (walkable(nb) == 0 OR itm[nb] > 0 OR player_at(nb)) b_kick[slot] = 0; dirty = 1; END
+        END
+      END
+      IF (fend[c] > tick AND b_time[slot] > tick + CHAIN) b_time[slot] = tick + CHAIN; END
+      IF (tick >= b_time[slot]) explode(slot); BREAK; END
+    END
+    graph = g_bomb[b_rem[slot]];
+    IF (b_rem[slot] == 0 AND b_time[slot] - tick < 40) graph = g_bomb[2]; END
+    size = 94 + abs((age % 30) - 15) * 12 / 15;
+    x = fx; y = fy;
+    FRAME;
+  END
+END
+
+PROCESS flame(c, piece, ang);
+PRIVATE st; a;
+BEGIN
+  x = cxp(c); y = cyp(c); z = 1; angle = ang;
+  st = tick;
+  LOOP
+    a = tick - st;
+    IF (a >= FL) BREAK; END
+    graph = g_fl[piece * 4 + fseq[a * 10 / FL]];
+    FRAME;
+  END
+END
+
+// A soft block breaking up; then the floor and maybe a power-up show
+PROCESS burn(c);
+PRIVATE st; a;
+BEGIN
+  x = cxp(c); y = cyp(c); z = 2;
+  graph = g_softt[theme];
+  draw_cell(c);
+  puff(c, 2 + theme, 6); puff(c, 0, 3);
+  st = tick;
+  LOOP
+    a = tick - st;
+    IF (a >= FL) BREAK; END
+    IF (a < 10 AND a % 4 < 2) graph = g_burn; ELSE graph = g_softt[theme]; END
+    size = 100 - a * 2; alpha = 100 - a * 3;
+    FRAME;
+  END
+  cell[c] = 0;
+  IF (cell[c + GW] == 0) draw_cell(c + GW); END   // its shadow goes too
+  IF (hid[c] > 0) itm[c] = hid[c]; hid[c] = 0; item(c, itm[c]); END
+  dirty = 1;
+END
+
+PROCESS item(c, t);
+BEGIN
+  x = cxp(c); z = 4; graph = g_item[t - 1];
+  WHILE (itm[c] == t)
+    y = cyp(c) + abs((tick / 6) % 4 - 2) - 1;
+    FRAME;
+  END
+END
+
+PROCESS particle(fx, fy, g, vx, vy, life);
+PRIVATE t;
+BEGIN
+  graph = g; z = -10;
+  FOR t = 1 TO life
+    fx += vx; fy += vy; vy += 0.2;
+    x = fx; y = fy; alpha = 100 - t * 100 / life;
+    FRAME;
+  END
+END
+
+// Sudden death: a wall drops onto cell c, crushing whatever is there
+PROCESS dropwall(c);
+PRIVATE t; k; sl;
+BEGIN
+  graph = g_wallt[theme]; z = -20; x = cxp(c);
+  FOR t = 0 TO 12
+    y = cyp(c) - 220 + t * 220 / 12; size = 130 - t * 30 / 12;
+    FRAME;
+  END
+  cell[c] = 1; itm[c] = 0; hid[c] = 0;
+  IF (bombc[c])
+    sl = bombc[c] - 1;
+    b_on[sl] = 0; bombc[c] = 0;
+    IF (p_bout[b_own[sl]] > 0) p_bout[b_own[sl]]--; END
+    signal(b_pid[sl], s_kill);
+  END
+  FOR k = 0 TO 3
+    IF (p_alive[k] AND pcell(p_x[k], p_y[k]) == c) kill_player(k, -2); END
+  END
+  draw_cell(c);
+  IF (cell[c + GW] == 0) draw_cell(c + GW); END
+  puff(c, 1, 4);
+  dirty = 1;
+END
+
+PROCESS warpfx(c);
+BEGIN
+  x = cxp(c); y = cyp(c); z = 8; graph = g_warp;
+  LOOP angle += 4000; FRAME; END
+END
+
+PROCESS banner(g, life, yy);
+PRIVATE t;
+BEGIN
+  graph = g; x = 320; y = 250 + yy; z = -60;
+  FOR t = 1 TO life
+    size = 100;
+    IF (t < 8) size = 40 + t * 60 / 8; END
+    IF (life - t < 8) alpha = (life - t) * 12; END
+    FRAME;
+  END
+END
+
+PROCESS logo();
+BEGIN
+  graph = g_logo; x = 320; z = -60;
+  LOOP y = 112 + abs((get_time() * 20) % 8 - 4); FRAME; END
+END
+
+// ======================================================================
+// Rounds and matches
+// ======================================================================
+
+FUNCTION new_round();
+PRIVATE k;
+BEGIN
+  let_me_alone();
+  round++; st_rounds++;
+  theme = (match_seed + round) % 4;
+  IF (attract == 0 AND opt_arena > 0) theme = opt_arena - 1; END
+  seed = (match_seed * 31 + round * 977) % 100000;
+  FOR k = 0 TO 39 b_on[k] = 0; END
+  FOR k = 0 TO 3
+    p_alive[k] = p_on[k]; p_bmax[k] = 1; p_bout[k] = 0; p_fire[k] = 2;
+    p_spd[k] = 0; p_kick[k] = 0; p_rem[k] = 0; p_curse[k] = 0; p_ctime[k] = 0;
+    ai_len[k] = 0; ai_idx[k] = 0; ai_phase[k] = 0; ai_seen[k] = -1;
+    ai_react[k] = -1; ai_next[k] = 0; ai_badc[k] = -1; ai_tgt[k] = -1; ai_wcool[k] = 0;
+  END
+  tleft = ROUND_T; sd_on = 0; end_t = 0; winner = -1; dirty = 1;
+  state = 0;
+  builder();
+  RETURN 0;
+END
+
+// att 1: CPU-only battle behind the title menu; 0: the real match
+FUNCTION start_match(att);
+PRIVATE k; n;
+BEGIN
+  attract = att;
+  FOR k = 0 TO 3 p_on[k] = att; p_ctl[k] = 3; p_wins[k] = 0; END
+  diff = 1;
+  IF (att == 0)
+    diff = opt_diff;
+    p_on[0] = 1; p_ctl[0] = 1; k = 1;
+    IF (opt_p2) p_on[1] = 1; p_ctl[1] = 2; k = 2; END
+    n = opt_cpu;
+    IF (n + k > 4) n = 4 - k; END
+    IF (n + k < 2) n = 1; END
+    WHILE (n > 0) p_on[k] = 1; k++; n--; END
+  END
+  round = 0;
+  match_seed = rand(1, 99999);
+  new_round();
+  RETURN 0;
+END
+
+// Spiral of the interior cells, from the outside in, skipping walls
+FUNCTION start_sudden_death();
+PRIVATE l = 1; r = 13; t = 1; b = 11; i; k; c;
+BEGIN
+  sd_n = 0;
+  WHILE (l <= r AND t <= b)
+    FOR k = 0 TO 3
+      IF (k == 0) FOR i = l TO r sd_list[sd_n] = t * GW + i; sd_n++; END END
+      IF (k == 1) FOR i = t + 1 TO b sd_list[sd_n] = i * GW + r; sd_n++; END END
+      IF (k == 2 AND t < b) FOR i = r - 1 TO l STEP -1 sd_list[sd_n] = b * GW + i; sd_n++; END END
+      IF (k == 3 AND l < r) FOR i = b - 1 TO t + 1 STEP -1 sd_list[sd_n] = i * GW + l; sd_n++; END END
+    END
+    l++; r--; t++; b--;
+  END
+  k = 0;                               // drop the cells that are walls already
+  FOR i = 0 TO sd_n - 1
+    c = sd_list[i];
+    IF (cell[c] != 1) sd_list[k] = c; k++; END
+  END
+  sd_n = k; sd_i = 0; sd_next = tick + 40; sd_on = 1; dirty = 1;
+  banner(g_hurry, 90, -60);
+  RETURN 0;
+END
+
+// Top HUD (names, wins, powers, clock) and the side panels
+FUNCTION draw_hud();
+PRIVATE k; hx; s; m;
+BEGIN
+  FOR k = 0 TO 3
+    IF (p_on[k])
+      hx = hud_x[k];
+      set_color('#ffffff'); text(hx + 36, 9, pname(k));
+      set_color('#ffd84a'); text(hx + 72, 9, 'WINS ' + p_wins[k]);
+      IF (p_alive[k])
+        set_color('#b8c8ff');
+        s = 'B' + p_bmax[k] + ' F' + p_fire[k] + ' S' + p_spd[k];
+        IF (p_kick[k]) s = s + ' K'; END
+        IF (p_rem[k]) s = s + ' R'; END
+        IF (p_curse[k]) set_color('#ff70ff'); s = 'SKULL!'; END
+      ELSE
+        set_color('#ff6060'); s = 'OUT';
+      END
+      text(hx + 36, 25, s);
+    END
+  END
+  s = (tleft + 59) / 60; m = s % 60;
+  set_color('#ffffff');
+  IF (sd_on)
+    set_color('#ff5040'); text(302, 18, 'HURRY!');
+  ELSE
+    IF (tleft < 600 AND (tick / 15) % 2 == 0) set_color('#ff8060'); END
+    IF (m < 10) text(308, 18, '' + s / 60 + ':0' + m); ELSE text(308, 18, '' + s / 60 + ':' + m); END
+  END
+  set_color('#e0e0f0');
+  text(12, 70, 'ROUND ' + round); text(12, 86, theme_name(theme));
+  text(12, 102, 'ARENA'); text(12, 114, '#' + seed);
+  text(572, 70, 'FIRST'); text(572, 82, 'TO ' + opt_wins);
+  IF (attract == 0) text(572, 102, diff_name(diff)); END
+  RETURN 0;
+END
+
+FUNCTION panel(x0, y0, w, h);
+BEGIN
+  draw_rect(x0 - 3, y0 - 3, w + 6, h + 6, '#8890c8');
+  draw_rect(x0, y0, w, h, '#101224');
+  RETURN 0;
+END
+
+FUNCTION draw_menu();
+PRIVATE i; s;
+BEGIN
+  panel(160, 160, 320, 210);
+  FOR i = 0 TO 5
+    IF (i == 0) s = 'CPU BOMBERS    < ' + opt_cpu + ' >'; END
+    IF (i == 1) s = 'PLAYER 2 (WASD)  '; IF (opt_p2) s = s + 'ON'; ELSE s = s + 'OFF'; END END
+    IF (i == 2) s = 'DIFFICULTY     ' + diff_name(opt_diff); END
+    IF (i == 3) s = 'ARENA          '; IF (opt_arena == 0) s = s + 'RANDOM'; ELSE s = s + theme_name(opt_arena - 1); END END
+    IF (i == 4) s = 'WINS NEEDED    ' + opt_wins; END
+    IF (i == 5) s = 'START BATTLE'; END
+    set_color('#a0a8d0');
+    IF (i == menu) set_color('#ffd84a'); text(180, 176 + i * 20, '>'); END
+    text(196, 176 + i * 20, s);
+  END
+  set_color('#c8d0ff');
+  text(176, 306, 'P1: ARROWS  SPACE bomb  ENTER remote');
+  text(176, 320, 'P2: WASD    Q bomb      E remote');
+  set_color('#80ff90');
+  text(176, 344, 'UP/DOWN pick  LEFT/RIGHT change');
+  text(176, 356, 'SPACE or ENTER to start');
+  RETURN 0;
+END
+
+FUNCTION menu_input();
+PRIVATE ch = 0;
+BEGIN
+  IF (key_pressed(_up)) menu = (menu + 5) % 6; END
+  IF (key_pressed(_down)) menu = (menu + 1) % 6; END
+  ch = key_pressed(_right) - key_pressed(_left);
+  IF (ch != 0)
+    IF (menu == 0) opt_cpu = clamp(opt_cpu + ch, 0, 3); END
+    IF (menu == 1) opt_p2 = 1 - opt_p2; END
+    IF (menu == 2) opt_diff = clamp(opt_diff + ch, 0, 2); END
+    IF (menu == 3) opt_arena = (opt_arena + ch + 5) % 5; END
+    IF (menu == 4) opt_wins = clamp(opt_wins + ch, 1, 5); END
+  END
+  IF (key_pressed(_space) OR key_pressed(_enter)) start_match(0); END
+  RETURN 0;
+END
+
+FUNCTION draw_results(final);
+PRIVATE k; yy; i;
+BEGIN
+  panel(170, 150, 300, 190);
+  set_color('#ffd84a');
+  IF (final) text(250, 166, 'M A T C H   O V E R'); ELSE text(262, 166, 'ROUND ' + round + ' OVER'); END
+  set_color('#ffffff');
+  IF (winner < 0)
+    text(290, 190, 'DRAW!');
+  ELSE
+    IF (final) text(220, 190, pname(winner) + ' WINS THE MATCH!'); ELSE text(226, 190, pname(winner) + ' WINS THE ROUND'); END
+  END
+  yy = 216;
+  FOR k = 0 TO 3
+    IF (p_on[k])
+      set_color('#e0e0f0'); text(200, yy, pname(k));
+      FOR i = 1 TO opt_wins
+        set_color('#303048');
+        IF (i <= p_wins[k]) set_color('#ffd84a'); END
+        circle(250 + i * 22, yy + 3, 7);
+      END
+      yy += 20;
+    END
+  END
+  set_color('#80ff90');
+  IF (final) text(200, 310, 'ENTER rematch    SPACE title'); ELSE text(230, 310, 'SPACE next round'); END
+  RETURN 0;
+END
+
+// ======================================================================
+// MAIN
+// ======================================================================
+
+PRIVATE k; n;
+BEGIN
+  set_mode(640, 480);
+  set_fps(60, 0);
+  screen_color('#000000');
+  doff[0] = 1; doff[1] = GW; doff[2] = -1; doff[3] = -GW;
+  keys[0] = _right; keys[1] = _down; keys[2] = _left; keys[3] = _up; keys[4] = _space; keys[5] = _enter;
+  keys[6] = _d; keys[7] = _s; keys[8] = _a; keys[9] = _w; keys[10] = _q; keys[11] = _e;
+  make_players();
+  FRAME;
+  make_graphics();
+  g_bg = new_graphic(640, 480);
+  put_screen(0, g_bg);
+  FRAME;
+  start_match(1);
+
+  LOOP
+    SWITCH (state)
+      CASE 1                                   // READY? / GO!
+        state_t++;
+        IF (state_t == 60) banner(g_go, 40, 0); END
+        IF (state_t >= 70) state = 2; END
+      CASE 2                                   // playing
+        tick++;
+        IF (dirty) rebuild(); END
+        tleft--;
+        IF (tleft == 0) start_sudden_death(); END
+        IF (sd_on AND sd_i < sd_n AND tick >= sd_next AND end_t == 0)   // stops for the last one
+          dropwall(sd_list[sd_i]);
+          sd_i++; sd_next = tick + SD_GAP; dirty = 1;
+        END
+        n = 0;
+        FOR k = 0 TO 3 IF (p_alive[k]) n++; END END
+        IF (n <= 1 AND end_t == 0) end_t = tick + 80; END   // a moment for late deaths
+        IF (end_t > 0 AND tick >= end_t)
+          winner = -1;
+          FOR k = 0 TO 3 IF (p_alive[k]) winner = k; END END
+          IF (winner >= 0) p_wins[winner]++; ELSE st_draws++; END
+          state = 3; state_t = 0;
+        END
+      CASE 3                                   // round over
+        state_t++;
+        IF (attract == 0) draw_results(0); END
+        IF ((attract AND state_t > 90) OR (state_t > 30 AND (key_pressed(_space) OR key_pressed(_enter))))
+          IF (winner >= 0 AND p_wins[winner] >= opt_wins) state = 4; state_t = 0; ELSE new_round(); END
+        END
+      CASE 4                                   // match over
+        state_t++;
+        IF (attract)
+          IF (state_t > 60) start_match(1); END
+        ELSE
+          draw_results(1);
+          IF (state_t > 30 AND key_pressed(_enter)) start_match(0);
+          ELSE IF (state_t > 30 AND key_pressed(_space)) start_match(1); END END
+        END
+    END
+    IF (state > 0) draw_hud(); END
+    IF (attract)
+      draw_menu(); menu_input();
+    ELSE
+      IF (key_pressed(_esc)) start_match(1); END
+    END
+    FRAME;
+  END
+END

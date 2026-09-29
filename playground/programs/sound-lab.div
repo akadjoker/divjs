@@ -1,0 +1,90 @@
+PROGRAM sound_lab;
+
+// Sound without files. sfx() makes the classic game effects from a recipe
+// (the seed gives variations of each), and a song is written as lines of
+// notes, one step per sixteenth note:
+//   "C4 - E4 ."   C4 held two steps, E4 one step, then a step of silence
+//   "k . h . s ." drums: k kick, s snare, h hi-hat
+// The browser lets a page play sound only after a click or a key press,
+// so the music starts with your first key.
+
+GLOBAL
+  seed = 0;
+  music_on = 1;
+  last = -1;          // effect played last (for the flash)
+  flash = 0;
+  song = 0;
+  names[7] = 'COIN', 'LASER', 'EXPLOSION', 'POWER-UP', 'HIT', 'JUMP', 'BLIP', 'RANDOM';
+
+FUNCTION make_song();
+PRIVATE s = 0;
+BEGIN
+  s = song_new(132);
+  // Lead: two bars that answer each other.
+  song_track(s, inst_square,
+    "E5 - G5 - A5 - . A5 | G5 - E5 - D5 - C5 - | E5 - G5 - A5 - C6 - | B5 - G5 - A5 - - - |" +
+    "E5 - G5 - A5 - . A5 | G5 - E5 - D5 - C5 - | D5 - E5 - C5 - A4 - | C5 - - - - - . . ", 45);
+  // Bass, an octave under what is written.
+  song_track(s, inst_bass,
+    "A3 . A3 . A4 . A3 . | F3 . F3 . F4 . F3 . | C4 . C4 . C5 . C4 . | G3 . G3 . G4 . G3 . ", 70);
+  // Chords in the background.
+  song_track(s, inst_pad,
+    "A4 - - - - - - - | F4 - - - - - - - | C5 - - - - - - - | G4 - - - - - - - ", 30);
+  song_track(s, inst_drums, "k . h . s . h . | k . h k s . h h ", 70);
+  RETURN s;
+END
+
+PRIVATE k = 0; id = 0; px = 0; c = 0;
+BEGIN
+  set_mode(640, 360);
+  set_fps(60, 0);
+  song = make_song();
+  song_play(song);
+
+  LOOP
+    // 1..8: play an effect with the current seed.
+    IF (key_pressed(_1)) last = 0; END
+    IF (key_pressed(_2)) last = 1; END
+    IF (key_pressed(_3)) last = 2; END
+    IF (key_pressed(_4)) last = 3; END
+    IF (key_pressed(_5)) last = 4; END
+    IF (key_pressed(_6)) last = 5; END
+    IF (key_pressed(_7)) last = 6; END
+    IF (key_pressed(_8)) last = 7; END
+    IF (key_pressed(_1) OR key_pressed(_2) OR key_pressed(_3) OR key_pressed(_4) OR
+        key_pressed(_5) OR key_pressed(_6) OR key_pressed(_7) OR key_pressed(_8))
+      id = sfx(last, seed);
+      play_sound(id, 90, 100, (last - 3) * 25);   // spread left to right
+      flash = 20;
+    END
+    IF (key_pressed(_up)) seed = seed + 1; END
+    IF (key_pressed(_down) AND seed > 0) seed = seed - 1; END
+    IF (key_pressed(_m))
+      music_on = 1 - music_on;
+      IF (music_on) song_play(song); ELSE song_stop(); END
+    END
+
+    // Screen
+    set_color('#ffe070');
+    text(24, 20, 'SOUND LAB  -  every sound here is made by the engine, no files');
+    FOR k = 0 TO 7
+      px = 24 + k * 76;
+      c = 40;
+      IF (k == last AND flash > 0) c = 40 + flash * 8; END
+      draw_rect(px, 70, 68, 90, 'rgb(' + c + ',' + (c + 20) + ',' + (c + 50) + ')');
+      set_color('#ffffff');
+      text(px + 30, 82, '' + (k + 1));
+      set_color('#a8c0d8');
+      text(px + 6, 130, names[k]);
+    END
+    set_color('#dfe8f0');
+    text(24, 190, '1-8  play an effect        UP/DOWN  variation (seed ' + seed + ')');
+    IF (music_on) text(24, 210, 'M  music on   (it starts with your first key press)');
+    ELSE text(24, 210, 'M  music off'); END
+    set_color('#8fa4b8');
+    text(24, 250, 'sfx(sfx_coin, seed)   play_sound(id, volume, pitch, pan)');
+    text(24, 268, 'song_new(bpm)  song_track(song, inst_square, "E5 - G5 - A5 - . A5")  song_play(song)');
+    IF (flash > 0) flash = flash - 1; END
+    FRAME;
+  END
+END

@@ -1,0 +1,1100 @@
+PROGRAM pinball;
+
+// PROCEDURAL PINBALL - a physics pinball whose table is generated from a
+// seed. Everything that moves is a rigid body of the engine's physics
+// (phys_* on Planck.js): the ball, two kinematic flippers, the plunger.
+// Walls, rails, ramps and the orbit are static edge chains built from one
+// list of segments, which is also what the table art is drawn from.
+//
+// The generator keeps a list of "keep-out" circles: every object it places
+// reserves room around itself, so bumpers, target banks and the ramp never
+// crowd each other into pockets, and nothing is placed in front of the
+// flippers. Anything a ball could still rest on is caught by the ball's
+// stuck detector, which gives it a nudge.
+
+GLOBAL
+  // Table frame (pixels). The playfield runs from WL to WR; the plunger
+  // lane is WR..LO. The top is an arch of radius AR around (ACX, ACY).
+  WL = 24;  WR = 424;  LO = 456;
+  ACX = 240;  ACY = 260;  AR = 216;
+  ORB_R = 178;                 // inner wall of the orbit channel
+  PCX = 224;                   // centre line between the flippers
+  PL_REST = 744;               // plunger head at rest
+  FLIP_UP = 2000000;           // flipper speeds, DIV angle units / second
+  FLIP_DOWN = 900000;
+
+  // Graphics (all drawn in code)
+  g_bg = 0;  g_ball = 0;  g_flip_l = 0;  g_flip_r = 0;
+  g_bump_off = 0;  g_bump_on = 0;  g_target = 0;  g_plunger = 0;
+  g_title = 0;  g_over = 0;
+  g_lamp_off[4];  g_lamp_on[4];
+  lc_r[4];  lc_g[4];  lc_b[4];          // lamp colours
+  th_r = 0;  th_g = 0;  th_b = 0;       // table theme: background ...
+  ac_r = 0;  ac_g = 0;  ac_b = 0;       // ... and accent colour
+  name_a = 0;  name_b = 0;              // table name words
+
+  // Game state
+  state = 0;                  // 0 title, 1 playing, 2 game over
+  want_table = 1;             // 1 = (re)build the table from seed
+  seed = 0;  tick = 0;
+  score = 0;  hiscore = 0;  ball_no = 0;  extra_balls = 0;
+  mult = 1;  bonus = 0;  next_extra = 0;
+  msg_id = 0;  msg_t = 0;
+  ball_live = 0;  drained = 0;  new_ball_t = 0;  in_lane = 0;
+  ball_x = 0;  ball_y = 0;  ball_vx = 0;  ball_vy = 0;  ball_speed = 0;
+  drain_x = 0;                // where the last ball left the table
+  kick_req = 0;  kick_vx = 0;  kick_vy = 0;   // velocity for the ball to take
+  tilt_meter = 0;  tilted = 0;
+  save_t = 0;  save_used = 0;  kick_lit[1];     // kickbacks, left and right
+  flip_l = 0;  flip_r = 0;    // flipper buttons held
+  fire_v = 0;  launch_t = -999;   // plunger launch speed, and when
+
+  // Generated layout
+  nseg = 0;  sx1[139];  sy1[139];  sx2[139];  sy2[139];
+  nko = 0;  ko_x[39];  ko_y[39];  ko_r[39];
+  orbit_on = 0;  orb_al = 0;  orb_ar = 0;  orb_xl = 0;  orb_yl = 0;
+  orb_ye = 0;  guide_y = 0;
+  top_n = 0;  top_lit[3];
+  nbump = 0;  bump_x[3];  bump_y[3];
+  ntarg = 0;  targ_x[7];  targ_y[7];  targ_a[7];  targ_bank[7];  targ_down[7];
+  nbank = 0;  bank_first[1];  bank_n[1];  bank_reset_t[1];  bank_level = 0;
+  ramp_on = 0;  ramp_x0 = 0;  ramp_y0 = 0;  ramp_x1 = 0;  ramp_y1 = 0;  ramp_a = 0;
+  ramp_count = 0;  ramp_in_t = -999;  orbit_l_t = -999;  orbit_r_t = -999;
+  spin_x = 0;  spin_y = 0;  spin_w = 0;  spin_v = 0;  spin_ph = 0;
+
+  // Statistics (read by the tests, shown nowhere)
+  st_bump = 0;  st_sling = 0;  st_target = 0;  st_roll = 0;  st_spin = 0;
+  st_orbit = 0;  st_ramp = 0;  st_kick = 0;  st_save = 0;  st_stuck = 0;
+  st_bank = 0;  st_escape = 0;  st_drain = 0;  st_launch = 0;
+
+LOCAL
+  hit = 0;                    // flash timer (bumpers, slingshots)
+  nx = 0;  ny = 0;            // kick direction of a slingshot
+
+// ---------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------
+
+// x on the left side (side 0) or mirrored onto the right side (side 1).
+FUNCTION mirx(px, side);
+BEGIN
+  IF (side == 1) RETURN 448 - px; END
+  RETURN px;
+END
+
+FUNCTION add_seg(ax, ay, bx, by);
+BEGIN
+  sx1[nseg] = ax;  sy1[nseg] = ay;  sx2[nseg] = bx;  sy2[nseg] = by;
+  nseg++;
+  RETURN 0;
+END
+
+// An arc as a chain of segments, from angle a0 to a1 (DIV angles).
+FUNCTION add_arc(cx, cy, r, a0, a1, steps);
+PRIVATE i, p, q;
+BEGIN
+  FOR i = 0 TO steps - 1
+    p = a0 + (a1 - a0) * i / steps;
+    q = a0 + (a1 - a0) * (i + 1) / steps;
+    add_seg(cx + get_distx(p, r), cy + get_disty(p, r), cx + get_distx(q, r), cy + get_disty(q, r));
+  END
+  RETURN 0;
+END
+
+// Keep-out circles: room reserved by what the generator already placed.
+FUNCTION add_ko(px, py, r);
+BEGIN
+  ko_x[nko] = px;  ko_y[nko] = py;  ko_r[nko] = r;
+  nko++;
+  RETURN 0;
+END
+
+FUNCTION ko_free(px, py, r);
+PRIVATE i;
+BEGIN
+  FOR i = 0 TO nko - 1
+    IF (fget_distance(px, py, ko_x[i], ko_y[i]) < ko_r[i] + r) RETURN 0; END
+  END
+  RETURN 1;
+END
+
+FUNCTION word_a(i);
+BEGIN
+  IF (i == 0) RETURN "COSMIC"; END  IF (i == 1) RETURN "NEON"; END
+  IF (i == 2) RETURN "ATOMIC"; END  IF (i == 3) RETURN "LOST"; END
+  IF (i == 4) RETURN "ROYAL"; END   IF (i == 5) RETURN "THUNDER"; END
+  IF (i == 6) RETURN "MIDNIGHT"; END
+  RETURN "GALACTIC";
+END
+
+FUNCTION word_b(i);
+BEGIN
+  IF (i == 0) RETURN "COMET"; END   IF (i == 1) RETURN "CIRCUS"; END
+  IF (i == 2) RETURN "VOLCANO"; END IF (i == 3) RETURN "PHARAOH"; END
+  IF (i == 4) RETURN "REACTOR"; END IF (i == 5) RETURN "LAGOON"; END
+  IF (i == 6) RETURN "DRAGON"; END
+  RETURN "EXPRESS";
+END
+
+// One message in the middle of the HUD, replacing the previous one.
+FUNCTION show_msg(s);
+BEGIN
+  IF (msg_id) delete_text(msg_id); END
+  set_color('#ffe070');
+  msg_id = write(0, 240, 30, 4, s);
+  msg_t = 150;
+  RETURN 0;
+END
+
+// ---------------------------------------------------------------------
+// Scoring and rules
+// ---------------------------------------------------------------------
+
+FUNCTION add_score(n);
+BEGIN
+  IF (tilted OR state != 1) RETURN 0; END
+  score += n * mult;
+  IF (score >= next_extra)
+    extra_balls++;
+    next_extra = next_extra * 2;
+    show_msg("EXTRA BALL!");
+  END
+  RETURN 1;
+END
+
+// A drop target went down: when its whole bank is down, award it, light
+// the kickback and put the bank back up a moment later.
+FUNCTION check_bank(b);
+PRIVATE i, down;
+BEGIN
+  down = 0;
+  FOR i = bank_first[b] TO bank_first[b] + bank_n[b] - 1
+    down += targ_down[i];
+  END
+  IF (down == bank_n[b])
+    bank_level++;
+    st_bank++;
+    add_score(10000 * bank_level);
+    bonus += 5000;
+    kick_lit[0] = 1;  kick_lit[1] = 1;
+    bank_reset_t[b] = 100;
+    show_msg("TARGETS COMPLETE  " + 10000 * bank_level * mult);
+  END
+  RETURN 0;
+END
+
+// A rollover or lane switch was crossed by the ball.
+FUNCTION sensor_hit(kind, idx);
+PRIVATE i, all;
+BEGIN
+  IF (tilted OR state != 1) RETURN 0; END
+  st_roll++;
+  bonus += 100;
+  SWITCH (kind)
+    CASE 0                                   // top lanes
+      top_lit[idx] = 1;
+      add_score(500);
+      all = 1;
+      FOR i = 0 TO top_n - 1
+        IF (top_lit[i] == 0) all = 0; END
+      END
+      IF (all)
+        FOR i = 0 TO top_n - 1 top_lit[i] = 0; END
+        IF (mult < 5) mult++; show_msg("MULTIPLIER x" + mult);
+        ELSE add_score(25000); show_msg("TOP LANES 25000"); END
+      END
+    CASE 1 add_score(1000);                  // inlanes
+    CASE 2 add_score(2500);                  // outlanes (a consolation)
+    CASE 3                                   // kickback in an outlane
+      IF (kick_lit[idx])
+        kick_lit[idx] = 0;
+        kick_vx = 0;  kick_vy = -980;  kick_req = 1;
+        st_kick++;
+        show_msg("KICKBACK!");
+      END
+    CASE 4                                   // left orbit lane
+      IF (tick - orbit_r_t < 180) orbit_shot(); ELSE orbit_l_t = tick; END
+    CASE 5                                   // right end of the orbit
+      IF (tick - orbit_l_t < 180) orbit_shot();
+      ELSE IF (tick - launch_t > 150) orbit_r_t = tick; END END   // not a plunge
+    CASE 6 ramp_in_t = tick;                 // ramp entrance
+    CASE 7                                   // ramp exit
+      IF (tick - ramp_in_t < 150)
+        ramp_in_t = -999;
+        ramp_count++;
+        st_ramp++;
+        add_score(5000 + 2500 * ramp_count);
+        IF (ramp_count % 2 == 0) kick_lit[ramp_count / 2 % 2] = 1; END
+        show_msg("RAMP  " + (5000 + 2500 * ramp_count) * mult);
+      END
+  END
+  RETURN 1;
+END
+
+FUNCTION orbit_shot();
+BEGIN
+  orbit_l_t = -999;  orbit_r_t = -999;
+  st_orbit++;
+  add_score(7500);
+  show_msg("ORBIT  " + 7500 * mult);
+  RETURN 0;
+END
+
+// 0 off, 1 on, 2 blinking - what each lamp shows.
+FUNCTION lamp_state(kind, idx);
+BEGIN
+  SWITCH (kind)
+    CASE 0 RETURN top_lit[idx];
+    CASE 1 RETURN targ_down[idx];
+    CASE 2 RETURN kick_lit[idx];
+    CASE 3                                   // shoot again: ball save / extra ball
+      IF (save_t > 0 AND save_used == 0 AND ball_live) RETURN 2; END
+      IF (extra_balls > 0) RETURN 1; END
+    CASE 4 RETURN mult >= idx;
+    CASE 5 IF (score + 20000 >= next_extra AND state == 1) RETURN 2; END
+    CASE 6                                   // orbit arrows: blink while it is "hot"
+      IF (tick - orbit_l_t < 180 OR tick - orbit_r_t < 180) RETURN 2; END
+      RETURN tick / 40 % 2;
+    CASE 7
+      IF (tick - ramp_in_t < 150) RETURN 2; END
+      RETURN (tick / 40 + 1) % 2;
+  END
+  RETURN 0;
+END
+
+// ---------------------------------------------------------------------
+// The table generator: fills the segment list and the object tables
+// from the seed. It only places data; spawn_table makes the bodies.
+// ---------------------------------------------------------------------
+
+FUNCTION build_layout();
+PRIVATE i, n, side, px, py, a, dx, dy, top, tries, ok, cx, cy;
+BEGIN
+  rand_seed(seed);
+  nseg = 0;  nko = 0;  ntarg = 0;  nbank = 0;  nbump = 0;
+  name_a = rand(0, 7);  name_b = rand(0, 7);
+
+  // The fixed frame: side walls, the arch and the plunger lane.
+  add_seg(WL, 800, WL, ACY);
+  add_arc(ACX, ACY, AR, 180000, 0, 24);
+  add_seg(LO, ACY, LO, 800);
+  add_seg(WR, 800, WR, 250);
+
+  // Lower playfield, left then mirrored: the in/outlane guide leading
+  // onto the flipper, and the back of the slingshot triangle.
+  FOR side = 0 TO 1
+    add_seg(mirx(42, side), 540, mirx(46, side), 556);         // cap: narrows the outlane mouth
+    add_seg(mirx(46, side), 556, mirx(46, side), 636);
+    add_seg(mirx(46, side), 636, mirx(142.8, side), 696.4);  // tangent to the hinge
+    add_seg(mirx(86, side), 572, mirx(86, side), 630);
+    add_seg(mirx(86, side), 630, mirx(124, side), 654);
+  END
+
+  // The orbit: an inner wall concentric with the arch makes a channel
+  // round the top, entered from a lane along the left wall. On the right
+  // it opens above the bumpers: a hard plunge (or a left orbit shot) goes
+  // all the way round, a soft one drops into the upper playfield.
+  orbit_on = rand(0, 99) < 75;
+  guide_y = rand(296, 330);
+  IF (orbit_on)
+    orb_al = rand(148, 160) * 1000;
+    orb_ar = rand(55, 72) * 1000;
+    orb_ye = rand(288, 312);
+    orb_xl = ACX + get_distx(orb_al, ORB_R);  orb_yl = ACY + get_disty(orb_al, ORB_R);
+    add_arc(ACX, ACY, ORB_R, orb_al, orb_ar, 16);
+    add_seg(orb_xl, orb_yl, orb_xl, orb_ye);
+    guide_y = orb_ye + 14;
+  END
+
+  // Without an orbit, a post sticking in from the upper left of the arch
+  // stops a hard plunge from riding the arch all the way round and down
+  // the left wall: it drops into the upper playfield instead.
+  IF (orbit_on == 0)
+    add_seg(ACX + get_distx(142000, AR), ACY + get_disty(142000, AR), ACX + get_distx(142000, AR - 24), ACY + get_disty(142000, AR - 24));
+  END
+
+  // Wall guides: a long slanted rail on each side wall turns a ball that
+  // falls down the wall back across the table - and, lying along the line
+  // of a flipper shot, funnels shots up into the orbit lane.
+  add_seg(WL, guide_y, WL + 36, guide_y + 50);
+  add_seg(WR, guide_y, WR - 36, guide_y + 50);
+
+  // Top rollover lanes, separated by short posts.
+  top_n = rand(3, 4);
+  FOR i = 0 TO top_n
+    px = ACX - top_n * 17 + i * 34;
+    add_seg(px, 120, px, 148);
+  END
+
+  // The ramp: a channel of two parallel rails from mid-field up into the
+  // bumper area, on one side; the side target bank goes on the other.
+  side = rand(0, 1);
+  ramp_on = rand(0, 99) < 70 OR orbit_on == 0;
+  IF (ramp_on)
+    IF (side == 0)
+      ramp_x0 = rand(292, 330);  ramp_x1 = ramp_x0 - rand(10, 50);
+    ELSE
+      ramp_x0 = rand(118, 156);  ramp_x1 = ramp_x0 + rand(10, 50);
+    END
+    ramp_y0 = rand(440, 468);  ramp_y1 = ramp_y0 - rand(130, 160);
+    ramp_a = fget_angle(ramp_x0, ramp_y0, ramp_x1, ramp_y1);
+    dx = get_distx(ramp_a + 90000, 17);  dy = get_disty(ramp_a + 90000, 17);
+    add_seg(ramp_x0 + dx, ramp_y0 + dy, ramp_x1 + dx, ramp_y1 + dy);
+    add_seg(ramp_x0 - dx, ramp_y0 - dy, ramp_x1 - dx, ramp_y1 - dy);
+    FOR i = 0 TO 3
+      add_ko(ramp_x0 + (ramp_x1 - ramp_x0) * i * 0.333, ramp_y0 + (ramp_y1 - ramp_y0) * i * 0.333, 34);
+    END
+  END
+
+  // On the ramp's side there is no bank: a lower wall guide turns balls
+  // that fall down that wall away from the outlane.
+  add_seg(mirx(WL, 1 - side), 462, mirx(WL + 26, 1 - side), 500);
+
+  // Side bank of drop targets against a wall, under the wall guide.
+  n = rand(3, 5);
+  top = guide_y + 76;
+  WHILE (top + n * 28 > 528) n--; END
+  bank_first[0] = 0;  bank_n[0] = n;  nbank = 1;
+  IF (side == 0) px = WL + 5; ELSE px = WR - 5; END
+  FOR i = 0 TO n - 1
+    targ_x[ntarg] = px;  targ_y[ntarg] = top + 14 + i * 28;
+    targ_a[ntarg] = 90000;  targ_bank[ntarg] = 0;
+    ntarg++;
+  END
+  add_ko(px, top + n * 14, n * 14 + 16);
+
+  // Sometimes a second, free-standing bank of three at an angle.
+  IF (rand(0, 99) < 55)
+    FOR tries = 0 TO 30
+      cx = rand(130, 318);  cy = rand(250, 420);
+      a = rand(28, 60) * 1000;
+      IF (rand(0, 1)) a = 180000 - a; END
+      ok = ko_free(cx, cy, 52);
+      IF (orbit_on AND cx < orb_xl + 70) ok = 0; END
+      IF (ok)
+        bank_first[1] = ntarg;  bank_n[1] = 3;  nbank = 2;
+        FOR i = 0 TO 2
+          targ_x[ntarg] = cx + get_distx(a, (i - 1) * 28);
+          targ_y[ntarg] = cy + get_disty(a, (i - 1) * 28);
+          targ_a[ntarg] = a;  targ_bank[ntarg] = 1;
+          ntarg++;
+        END
+        add_ko(cx, cy, 52);
+        BREAK;
+      END
+    END
+  END
+
+  // Pop bumpers in the upper playfield, with room to pass between them.
+  n = rand(2, 4);
+  FOR i = 0 TO n - 1
+    FOR tries = 0 TO 30
+      px = rand(96, 384);  py = rand(190, 330);
+      ok = ko_free(px, py, 42);
+      IF (orbit_on)
+        IF (py < ACY AND fget_distance(px, py, ACX, ACY) > ORB_R - 44) ok = 0; END
+        IF (px < orb_xl + 46 OR px > WR - 60) ok = 0; END
+      ELSE
+        IF (fget_distance(px, py, ACX, ACY) > AR - 46 OR px < WL + 60 OR px > WR - 60) ok = 0; END
+      END
+      IF (ok)
+        bump_x[nbump] = px;  bump_y[nbump] = py;  nbump++;
+        add_ko(px, py, 26);
+        BREAK;
+      END
+    END
+  END
+
+  // A spinner: in the left orbit lane, or across the ramp.
+  IF (orbit_on)
+    spin_x = (WL + orb_xl) / 2;  spin_y = orb_ye - 44;  spin_w = orb_xl - WL - 4;
+  ELSE
+    spin_x = (ramp_x0 + ramp_x1) / 2;  spin_y = (ramp_y0 + ramp_y1) / 2;  spin_w = 28;
+  END
+
+  // The colour theme.
+  i = rand(0, 3);
+  IF (i == 0) th_r = 20; th_g = 10; th_b = 42; ac_r = 255; ac_g = 70;  ac_b = 200; END
+  IF (i == 1) th_r = 4;  th_g = 26; th_b = 34; ac_r = 40;  ac_g = 230; ac_b = 210; END
+  IF (i == 2) th_r = 36; th_g = 10; th_b = 8;  ac_r = 255; ac_g = 140; ac_b = 30;  END
+  IF (i == 3) th_r = 6;  th_g = 14; th_b = 44; ac_r = 80;  ac_g = 160; ac_b = 255; END
+  rand_seed();
+  RETURN 0;
+END
+
+// ---------------------------------------------------------------------
+// Graphics
+// ---------------------------------------------------------------------
+
+FUNCTION make_graphics();
+PRIVATE i, t, r, c;
+BEGIN
+  // Lamp colours: yellow, red, green, orange, blue.
+  lc_r[0] = 255; lc_g[0] = 220; lc_b[0] = 60;
+  lc_r[1] = 255; lc_g[1] = 60;  lc_b[1] = 60;
+  lc_r[2] = 70;  lc_g[2] = 240; lc_b[2] = 90;
+  lc_r[3] = 255; lc_g[3] = 140; lc_b[3] = 30;
+  lc_r[4] = 70;  lc_g[4] = 150; lc_b[4] = 255;
+  FOR c = 0 TO 4
+    g_lamp_off[c] = new_graphic(24, 24);
+    gfx_fill_rgba(g_lamp_off[c], 0, 0, 0, 0);
+    gfx_circle(g_lamp_off[c], 12, 12, 6, lc_r[c] / 3, lc_g[c] / 3, lc_b[c] / 3);
+    gfx_circle_outline(g_lamp_off[c], 12, 12, 6, 90, 90, 100);
+    g_lamp_on[c] = new_graphic(24, 24);
+    gfx_fill_rgba(g_lamp_on[c], 0, 0, 0, 0);
+    FOR r = 11 TO 7 STEP -1           // a glow fading outwards
+      t = (12 - r) * 0.16;
+      gfx_circle(g_lamp_on[c], 12, 12, r, lc_r[c] * t, lc_g[c] * t, lc_b[c] * t);
+    END
+    gfx_circle(g_lamp_on[c], 12, 12, 6, lc_r[c], lc_g[c], lc_b[c]);
+    gfx_circle(g_lamp_on[c], 11, 11, 2, 255, 255, 240);
+  END
+
+  g_ball = new_graphic(18, 18);
+  gfx_fill_rgba(g_ball, 0, 0, 0, 0);
+  gfx_circle(g_ball, 9, 9, 8, 120, 125, 140);
+  gfx_circle(g_ball, 8, 8, 6, 185, 190, 205);
+  gfx_circle(g_ball, 7, 7, 4, 225, 230, 240);
+  gfx_circle(g_ball, 6, 6, 2, 255, 255, 255);
+
+  // Flippers taper from the hinge (radius 9) to the tip (radius 6); the
+  // pivot (control point 0) is the hinge, so ANGLE turns them around it.
+  g_flip_l = new_graphic(96, 22);
+  g_flip_r = new_graphic(96, 22);
+  gfx_fill_rgba(g_flip_l, 0, 0, 0, 0);
+  gfx_fill_rgba(g_flip_r, 0, 0, 0, 0);
+  FOR i = 0 TO 37
+    t = i * 2;
+    r = 9 - t * 0.04;
+    gfx_circle(g_flip_l, 10 + t, 11, r, 200, 40, 50);
+    gfx_circle(g_flip_r, 85 - t, 11, r, 200, 40, 50);
+  END
+  FOR i = 0 TO 37
+    t = i * 2;
+    r = 7 - t * 0.04;
+    gfx_circle(g_flip_l, 10 + t, 11, r, 245, 240, 228);
+    gfx_circle(g_flip_r, 85 - t, 11, r, 245, 240, 228);
+  END
+  gfx_circle(g_flip_l, 10, 11, 3, 160, 160, 170);
+  gfx_circle(g_flip_r, 85, 11, 3, 160, 160, 170);
+  set_point(0, g_flip_l, 0, 10, 11);
+  set_point(0, g_flip_r, 0, 85, 11);
+
+  g_target = new_graphic(24, 8);
+  g_plunger = new_graphic(26, 10);
+  g_bump_off = new_graphic(64, 64);
+  g_bump_on = new_graphic(64, 64);
+  g_bg = new_graphic(480, 800);
+
+  g_title = new_graphic(440, 110);
+  gfx_fill_rgba(g_title, 0, 0, 0, 0);
+  gfx_text(g_title, 44, 8, "PINBALL", 90, 20, 60, 72);
+  gfx_text(g_title, 40, 4, "PINBALL", 255, 230, 90, 72);
+  gfx_text(g_title, 96, 84, "PROCEDURAL TABLES", 255, 255, 255, 20);
+  g_over = new_graphic(440, 70);
+  gfx_fill_rgba(g_over, 0, 0, 0, 0);
+  gfx_text(g_over, 64, 8, "GAME OVER", 90, 10, 20, 56);
+  gfx_text(g_over, 60, 4, "GAME OVER", 255, 80, 80, 56);
+  RETURN 0;
+END
+
+// The table's own graphics, in its theme colours.
+FUNCTION draw_bumper(g, lit);
+PRIVATE r, t;
+BEGIN
+  gfx_fill_rgba(g, 0, 0, 0, 0);
+  FOR r = 31 TO 19 STEP -1           // halo: from the floor colour to the accent
+    t = (32 - r) * 0.035 + lit * 0.3;
+    IF (t > 1) t = 1; END
+    gfx_circle(g, 32, 32, r, th_r + (ac_r - th_r) * t, th_g + (ac_g - th_g) * t, th_b + (ac_b - th_b) * t);
+  END
+  gfx_circle(g, 32, 32, 18, 235, 235, 245);
+  gfx_circle(g, 32, 32, 16, ac_r * (0.55 + lit * 0.45), ac_g * (0.55 + lit * 0.45), ac_b * (0.55 + lit * 0.45));
+  gfx_circle(g, 32, 32, 10, 250, 250, 255 * (0.8 + lit * 0.2));
+  gfx_circle(g, 32, 32, 6, ac_r, ac_g, ac_b);
+  RETURN 0;
+END
+
+FUNCTION thick_line(g, ax, ay, bx, by, r, gg, b);
+BEGIN
+  gfx_line(g, ax + 1, ay, bx + 1, by, r * 0.6, gg * 0.6, b * 0.6);
+  gfx_line(g, ax, ay + 1, bx, by + 1, r * 0.6, gg * 0.6, b * 0.6);
+  gfx_line(g, ax - 1, ay, bx - 1, by, r * 0.8, gg * 0.8, b * 0.8);
+  gfx_line(g, ax, ay, bx, by, r, gg, b);
+  RETURN 0;
+END
+
+// The playfield art: a gradient floor, a sunburst behind the bumpers,
+// stars, the orbit and ramp bands, and every wall segment as a chrome rail.
+FUNCTION draw_art();
+PRIVATE g, i, k, t, a, dx, dy, px, py, r;
+BEGIN
+  g = g_bg;
+  draw_bumper(g_bump_off, 0);
+  draw_bumper(g_bump_on, 1);
+  gfx_fill_rgba(g_target, 0, 0, 0, 0);
+  gfx_rect(g_target, 0, 0, 24, 8, 255, 150, 40);
+  gfx_rect(g_target, 2, 2, 20, 3, 255, 230, 160);
+  gfx_rect_outline(g_target, 0, 0, 24, 8, 120, 50, 10);
+  gfx_fill(g_plunger, 190, 195, 210);
+  gfx_rect(g_plunger, 0, 0, 26, 3, 240, 240, 250);
+  gfx_rect_outline(g_plunger, 0, 0, 26, 10, 90, 90, 100);
+
+  FOR i = 0 TO 99
+    t = 0.55 + i * 0.009;
+    gfx_rect(g, 0, i * 8, 480, 8, th_r * t, th_g * t, th_b * t);
+  END
+  FOR i = 0 TO 35                    // sunburst
+    a = i * 10000;
+    gfx_line(g, ACX, ACY, ACX + get_distx(a, 460), ACY + get_disty(a, 460), th_r * 1.9 + 6, th_g * 1.9 + 6, th_b * 1.9 + 6);
+  END
+  FOR i = 0 TO 159                   // stars
+    k = rand(60, 200);
+    gfx_pixel(g, rand(WL, WR), rand(50, 760), k, k, k + 30);
+  END
+  // Rings of the accent colour around the bumper area.
+  FOR i = 0 TO 2
+    r = 60 + i * 34;
+    FOR k = 0 TO 35
+      gfx_line(g, ACX + get_distx(k * 10000, r), ACY + 40 + get_disty(k * 10000, r),
+               ACX + get_distx(k * 10000 + 10000, r), ACY + 40 + get_disty(k * 10000 + 10000, r),
+               th_r + (ac_r - th_r) * 0.25, th_g + (ac_g - th_g) * 0.25, th_b + (ac_b - th_b) * 0.25);
+    END
+  END
+  // The orbit channel and the ramp as tinted bands.
+  IF (orbit_on)
+    FOR r = ORB_R + 4 TO AR - 4 STEP 4
+      FOR k = 0 TO 15
+        a = orb_al + (orb_ar - orb_al) * k / 16;
+        t = orb_al + (orb_ar - orb_al) * (k + 1) / 16;
+        gfx_line(g, ACX + get_distx(a, r), ACY + get_disty(a, r), ACX + get_distx(t, r), ACY + get_disty(t, r),
+                 th_r + (ac_r - th_r) * 0.3, th_g + (ac_g - th_g) * 0.3, th_b + (ac_b - th_b) * 0.3);
+      END
+    END
+  END
+  IF (ramp_on)
+    FOR k = -15 TO 15 STEP 2
+      dx = get_distx(ramp_a + 90000, k);  dy = get_disty(ramp_a + 90000, k);
+      gfx_line(g, ramp_x0 + dx, ramp_y0 + dy, ramp_x1 + dx, ramp_y1 + dy, 70, 90, 120);
+    END
+    FOR k = 0 TO 4                   // chevrons pointing up the ramp
+      px = ramp_x0 + (ramp_x1 - ramp_x0) * (k * 0.2 + 0.1);
+      py = ramp_y0 + (ramp_y1 - ramp_y0) * (k * 0.2 + 0.1);
+      gfx_line(g, px + get_distx(ramp_a + 140000, 10), py + get_disty(ramp_a + 140000, 10), px, py, ac_r, ac_g, ac_b);
+      gfx_line(g, px + get_distx(ramp_a - 140000, 10), py + get_disty(ramp_a - 140000, 10), px, py, ac_r, ac_g, ac_b);
+    END
+  END
+  gfx_rect(g, WR + 2, 250, LO - WR - 3, 550, 10, 10, 16);        // shooter lane
+  // Outside the table: the corners above the arch, and the HUD strip.
+  FOR py = 40 TO ACY
+    dx = sqrt(AR * AR - (ACY - py) * (ACY - py));
+    gfx_rect(g, 0, py, ACX - dx, 1, 8, 8, 12);
+    gfx_rect(g, ACX + dx, py, 480 - ACX - dx, 1, 8, 8, 12);
+  END
+  gfx_rect(g, 0, ACY, WL, 800 - ACY, 8, 8, 12);
+  gfx_rect(g, LO + 1, ACY, 480 - LO, 800 - ACY, 8, 8, 12);
+  gfx_rect(g, 0, 0, 480, 40, 4, 4, 8);
+  gfx_line(g, 0, 40, 479, 40, ac_r, ac_g, ac_b);
+  // Apron with the table's name.
+  gfx_rect(g, 150, 784, 148, 16, 14, 14, 20);
+  gfx_text(g, 157, 786, word_a(name_a) + " " + word_b(name_b), ac_r, ac_g, ac_b, 11);
+  // Rails.
+  FOR i = 0 TO nseg - 1
+    thick_line(g, sx1[i], sy1[i], sx2[i], sy2[i], 215, 220, 235);
+  END
+  FOR i = 0 TO top_n                 // rubber caps on the lane posts
+    px = ACX - top_n * 17 + i * 34;
+    gfx_circle(g, px, 120, 3, 240, 90, 90);
+    gfx_circle(g, px, 148, 3, 240, 90, 90);
+  END
+  put_screen(0, g);
+  RETURN 0;
+END
+
+// ---------------------------------------------------------------------
+// Physical parts of the table
+// ---------------------------------------------------------------------
+
+// Every rail of the table: one static body made of the segment list.
+PROCESS walls();
+PRIVATE i;
+BEGIN
+  x = 0;  y = 0;
+  phys_material(1, 0.1, 0.35);
+  FOR i = 0 TO nseg - 1
+    phys_edge(sx1[i], sy1[i], sx2[i], sy2[i]);
+  END
+  LOOP FRAME; END
+END
+
+// The ball: a small, bouncy, "bullet" body (continuous collision, so it
+// never tunnels through a flipper or a rail). It reacts to what it
+// touches - bumpers and slingshots kick it - and watches for drains.
+PROCESS ball(x, y);
+PRIVATE vx, vy, sp, b, s, a, vn, cd_b, cd_s, st_x, st_y, st_t;
+BEGIN
+  graph = g_ball;  z = -20;
+  phys_circle(8, phys_dynamic);
+  phys_material(1, 0.15, 0.3);
+  phys_bullet(1);
+  ball_live = 1;  st_x = x;  st_y = y;
+  LOOP
+    vx = phys_vx();  vy = phys_vy();
+    sp = sqrt(vx * vx + vy * vy);
+    IF (sp > 2400)                    // a speed limit keeps the table sane
+      vx = vx * 2400 / sp;  vy = vy * 2400 / sp;  sp = 2400;
+      phys_velocity(vx, vy);
+    END
+    IF (kick_req)                     // a kickback or a nudge
+      vx = kick_vx;  vy = kick_vy;  kick_req = 0;
+      phys_velocity(vx, vy);
+    END
+    // Pop bumpers throw the ball away from their centre.
+    IF (cd_b > 0) cd_b--; END
+    b = phys_contact(TYPE bumper);
+    IF (b AND cd_b == 0 AND tilted == 0)
+      a = fget_angle(b.x, b.y, x, y);
+      vx = get_distx(a, 640);  vy = get_disty(a, 640);
+      phys_velocity(vx, vy);
+      b.hit = 14;  cd_b = 6;  st_bump++;
+      add_score(100);
+    END
+    // Slingshots: a kick along the face's normal, keeping some slide.
+    IF (cd_s > 0) cd_s--; END
+    s = phys_contact(TYPE sling);
+    IF (s AND cd_s == 0 AND tilted == 0)
+      vn = vx * s.nx + vy * s.ny;
+      vx = (vx - vn * s.nx) * 0.5 + s.nx * 560;
+      vy = (vy - vn * s.ny) * 0.5 + s.ny * 560;
+      phys_velocity(vx, vy);
+      s.hit = 10;  cd_s = 8;  st_sling++;
+      add_score(30);
+    END
+    // One-way gate at the top of the plunger lane: a ball coming down
+    // the outer wall is turned back into the playfield.
+    IF (x > WR + 2 AND y > 180 AND y < 250 AND vy > 20) phys_velocity(-260, 40); END
+    // Stuck detector: hardly moved in 2.5 s, not waiting on the plunger
+    // and not held on a raised flipper - give it a nudge.
+    st_t++;
+    IF (st_t >= 150)
+      IF (fget_distance(x, y, st_x, st_y) < 5 AND NOT (x > WR AND y > 600) AND flip_l == 0 AND flip_r == 0)
+        phys_velocity(rand(-220, 220), -380);
+        st_stuck++;
+      END
+      st_x = x;  st_y = y;  st_t = 0;
+    END
+    ball_x = x;  ball_y = y;  ball_vx = vx;  ball_vy = vy;  ball_speed = sp;
+    in_lane = x > WR AND y > 400;
+    IF (x < WL - 4 OR x > LO + 4 OR y < 36) st_escape++; END
+    IF (y > 815)                      // drained
+      drain_x = x;  st_drain++;
+      ball_live = 0;  drained = 1;
+      BREAK;
+    END
+    FRAME;
+  END
+END
+
+// A flipper: a kinematic body whose origin is the hinge - a circle there,
+// a box along the blade and a circle at the tip - so it turns round the
+// hinge. It is driven by angular velocity (never teleported), chosen so a
+// step lands exactly on the stop, which lets Box2D hand the flipper's
+// speed on to the ball. A swing takes two frames (up to 33 degrees a
+// step); the ball being a bullet, Box2D's time-of-impact pass still stops
+// the blade from jumping over it.
+PROCESS flipper(x, y, side);
+PRIVATE a_down, a_up, held, want, spd, diff, w;
+BEGIN
+  z = -10;
+  IF (side == 1) graph = g_flip_l; ELSE graph = g_flip_r; END
+  a_down = -28000 * side;  a_up = 30000 * side;
+  angle = a_down;
+  phys_circle(9, phys_kinematic);
+  phys_add_box(37 * side, 0, 74, 12);
+  phys_add_circle(74 * side, 0, 6);
+  phys_material(1, 0.5, 0.2);
+  LOOP
+    held = 0;
+    IF (state == 1 AND tilted == 0)
+      IF (side == 1) held = key(_left) OR key(_z); ELSE held = key(_right) OR key(_m); END
+    END
+    IF (side == 1) flip_l = held; ELSE flip_r = held; END
+    IF (held) want = a_up; spd = FLIP_UP; ELSE want = a_down; spd = FLIP_DOWN; END
+    // Past a stop (a frame of a different length): back onto it.
+    IF (side * angle > side * a_up + 200) angle = a_up; END
+    IF (side * angle < side * a_down - 200) angle = a_down; END
+    diff = want - angle;
+    IF (abs(diff) < 30)
+      phys_spin(0);
+    ELSE
+      w = clamp(diff * 60, -spd, spd);
+      phys_spin(w);
+    END
+    FRAME;
+  END
+END
+
+// The plunger: hold to pull it down, release to shoot it up as a
+// kinematic body - the ball resting on it is launched by the contact.
+PROCESS plunger(x, y);
+PRIVATE rest, pull, firing, d, i;
+BEGIN
+  rest = y;  graph = g_plunger;  z = -5;
+  phys_box(26, 10, phys_kinematic);
+  phys_material(1, 0.3, 0.0);
+  LOOP
+    IF (firing)
+      d = y - rest;
+      IF (d <= 0.5)
+        y = rest;  phys_velocity(0, 0);  firing = 0;
+      ELSE
+        phys_velocity(0, -clamp(d * 60, 0, fire_v));   // land exactly at rest
+      END
+    ELSE
+      IF (state == 1 AND (key(_space) OR key(_down)))
+        IF (pull < 44) pull += 0.8; END
+        y = rest + pull;  phys_velocity(0, 0);
+      ELSE
+        IF (pull > 1)
+          firing = 1;  fire_v = 300 + pull * 34;  pull = 0;  launch_t = tick;
+          IF (in_lane) st_launch++; END
+        END
+      END
+    END
+    // The spring under the head.
+    set_color('#8890a0');
+    FOR i = 0 TO 5
+      draw_rect(x - 8 + (i % 2) * 4, y + 6 + i * (800 - y - 6) * 0.166, 12, 2);
+    END
+    FRAME;
+  END
+END
+
+// Slingshot kicker: the slanted face of the triangle above a flipper.
+// The ball does the kicking (it reads nx, ny); this lights the face.
+PROCESS sling(side);
+PRIVATE ax, ay, bx, by, i;
+BEGIN
+  x = 0;  y = 0;
+  ax = mirx(86, side);  ay = 572;  bx = mirx(124, side);  by = 654;
+  phys_edge(ax, ay, bx, by);
+  phys_material(1, 0.2, 0.2);
+  nx = 0.907;  ny = -0.42;             // the face's normal, towards the middle
+  IF (side == 1) nx = -nx; END
+  LOOP
+    IF (hit > 0)
+      hit--;
+      set_color('rgba(255,240,150,0.8)');
+    ELSE
+      set_color('rgba(255,90,90,0.55)');
+    END
+    FOR i = 0 TO 8
+      circle(ax + (bx - ax) * i * 0.125 + nx * 3, ay + (by - ay) * i * 0.125 + ny * 3, 2 + (hit > 0) * 2);
+    END
+    FRAME;
+  END
+END
+
+PROCESS bumper(x, y);
+BEGIN
+  graph = g_bump_off;  z = 0;
+  phys_circle(18, phys_static);
+  phys_material(1, 0.1, 0.6);
+  LOOP
+    IF (hit > 0)
+      hit--;  graph = g_bump_on;  size = 100 + hit * 2;
+    ELSE
+      graph = g_bump_off;  size = 100;
+    END
+    FRAME;
+  END
+END
+
+// A drop target: hit it and its body goes (phys_remove); it comes back
+// up when its bank is reset, if the ball is not in the way.
+PROCESS target(x, y, ang, idx);
+PRIVATE up;
+BEGIN
+  angle = ang;  graph = g_target;  z = 0;  up = 1;
+  phys_box(24, 8, phys_static);
+  phys_material(1, 0.3, 0.3);
+  LOOP
+    IF (up)
+      IF (phys_contact(TYPE ball))
+        phys_remove();  up = 0;  alpha = 20;
+        targ_down[idx] = 1;  st_target++;
+        bonus += 200;
+        add_score(500);
+        check_bank(targ_bank[idx]);
+      END
+    ELSE
+      IF (targ_down[idx] == 0 AND fget_distance(x, y, ball_x, ball_y) > 30)
+        phys_box(24, 8, phys_static);
+        phys_material(1, 0.3, 0.3);
+        up = 1;  alpha = 100;
+      END
+    END
+    FRAME;
+  END
+END
+
+// A switch the ball rolls over: a sensor body (it detects, never pushes).
+PROCESS sensor(x, y, w, h, kind, idx);
+PRIVATE was, c;
+BEGIN
+  phys_box(w, h, phys_static);
+  phys_sensor(1);
+  LOOP
+    c = phys_contact(TYPE ball);
+    IF (c AND was == 0) sensor_hit(kind, idx); END
+    was = c;
+    FRAME;
+  END
+END
+
+// The spinner: a sensor that sets a flat plate spinning with the ball's
+// speed; every half turn scores. Drawn as a plate seen edge-on.
+PROCESS spinner(x, y, w);
+PRIVATE was, c, old, hh;
+BEGIN
+  phys_box(w, 6, phys_static);
+  phys_sensor(1);
+  LOOP
+    c = phys_contact(TYPE ball);
+    IF (c AND was == 0)
+      spin_v = clamp(spin_v + ball_speed * 0.03, 0, 40);
+      IF (orbit_on) sensor_hit(4, 0); END
+    END
+    was = c;
+    IF (spin_v > 0.3)
+      old = spin_ph;
+      spin_ph += spin_v;
+      spin_v = spin_v * 0.975;
+      IF (floor(spin_ph / 180.5) != floor(old / 180.5)) st_spin++; add_score(100); END
+    ELSE
+      spin_v = 0;
+    END
+    hh = 1 + 5 * abs(cos(spin_ph * 1000));
+    set_color('#dde2ee');
+    draw_rect(x - w / 2, y - hh, w, hh * 2);
+    set_color('#ff5050');
+    draw_rect(x - w / 2 - 2, y - 2, 3, 4);
+    draw_rect(x + w / 2 - 1, y - 2, 3, 4);
+    FRAME;
+  END
+END
+
+PROCESS lamp(x, y, col, kind, idx);
+PRIVATE on;
+BEGIN
+  z = 10;
+  LOOP
+    on = lamp_state(kind, idx);
+    IF (on == 2) on = tick / 8 % 2; END
+    IF (on) graph = g_lamp_on[col]; ELSE graph = g_lamp_off[col]; END
+    FRAME;
+  END
+END
+
+PROCESS title_card();
+BEGIN
+  x = 240;  y = 250;  z = -50;
+  LOOP
+    IF (state == 0) graph = g_title; y = 250; END
+    IF (state == 2) graph = g_over; y = 300; END
+    IF (state == 1) graph = 0; END
+    FRAME;
+  END
+END
+
+// Bodies and lamps for the generated layout.
+FUNCTION spawn_table();
+PRIVATE i, px;
+BEGIN
+  walls();
+  sling(0);  sling(1);
+  flipper(138, 704, 1);
+  flipper(310, 704, -1);
+  plunger(440, PL_REST);
+  FOR i = 0 TO nbump - 1 bumper(bump_x[i], bump_y[i]); END
+  FOR i = 0 TO ntarg - 1
+    target(targ_x[i], targ_y[i], targ_a[i], i);
+    IF (targ_a[i] == 90000)
+      IF (targ_x[i] < PCX) px = 20; ELSE px = -20; END
+      lamp(targ_x[i] + px, targ_y[i], 1, 1, i);
+    ELSE
+      lamp(targ_x[i] + get_distx(targ_a[i] - 90000, 18), targ_y[i] + get_disty(targ_a[i] - 90000, 18), 1, 1, i);
+    END
+  END
+  FOR i = 0 TO top_n - 1
+    px = ACX - top_n * 17 + i * 34 + 17;
+    sensor(px, 134, 20, 18, 0, i);
+    lamp(px, 166, 0, 0, i);
+  END
+  sensor(66, 600, 20, 10, 1, 0);   sensor(382, 600, 20, 10, 1, 1);    // inlanes
+  sensor(35, 600, 16, 10, 2, 0);   sensor(413, 600, 16, 10, 2, 1);    // outlanes
+  sensor(35, 740, 18, 16, 3, 0);   sensor(413, 740, 18, 16, 3, 1);    // kickbacks
+  lamp(35, 712, 2, 2, 0);          lamp(413, 712, 2, 2, 1);
+  IF (orbit_on)
+    // the right end of the channel: a switch inside it, a lamp below it
+    sensor(ACX + get_distx(orb_ar + 7000, 197), ACY + get_disty(orb_ar + 7000, 197), 22, 22, 5, 0);
+    lamp((WL + orb_xl) / 2, orb_ye + 4, 2, 6, 0);
+    lamp(ACX + get_distx(orb_ar - 8000, 160), ACY + get_disty(orb_ar - 8000, 160), 2, 6, 0);
+  END
+  IF (ramp_on)
+    sensor(ramp_x0 + get_distx(ramp_a, 12), ramp_y0 + get_disty(ramp_a, 12), 24, 10, 6, 0);
+    sensor(ramp_x1 - get_distx(ramp_a, 12), ramp_y1 - get_disty(ramp_a, 12), 24, 10, 7, 0);
+    lamp(ramp_x0 - get_distx(ramp_a, 16), ramp_y0 - get_disty(ramp_a, 16), 3, 7, 0);
+  END
+  spinner(spin_x, spin_y, spin_w);
+  FOR i = 0 TO 3 lamp(PCX - 45 + i * 30, 612, 4, 4, i + 2); END      // 2x .. 5x
+  lamp(PCX, 580, 3, 5, 0);                                         // extra ball
+  lamp(PCX, 768, 3, 3, 0);                                         // shoot again
+  title_card();
+  RETURN 0;
+END
+
+// ---------------------------------------------------------------------
+// Main: title, game and game over
+// ---------------------------------------------------------------------
+
+FUNCTION start_game();
+PRIVATE i;
+BEGIN
+  signal(TYPE ball, s_kill);
+  score = 0;  ball_no = 1;  extra_balls = 0;  mult = 1;  bonus = 0;
+  next_extra = 150000;  bank_level = 0;  ramp_count = 0;  kick_lit[0] = 1;  kick_lit[1] = 1;
+  tilted = 0;  tilt_meter = 0;  save_used = 0;  drained = 0;  ball_live = 0;
+  FOR i = 0 TO 3 top_lit[i] = 0; END
+  FOR i = 0 TO 7 targ_down[i] = 0; END
+  state = 1;  new_ball_t = 30;
+  show_msg("BALL 1 - HOLD SPACE, RELEASE TO LAUNCH");
+  RETURN 0;
+END
+
+FUNCTION end_of_ball();
+BEGIN
+  IF (tilted == 0 AND save_used == 0 AND save_t > 0)
+    save_used = 1;  st_save++;
+    show_msg("BALL SAVED");
+    new_ball_t = 40;
+    RETURN 0;
+  END
+  IF (tilted == 0 AND bonus > 0)
+    score += bonus * mult;
+    show_msg("BONUS " + bonus + " x" + mult);
+  END
+  bonus = 0;  mult = 1;  tilted = 0;  tilt_meter = 0;  save_used = 0;
+  IF (extra_balls > 0)
+    extra_balls--;
+    show_msg("SHOOT AGAIN");
+    new_ball_t = 90;
+  ELSE
+    ball_no++;
+    IF (ball_no > 3)
+      ball_no = 3;  state = 2;
+      IF (score > hiscore) hiscore = score; END
+      show_msg("GAME OVER");
+    ELSE
+      new_ball_t = 90;
+    END
+  END
+  RETURN 0;
+END
+
+PRIVATE i, t;
+BEGIN
+  set_mode(480, 800);
+  set_fps(60, 0);
+  phys_gravity(0, 620);
+  make_graphics();
+  seed = rand(1, 99999);
+
+  set_color('#a0a8c0');
+  write(0, 8, 8, 0, "SCORE");   write(0, 196, 8, 0, "BALL");
+  write(0, 250, 8, 0, "x");     write(0, 316, 8, 0, "HIGH");
+  set_color('#ffffff');
+  write_int(0, 44, 8, 0, OFFSET score);
+  write_int(0, 226, 8, 0, OFFSET ball_no);
+  write_int(0, 257, 8, 0, OFFSET mult);
+  write_int(0, 346, 8, 0, OFFSET hiscore);
+
+  LOOP
+    // A new table: clear the world, generate, draw and spawn - one step a
+    // frame, so no single frame does all the work.
+    IF (want_table)
+      want_table = 0;
+      let_me_alone();
+      phys_clear();
+      FRAME;
+      build_layout();
+      FRAME;
+      draw_art();
+      FRAME;
+      spawn_table();
+      state = 0;
+    END
+    tick++;
+    IF (msg_t > 0) msg_t--; IF (msg_t == 0) delete_text(msg_id); msg_id = 0; END END
+
+    IF (state == 1)
+      IF (new_ball_t > 0)
+        new_ball_t--;
+        // the ball saver gets shorter with every ball: 10, 7 and 4 seconds
+        IF (new_ball_t == 0) ball(440, PL_REST - 14); save_t = 780 - ball_no * 180; END
+      END
+      IF (drained) drained = 0; end_of_ball(); END
+      IF (save_t > 0 AND in_lane == 0 AND ball_live) save_t--; END
+      // Nudge: shake the table; too much and it tilts.
+      IF ((key_pressed(_up) OR key_pressed(_t)) AND ball_live AND in_lane == 0 AND tilted == 0)
+        kick_vx = ball_vx + rand(-140, 140);  kick_vy = ball_vy - 220;  kick_req = 1;
+        tilt_meter += 42;
+        IF (tilt_meter > 100)
+          tilted = 1;  show_msg("TILT");
+        ELSE
+          IF (tilt_meter > 55) show_msg("DANGER - TILT WARNING"); END
+        END
+      END
+      IF (tilt_meter > 0) tilt_meter -= 0.3; END
+      // Flipper buttons move the lit top lanes (lane change).
+      IF (key_pressed(_left) OR key_pressed(_z))
+        t = top_lit[0];
+        FOR i = 0 TO top_n - 2 top_lit[i] = top_lit[i + 1]; END
+        top_lit[top_n - 1] = t;
+      END
+      IF (key_pressed(_right) OR key_pressed(_m))
+        t = top_lit[top_n - 1];
+        FROM i = top_n - 1 TO 1; top_lit[i] = top_lit[i - 1]; END
+        top_lit[0] = t;
+      END
+      // Completed target banks pop back up.
+      FOR i = 0 TO nbank - 1
+        IF (bank_reset_t[i] > 0)
+          bank_reset_t[i]--;
+          IF (bank_reset_t[i] == 0)
+            FOR t = bank_first[i] TO bank_first[i] + bank_n[i] - 1 targ_down[t] = 0; END
+          END
+        END
+      END
+    ELSE
+      // Title and game over.
+      set_color('rgba(0,0,0,0.65)');
+      draw_rect(60, 356, 328, 150);
+      set_color('#ffffff');
+      text(96, 366, "TABLE: " + word_a(name_a) + " " + word_b(name_b));
+      set_color('#a0a8c0');
+      text(96, 380, "SEED " + seed);
+      set_color('#ffe070');
+      IF (state == 0) text(96, 400, "SPACE    start game"); ELSE text(96, 400, "SPACE    play again"); END
+      text(96, 414, "N        new table");
+      set_color('#c8d0e0');
+      text(96, 434, "LEFT / Z   RIGHT / M   flippers");
+      text(96, 448, "SPACE / DOWN   hold and release to plunge");
+      text(96, 462, "UP / T   nudge (too much tilts)");
+      text(96, 482, "3 balls  -  high score " + hiscore);
+      IF (key_pressed(_space) OR key_pressed(_enter)) start_game(); END
+      IF (key_pressed(_n)) seed = rand(1, 99999); want_table = 1; END
+    END
+    FRAME;
+  END
+END

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS -Tutorial 0</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    .container {
+      text-align: center;
+    }
+
+    h1 {
+      color: #fff;
+      margin-bottom: 20px;
+      font-size: 2em;
+    }
+
+    canvas {
+      border: 4px solid #4a9eff;
+      border-radius: 8px;
+      box-shadow: 0 10px 30px rgba(74, 158, 255, 0.3);
+      /* The program runs in DIV's default 320x200 mode (no set_mode);
+         scale it up for a modern display. */
+      width: 960px;
+      height: 600px;
+      image-rendering: pixelated;
+    }
+
+    .info {
+      color: #aaa;
+      margin-top: 15px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>🎮 DivJS Tutorial 0</h1>
+    <canvas id="gameCanvas" width="320" height="200"></canvas>
+    <div id="log">booting...</div>
+  </div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    // The DIV program lives in playground/programs/tutor0b.div, shared with the
+    // online playground so there is a single copy of it.
+    const source = await (await fetch('../playground/programs/tutor0b.div')).text();
+
+    const canvas = document.getElementById('gameCanvas');
+    const log = document.getElementById('log');
+
+    let statusLine = '';
+    function logLine(line) {
+      console.log(line);
+      log.textContent = statusLine ? `${line}  ||  ${statusLine}` : line;
+    }
+
+    try {
+      runDivDemo({
+        canvas,
+        source: source,
+        clearColor: '#000',
+        onLog: (line) => { logLine(line); },
+        onFrame: ({ runtime }) => {
+          const fps = Math.round(runtime.fpsValue || 0);
+          const procs = runtime.vm?.processManager?.getAll?.() || [];
+          const active = procs.filter(p => p.active && !p.suspended && !p.dead);
+
+        },
+        onError: (err) => {
+          logLine('error: ' + (err?.message || String(err)));
+          console.error(err);
+        }
+      });
+    } catch (err) {
+      logLine('error: ' + (err?.message || String(err)));
+      console.error(err);
+    }
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,23 @@
+PROGRAM example_start_scroll;
+
+PRIVATE
+    file1;
+
+BEGIN
+    file1=load_fpg('../assets/div-support/help.fpg');
+
+    start_scroll(0, file1, 103, 102, 0, 15);
+
+    scroll.camera=id;
+
+    ctype=c_scroll;
+    graph=100;
+    write(0, 160, 0, 1, "Use the cursors to move the ball");
+    LOOP
+        IF (key(_right)) x+=2; END
+        IF (key(_left)) x-=2; END
+        IF (key(_down)) y+=2; END
+        IF (key(_up)) y-=2; END
+        FRAME;
+    END
+END

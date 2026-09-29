@@ -1,0 +1,461 @@
+PROGRAM maze;
+
+// ---------------------------------------------------------------------
+// MAZE RUNNER - every level is a brand new "perfect" maze (exactly one
+// path between any two cells), carved with the recursive backtracker.
+// The maze lives in a block grid: odd (x, y) blocks are cells, even
+// ones are the walls between them (1 = wall, 0 = open). Walls are drawn
+// once per level into one graphic used as the screen background.
+// Enemies chase the player along a BFS distance field over the cells.
+// ---------------------------------------------------------------------
+
+GLOBAL mz[2924];          // block grid, up to 65 x 45 blocks
+GLOBAL stk[799];         // explicit stack of the maze carver (cell index)
+GLOBAL dist[799];        // BFS distance of every cell to the player
+GLOBAL que[799];         // BFS queue
+GLOBAL dxs[3];            // the four directions: right, down, left, up
+GLOBAL dys[3];
+
+GLOBAL cw = 8;            // maze size in cells
+GLOBAL ch = 5;
+GLOBAL bw = 17;           // maze size in blocks (2 * cells + 1)
+GLOBAL cs = 40;           // cell size in pixels
+GLOBAL th = 8;            // wall thickness in pixels
+GLOBAL ox = 0;            // top-left corner of the maze on screen
+GLOBAL oy = 30;
+
+GLOBAL g_maze = 0;        // background graphic of the current level
+GLOBAL g_player = 0;
+GLOBAL g_enemy = 0;       // hunting ghost (red)
+GLOBAL g_calm = 0;        // wandering ghost (blue)
+
+GLOBAL state = 0;         // 0 title, 1 playing, 2 level clear, 3 game over,
+                          // 4 building a maze
+GLOBAL level = 1;
+GLOBAL lives = 3;
+GLOBAL score = 0;
+GLOBAL secs = 0;          // whole seconds on this level (for the HUD)
+GLOBAL ltime = 0.0;       // exact time on this level
+GLOBAL bonus = 0;
+GLOBAL timer = 0.0;       // countdown for the level clear / hit pauses
+GLOBAL invuln = 0.0;      // seconds of invulnerability after a hit
+GLOBAL hunting = 1;       // 7 s hunting, then 3 s of wandering, repeated
+GLOBAL chase_r = 6;       // enemies chase within this many steps
+GLOBAL bfs_from = -1;     // cell the distance field was computed from
+
+// Player: moves smoothly from cell (pcx, pcy) to (ptx, pty); pt is 0..1
+GLOBAL pcx = 0; pcy = 0; ptx = 0; pty = 0; pt = 0.0;
+GLOBAL px = 0.0; py = 0.0;
+
+// Pixel centre of cell column / row n
+FUNCTION cell_x(n);
+BEGIN
+  RETURN ox + th + n * (cs + th) + cs / 2;
+END
+
+FUNCTION cell_y(n);
+BEGIN
+  RETURN oy + th + n * (cs + th) + cs / 2;
+END
+
+// 1 when the wall on side d of cell (cx, cy) is open
+FUNCTION open_side(cx, cy, d);
+BEGIN
+  RETURN mz[(cy * 2 + 1 + dys[d]) * bw + cx * 2 + 1 + dxs[d]] == 0;
+END
+
+// Breadth-first search from cell c: dist[] then holds how many steps
+// each cell is from it (-1 = unreached). The search stops at depth maxd,
+// since enemies only chase inside that radius - this keeps it cheap.
+FUNCTION bfs(c, maxd);
+PRIVATE head = 0; tail = 0; cx = 0; cy = 0; d = 0; n = 0; i = 0;
+BEGIN
+  FOR i = 0 TO cw * ch - 1
+    dist[i] = -1;
+  END
+  dist[c] = 0;
+  que[0] = c;
+  tail = 1;
+  WHILE (head < tail)
+    c = que[head];
+    head++;
+    IF (dist[c] < maxd)
+      cx = c % cw;
+      cy = c / cw;
+      FOR d = 0 TO 3
+        IF (mz[(cy * 2 + 1 + dys[d]) * bw + cx * 2 + 1 + dxs[d]] == 0)
+          n = c + dys[d] * cw + dxs[d];
+          IF (dist[n] < 0)
+            dist[n] = dist[c] + 1;
+            que[tail] = n;
+            tail++;
+          END
+        END
+      END
+    END
+  END
+  RETURN 0;
+END
+
+// Builds a level over several frames, so no single frame does too much
+// work: carve the maze, paint it into one background graphic, then place
+// the player and the enemies and hand over to game state next_state.
+PROCESS builder(next_state, spawn);
+PRIVATE sp = 0; c = 0; cx = 0; cy = 0; n = 0; d = 0; nx = 0; ny = 0;
+        opts[3]; i = 0; work = 0;
+        old = 0; bx = 0; by = 0; x0 = 0; y0 = 0; w = 0; h = 0; tint = 0;
+BEGIN
+  // 1. Carve a perfect maze with an iterative recursive backtracker:
+  // step to a random unvisited neighbour, knocking down the wall between;
+  // at a dead end pop the stack (GLOBAL stk) and retry from the cell before.
+  FOR i = 0 TO bw * (ch * 2 + 1) - 1
+    mz[i] = 1;
+  END
+  FRAME;
+  mz[bw + 1] = 0;           // cell (0, 0) is visited: its block is open
+  stk[0] = 0;
+  sp = 1;
+  WHILE (sp > 0)
+    c = stk[sp - 1];
+    cx = c % cw;
+    cy = c / cw;
+    n = 0;
+    FOR d = 0 TO 3
+      nx = cx + dxs[d];
+      ny = cy + dys[d];
+      IF (nx >= 0 AND nx < cw AND ny >= 0 AND ny < ch)
+        IF (mz[(ny * 2 + 1) * bw + nx * 2 + 1] == 1)
+          opts[n] = d;
+          n++;
+        END
+      END
+    END
+    IF (n == 0)
+      sp--;                 // dead end: backtrack
+    ELSE
+      d = opts[rand(0, n - 1)];
+      nx = cx + dxs[d];
+      ny = cy + dys[d];
+      mz[(cy * 2 + 1 + dys[d]) * bw + cx * 2 + 1 + dxs[d]] = 0;  // wall
+      mz[(ny * 2 + 1) * bw + nx * 2 + 1] = 0;                    // cell
+      stk[sp] = ny * cw + nx;
+      sp++;
+    END
+    work++;
+    IF (work >= 150) work = 0; FRAME; END
+  END
+
+  // 2. Paint the screen once: HUD strip, floor, walls, start and exit.
+  old = g_maze;
+  g_maze = new_graphic(640, 480);
+  gfx_fill(g_maze, 10, 12, 24);
+  gfx_rect(g_maze, 0, 0, 640, 24, 22, 26, 46);
+  gfx_rect(g_maze, ox, oy, cw * (cs + th) + th, ch * (cs + th) + th, 18, 22, 38);
+  tint = (level * 40) % 160;
+  FOR by = 0 TO ch * 2
+    y0 = oy + (by / 2) * (cs + th) + (by % 2) * th;
+    h = th;
+    IF (by % 2 == 1) h = cs; END
+    FOR bx = 0 TO cw * 2
+      IF (mz[by * bw + bx] == 1)
+        x0 = ox + (bx / 2) * (cs + th) + (bx % 2) * th;
+        w = th;
+        IF (bx % 2 == 1) w = cs; END
+        gfx_rect(g_maze, x0, y0, w, h, 60 + tint, 120, 220 - tint);
+      END
+    END
+    IF (by % 8 == 7) FRAME; END
+  END
+  gfx_rect(g_maze, cell_x(0) - cs / 2 + 2, cell_y(0) - cs / 2 + 2, cs - 4, cs - 4, 40, 50, 90);
+  gfx_rect(g_maze, cell_x(cw - 1) - cs / 2, cell_y(ch - 1) - cs / 2, cs, cs, 40, 200, 90);
+  gfx_rect_outline(g_maze, cell_x(cw - 1) - cs / 2 + 3, cell_y(ch - 1) - cs / 2 + 3, cs - 6, cs - 6, 200, 255, 200);
+  put_screen(0, g_maze);
+  IF (old) free_graphic(old); END
+
+  // 3. Player on the start cell, enemies well away from it
+  pcx = 0; pcy = 0; ptx = 0; pty = 0; pt = 0.0;
+  px = cell_x(0); py = cell_y(0);
+  ltime = 0.0; secs = 0; invuln = 1.0;
+  bfs_from = -1;
+  IF (spawn)
+    FOR i = 1 TO 1 + level
+      IF (i <= 12)
+        REPEAT
+          cx = rand(0, cw - 1);
+          cy = rand(0, ch - 1);
+        UNTIL (cx + cy >= (cw + ch) / 2)
+        enemy(cx, cy);
+      END
+    END
+  END
+  state = next_state;
+END
+
+// Sets the maze size for the current level and starts building it:
+// the grid grows with the level, the cells shrink to fit the screen.
+FUNCTION build_level(next_state, spawn);
+PRIVATE u = 0;
+BEGIN
+  cw = 6 + level * 2;
+  IF (cw > 32) cw = 32; END
+  ch = 4 + level * 3 / 2;
+  IF (ch > 22) ch = 22; END
+  bw = cw * 2 + 1;
+  chase_r = 5 + level;
+  IF (chase_r > 16) chase_r = 16; END
+  u = 624 / cw;                             // pixels per cell + wall
+  IF (440 / ch < u) u = 440 / ch; END
+  th = u / 5;
+  IF (th < 2) th = 2; END
+  cs = u - th;
+  ox = (640 - (cw * u + th)) / 2;
+  oy = 28 + (444 - (ch * u + th)) / 2;
+  state = 4;                                // building
+  builder(next_state, spawn);
+  RETURN 0;
+END
+
+// The player: a stepped-but-smooth mover. Standing on a cell it looks at
+// the keys; while moving it slides towards the next cell and can turn
+// back halfway.
+PROCESS player();
+PRIVATE d = -1; spd = 7.0; want = -1; hold = 0;
+BEGIN
+  graph = g_player;
+  z = -10;
+  LOOP
+    size = cs * 100 / 32;
+    want = -1;
+    IF (key(_right) OR key(_d)) want = 0; END
+    IF (key(_down)  OR key(_s)) want = 1; END
+    IF (key(_left)  OR key(_a)) want = 2; END
+    IF (key(_up)    OR key(_w)) want = 3; END
+    IF (state == 1)
+      IF (d >= 0 AND want == (d + 2) % 4)       // reverse mid-move
+        hold = pcx; pcx = ptx; ptx = hold;
+        hold = pcy; pcy = pty; pty = hold;
+        pt = 1.0 - pt;
+        d = want;
+      END
+      IF (d >= 0)
+        pt = pt + spd * get_delta();
+        IF (pt >= 1.0)
+          pcx = ptx; pcy = pty; pt = 0.0; d = -1;
+        END
+      END
+      IF (d < 0 AND want >= 0)
+        IF (open_side(pcx, pcy, want))
+          d = want;
+          ptx = pcx + dxs[d];
+          pty = pcy + dys[d];
+        END
+      END
+      IF (d < 0) ptx = pcx; pty = pcy; END
+      px = cell_x(pcx) + (cell_x(ptx) - cell_x(pcx)) * pt;
+      py = cell_y(pcy) + (cell_y(pty) - cell_y(pcy)) * pt;
+    ELSE
+      d = -1;
+    END
+    x = px; y = py;
+    alpha = 100;
+    IF (invuln > 0 AND (get_time() * 10) % 2 < 1) alpha = 35; END
+    FRAME;
+  END
+END
+
+// An enemy: walks cell to cell. Close to the player (by maze distance)
+// it follows the BFS field downhill; otherwise it wanders, never turning
+// back unless it hits a dead end.
+PROCESS enemy(ecx, ecy);
+PRIVATE etx = 0; ety = 0; et = 0.0; d = -1; spd = 0.0;
+        opts[3]; n = 0; i = 0; best = 0; back = 0;
+BEGIN
+  graph = g_enemy;
+  spd = 2.2 + level * 0.3;
+  IF (spd > 5.5) spd = 5.5; END
+  etx = ecx; ety = ecy;
+  LOOP
+    size = cs * 100 / 32;
+    graph = g_calm;
+    IF (hunting) graph = g_enemy; END
+    IF (state == 1)
+      et = et + spd * get_delta();
+      IF (et >= 1.0 OR d < 0)
+        ecx = etx; ecy = ety; et = 0.0;
+        best = dist[ecy * cw + ecx];
+        back = (d + 2) % 4;
+        n = 0;
+        IF (hunting AND best >= 0 AND best <= chase_r)
+          FOR i = 0 TO 3                        // chase: step downhill
+            IF (open_side(ecx, ecy, i))
+              IF (dist[(ecy + dys[i]) * cw + ecx + dxs[i]] < best)
+                opts[0] = i; n = 1;
+              END
+            END
+          END
+        END
+        IF (n == 0)
+          FOR i = 0 TO 3                        // wander
+            IF (open_side(ecx, ecy, i) AND (i != back OR d < 0))
+              opts[n] = i; n++;
+            END
+          END
+        END
+        IF (n == 0) opts[0] = back; n = 1; END   // dead end: turn round
+        d = opts[rand(0, n - 1)];
+        etx = ecx + dxs[d];
+        ety = ecy + dys[d];
+      END
+      x = cell_x(ecx) + (cell_x(etx) - cell_x(ecx)) * et;
+      y = cell_y(ecy) + (cell_y(ety) - cell_y(ecy)) * et;
+      IF (invuln <= 0 AND fget_distance(x, y, px, py) < cs * 0.7)
+        lives--;
+        invuln = 2.0;
+        pcx = 0; pcy = 0; ptx = 0; pty = 0; pt = 0.0;
+        px = cell_x(0); py = cell_y(0);
+        IF (lives <= 0) state = 3; END
+      END
+    ELSE
+      x = cell_x(ecx) + (cell_x(etx) - cell_x(ecx)) * et;
+      y = cell_y(ecy) + (cell_y(ety) - cell_y(ecy)) * et;
+    END
+    FRAME;
+  END
+END
+
+// A ghost sprite in the given body colour
+FUNCTION ghost(r, g, b);
+PRIVATE gr = 0;
+BEGIN
+  gr = new_graphic(32, 32);
+  gfx_fill_rgba(gr, 0, 0, 0, 0);
+  gfx_circle(gr, 16, 14, 12, r, g, b);
+  gfx_rect(gr, 4, 14, 24, 14, r, g, b);
+  gfx_rect(gr, 6, 26, 5, 4, 10, 12, 24);    // ragged hem
+  gfx_rect(gr, 14, 26, 5, 4, 10, 12, 24);
+  gfx_rect(gr, 22, 26, 5, 4, 10, 12, 24);
+  gfx_circle(gr, 11, 13, 4, 255, 255, 255);
+  gfx_circle(gr, 21, 13, 4, 255, 255, 255);
+  gfx_circle(gr, 12, 14, 2, 20, 20, 60);
+  gfx_circle(gr, 22, 14, 2, 20, 20, 60);
+  RETURN gr;
+END
+
+// Player and enemy sprites, drawn at 32 x 32 and scaled to the cell size
+FUNCTION make_sprites();
+BEGIN
+  g_player = new_graphic(32, 32);
+  gfx_fill_rgba(g_player, 0, 0, 0, 0);
+  gfx_circle(g_player, 16, 16, 13, 255, 210, 60);
+  gfx_circle(g_player, 16, 16, 9, 255, 240, 150);
+  gfx_circle(g_player, 12, 13, 2, 40, 30, 10);
+  gfx_circle(g_player, 20, 13, 2, 40, 30, 10);
+
+  g_enemy = ghost(230, 60, 80);
+  g_calm = ghost(70, 110, 230);
+  RETURN 0;
+END
+
+// One-frame text centred on the screen: n is its length in characters
+// (the system font is 6 pixels wide per character)
+FUNCTION say(cy, n, s);
+BEGIN
+  text(320 - n * 3, cy, s);
+  RETURN 0;
+END
+
+PRIVATE c = 0;
+BEGIN
+  set_mode(640, 480);
+  set_fps(60, 0);  // written for 60 fps (DIV's default is 18)
+  screen_color('#0a0c18');
+  dxs[0] = 1; dys[0] = 0;
+  dxs[1] = 0; dys[1] = 1;
+  dxs[2] = -1; dys[2] = 0;
+  dxs[3] = 0; dys[3] = -1;
+  make_sprites();
+
+  // HUD: written once, OFFSET keeps the numbers live
+  set_color('#cfe0ff');
+  write(0, 8, 8, 0, 'LEVEL');
+  write_int(0, 44, 8, 0, OFFSET level);
+  write(0, 110, 8, 0, 'LIVES');
+  write_int(0, 146, 8, 0, OFFSET lives);
+  write(0, 210, 8, 0, 'SCORE');
+  write_int(0, 246, 8, 0, OFFSET score);
+  write(0, 350, 8, 0, 'TIME');
+  write_int(0, 380, 8, 0, OFFSET secs);
+  write(0, 470, 8, 0, 'ARROWS/WASD: MOVE');
+
+  // a random maze behind the title screen
+  level = 3;
+  build_level(0, 0);
+  level = 1;
+
+  LOOP
+    SWITCH (state)
+      CASE 0                                     // title
+        set_color('#000000');
+        draw_rect(150, 170, 340, 140);
+        set_color('#ffd23c');
+        say(190, 21, 'M A Z E   R U N N E R');
+        set_color('#cfe0ff');
+        say(222, 38, 'Reach the green exit of each new maze.');
+        say(240, 41, 'Red ghosts hunt you; blue ones just roam.');
+        say(258, 43, 'Arrows / WASD to move. Faster = more bonus.');
+        set_color('#6bff99');
+        say(286, 29, 'PRESS SPACE OR ENTER TO START');
+        IF (key_pressed(_space) OR key_pressed(_enter))
+          level = 1; lives = 3; score = 0;
+          build_level(1, 1);
+          player();
+        END
+      CASE 1                                     // playing
+        ltime = ltime + get_delta();
+        secs = int(ltime);
+        hunting = secs % 10 < 7;
+        IF (invuln > 0) invuln = invuln - get_delta(); END
+        // re-run the BFS only when the player's nearest cell changes
+        c = pcy * cw + pcx;
+        IF (pt > 0.5) c = pty * cw + ptx; END
+        IF (c != bfs_from) bfs(c, chase_r); bfs_from = c; END
+        IF (pcx == cw - 1 AND pcy == ch - 1 AND pt == 0)
+          // time bonus: 25 points per second under par (par grows with size)
+          bonus = cw * ch / 5 + 5 - secs;
+          IF (bonus < 0) bonus = 0; END
+          bonus = level * 100 + bonus * 25;
+          score = score + bonus;
+          timer = 2.0;
+          state = 2;
+        END
+      CASE 2                                     // level clear
+        set_color('#000000');
+        draw_rect(200, 200, 240, 70);
+        set_color('#6bff99');
+        say(214, 15, 'LEVEL ' + level + ' CLEAR!');
+        set_color('#ffd23c');
+        say(238, 24, 'TIME ' + secs + 's   BONUS +' + bonus);
+        timer = timer - get_delta();
+        IF (timer <= 0)
+          signal(TYPE enemy, s_kill);
+          level++;
+          build_level(1, 1);
+        END
+      CASE 3                                     // game over
+        set_color('#000000');
+        draw_rect(190, 190, 260, 90);
+        set_color('#ff5a6e');
+        say(204, 9, 'GAME OVER');
+        set_color('#cfe0ff');
+        say(228, 22, 'SCORE ' + score + '   LEVEL ' + level);
+        set_color('#6bff99');
+        say(254, 20, 'PRESS SPACE OR ENTER');
+        IF (key_pressed(_space) OR key_pressed(_enter))
+          signal(TYPE enemy, s_kill);
+          level = 1; lives = 3; score = 0;
+          build_level(1, 1);
+        END
+    END
+    FRAME;
+  END
+END

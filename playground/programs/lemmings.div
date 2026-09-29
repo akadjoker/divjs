@@ -1,0 +1,1294 @@
+PROGRAM lemmings;
+
+// BURROWERS - a puzzle game in the style of Lemmings.
+// A crowd of little walkers drops out of a hatch and marches blindly on,
+// turning at walls, falling off ledges and drowning in pools. Hand out
+// skills (climber, floater, bomber, blocker, builder, basher, miner,
+// digger) to open a way to the exit door and save enough of them.
+//
+// Every level is generated from its number (rand_seed), so level N is
+// always the same map. The generator walks a planning cursor from the
+// hatch to the door and lays the route one piece at a time: flat runs
+// with mounds and small drops, and between them obstacles that each need
+// a known skill - a thick wall (basher), a chasm over water or lava
+// (builder, two for wide ones), a cliff too high to survive (miner), a
+// steel wall with a cave under the floor (digger), a low steel wall
+// (builder stairs over it). The skills the route needs are granted plus a
+// margin that shrinks as the levels go up, so every level can be solved.
+//
+// The land is a collision map of 2x2-pixel cells packed 16 per number
+// (there are no bit operators: bits are read with / and %), plus a
+// 640x480 graphic shown with put_screen. Digging and building edit both.
+// Each lemming is one small process whose logic runs once per game step
+// (every 4 frames, every frame in fast forward) and only looks at a
+// handful of cells, so 80 of them are cheap.
+
+GLOBAL
+  CW = 320; CH = 200;              // play area in cells (640x400 pixels)
+  SAFE = 30;                       // longest survivable fall, in cells
+  sol[3999];                       // solid cells: bit i%16 of sol[j*20+i/16]
+  pw[15];                          // powers of two
+  top[319]; bot[319];              // planner: first/last solid row per route column
+  stp[319]; sbt[319];              // the same in screen columns
+  wt0[19]; wt1[19]; wb0[19]; wb1[19];   // lowest/highest top and bottom per word
+  ph1 = 0; ph2 = 0; deep_to = 0; spread = 0;
+  // steel rectangles (screen cells, inclusive) and water/lava pools
+  n_st = 0; st_x0[11]; st_x1[11]; st_y0[11]; st_y1[11];
+  n_hz = 0; hz_x0[7]; hz_x1[7]; hz_y0[7]; lava = 0;
+  // lemmings, one slot each. States: 0 walk, 1 fall, 2 climb, 3 block,
+  // 4 build, 5 bash, 6 mine, 7 dig, 8 shrug, 9 splat, 10 drown,
+  // 11 exit, 12 gone
+  l_st[79]; l_x[79]; l_y[79]; l_ox[79]; l_oy[79]; l_dir[79];
+  l_climb[79]; l_float[79]; l_fuse[79]; l_n[79]; l_b[79]; l_fall[79]; l_anim[79];
+  n_bl = 0; bl_x[79]; bl_y[79];    // blockers, rebuilt every frame
+  // skills: 0 climber 1 floater 2 bomber 3 blocker 4 builder 5 basher
+  // 6 miner 7 digger (skills 3-7 have the same number as their state)
+  sk_n[7]; nd[7]; sel = 4;
+  // the planned route (read by the tests): type, key column, row, size
+  // types: 0 wall/basher 1 gap/builder 2 cliff/miner 3 cave/digger 4 steel/builder
+  n_ob = 0; ob_t[7]; ob_x[7]; ob_y[7]; ob_w[7];
+  cur_x = 0; cur_g = 0;            // planning cursor (route column, ground row)
+  n_cv = 0; cv_x0[5]; cv_x1[5]; cv_y0[5]; cv_y1[5];   // caves (screen cells)
+  // level
+  level = 1; max_level = 1; title_sel = 1; flip = 0;
+  total = 20; released = 0; saved = 0; dead = 0; need = 10; need_pct = 50;
+  rrate = 50; rrate_min = 50; rel_t = 0; time_left = 0; opening = 0;
+  hatch_x = 0; hatch_y = 0; hatch_dir = 1; exit_x = 0; exit_y = 0;
+  // palette of the level, and the colour returned by bg_rgb()
+  m_r = 0; m_g = 0; m_b = 0; t_r = 0; t_g = 0; t_b = 0;
+  cr = 0; cg = 0; cb = 0;
+  pr[7]; pg[7]; pb[7];             // sprite colours
+  // run state: 0 title, 1 building, 2 playing, 3 result
+  state = 0; gen_pct = 0; paused = 0; fast = 0; nuking = 0;
+  acc = 0; step_now = 0; frac = 1.0; steps = 0;
+  end_t = 0; passed = 0; lprev = 0; hover = -1; rr_hold = 0; nukes = 0;
+  // graphics: 24 lemming frames, hatch closed/open, map, title
+  g_map = 0; g_title = 0; g_f[23]; g_hatch[1];
+
+// =====================================================================
+// Small helpers
+// =====================================================================
+
+FUNCTION imin(a, b);
+BEGIN
+  IF (a < b) RETURN a; END
+  RETURN b;
+END
+
+FUNCTION imax(a, b);
+BEGIN
+  IF (a > b) RETURN a; END
+  RETURN b;
+END
+
+// Route column (the planner always works left to right) to screen column.
+FUNCTION scr(xr);
+BEGIN
+  IF (flip) RETURN CW - 1 - xr; END
+  RETURN xr;
+END
+
+// =====================================================================
+// Collision map
+// =====================================================================
+
+// Is cell (i, j) solid? The sides of the map are walls, above and below
+// is air (falling out of the bottom kills).
+FUNCTION solidc(i, j);
+BEGIN
+  IF (i < 0 OR i >= CW) RETURN 1; END
+  IF (j < 0 OR j >= CH) RETURN 0; END
+  RETURN (sol[j * 20 + i / 16] / pw[i % 16]) % 2;
+END
+
+// Set (v = 1) or clear (v = 0) cells i0..i1 of row j: whole words at
+// once, bit by bit at the two ends.
+FUNCTION set_span(j, i0, i1, v);
+PRIVATE wi, lo, hi, i, n, b;
+BEGIN
+  FOR wi = i0 / 16 TO i1 / 16
+    n = j * 20 + wi;
+    lo = imax(i0, wi * 16); hi = imin(i1, wi * 16 + 15);
+    IF (lo == wi * 16 AND hi == wi * 16 + 15)
+      sol[n] = v * 65535;
+    ELSE
+      FOR i = lo TO hi
+        b = pw[i % 16];
+        IF ((sol[n] / b) % 2 != v) sol[n] = sol[n] + b * (2 * v - 1); END
+      END
+    END
+  END
+  RETURN 0;
+END
+
+// Any solid cell in the box?
+FUNCTION has_solid(i0, i1, j0, j1);
+PRIVATE i, j;
+BEGIN
+  FOR j = j0 TO j1
+    FOR i = i0 TO i1
+      IF (solidc(i, j)) RETURN 1; END
+    END
+  END
+  RETURN 0;
+END
+
+// Does the box touch a steel rectangle?
+FUNCTION in_steel(i0, i1, j0, j1);
+PRIVATE n;
+BEGIN
+  FOR n = 0 TO n_st - 1
+    IF (i1 >= st_x0[n] AND i0 <= st_x1[n] AND j1 >= st_y0[n] AND j0 <= st_y1[n]) RETURN 1; END
+  END
+  RETURN 0;
+END
+
+// Background colour of row j: a dark blue gradient.
+FUNCTION bg_rgb(j);
+BEGIN
+  cr = 6 + j * 0.06; cg = 8 + j * 0.1; cb = 26 + j * 0.2;
+  RETURN 0;
+END
+
+// Dig the box out of the map and the picture. Returns 0 (and digs
+// nothing) when the box touches steel.
+FUNCTION dig_area(i0, i1, j0, j1);
+PRIVATE j;
+BEGIN
+  i0 = imax(i0, 0); i1 = imin(i1, CW - 1);
+  j0 = imax(j0, 0); j1 = imin(j1, CH - 1);
+  IF (i0 > i1 OR j0 > j1) RETURN 1; END
+  IF (in_steel(i0, i1, j0, j1)) RETURN 0; END
+  FOR j = j0 TO j1
+    set_span(j, i0, i1, 0);
+    bg_rgb(j); gfx_rect(g_map, i0 * 2, j * 2, (i1 - i0 + 1) * 2, 2, cr, cg, cb);
+  END
+  RETURN 1;
+END
+
+// One builder brick: cells i0..i1 (any order) of row j.
+FUNCTION brick(i0, i1, j);
+PRIVATE a, b;
+BEGIN
+  a = imax(imin(i0, i1), 0); b = imin(imax(i0, i1), CW - 1);
+  IF (a > b OR j < 0 OR j >= CH) RETURN 0; END
+  set_span(j, a, b, 1);
+  gfx_rect(g_map, a * 2, j * 2, (b - a + 1) * 2, 2, 225, 190, 120);
+  gfx_rect(g_map, a * 2, j * 2 + 1, (b - a + 1) * 2, 1, 150, 105, 60);
+  RETURN 0;
+END
+
+// Bomber crater: a disc of radius r cells, steel cells survive.
+FUNCTION carve(ci, cj, r);
+PRIVATE dj, j, w, a, b, i;
+BEGIN
+  FOR dj = -r TO r
+    j = cj + dj;
+    IF (j >= 0 AND j < CH)
+      w = int(sqrt(r * r - dj * dj));
+      a = imax(ci - w, 0); b = imin(ci + w, CW - 1);
+      IF (in_steel(a, b, j, j))
+        FOR i = a TO b
+          IF (in_steel(i, i, j, j) == 0) dig_area(i, i, j, j); END
+        END
+      ELSE
+        dig_area(a, b, j, j);
+      END
+    END
+  END
+  RETURN 0;
+END
+
+// =====================================================================
+// Level planner (route coordinates: the route always runs left to right,
+// flip mirrors it on screen). It only writes top[], the steel list, the
+// pools and the obstacle list; the map is filled from top[] afterwards.
+// =====================================================================
+
+// Terrain thickness under route column x: a smooth wobble, 18-48 cells.
+FUNCTION thick(xr);
+BEGIN
+  RETURN imax(18, int(30 + sin(xr * 3700 + ph1) * 12 + sin(xr * 9100 + ph2) * 6));
+END
+
+// Ground with feet row g for columns x0..x1, maybe with a small mound.
+// The rock below reaches at least down to row deep_to.
+FUNCTION ground(x0, x1, g, bumpy);
+PRIVATE i, m0, mw, mh;
+BEGIN
+  FOR i = x0 TO x1 top[i] = g + 1; bot[i] = imax(g + thick(i), deep_to); END
+  IF (bumpy AND x1 - x0 >= 24 AND rand(0, 1) == 0)
+    m0 = x0 + rand(4, x1 - x0 - 18); mw = rand(5, 10); mh = rand(1, 3);
+    FOR i = m0 TO m0 + mw top[i] = g + 1 - mh; END
+  END
+  RETURN 0;
+END
+
+// A run of ground of the given length. Its first part is cut into short
+// stretches joined by safe drops and small steps up; the last `keep`
+// columns are one stretch at the final cur_g (flat if bumpy is 0).
+FUNCTION runup(len, keep, bumpy);
+PRIVATE s, e;
+BEGIN
+  e = cur_x + len;
+  WHILE (e - cur_x > keep + 20)
+    s = rand(12, 20);
+    ground(cur_x, cur_x + s - 1, cur_g, 1);
+    cur_x = cur_x + s;
+    SWITCH (rand(0, 3))
+      CASE 0 IF (cur_g < 125) cur_g = cur_g + rand(3, 10); END   // safe drop
+      CASE 1 IF (cur_g > 56) cur_g = cur_g - rand(1, 3); END     // step up
+    END
+  END
+  ground(cur_x, e - 1, cur_g, bumpy);
+  cur_x = e;
+  RETURN 0;
+END
+
+FUNCTION add_steel(x0, x1, j0, j1);
+BEGIN
+  st_x0[n_st] = imin(scr(x0), scr(x1)); st_x1[n_st] = imax(scr(x0), scr(x1));
+  st_y0[n_st] = j0; st_y1[n_st] = j1;
+  n_st++;
+  RETURN 0;
+END
+
+FUNCTION add_ob(t, xr, j, w);
+BEGIN
+  ob_t[n_ob] = t; ob_x[n_ob] = scr(xr); ob_y[n_ob] = j; ob_w[n_ob] = w;
+  n_ob++;
+  RETURN 0;
+END
+
+// Obstacle 0: a thick earth wall on flat ground -> basher.
+FUNCTION ob_wall();
+PRIVATE h, w, i;
+BEGIN
+  runup(rand(18, 28) + rand(0, spread), 12, 1);
+  h = rand(14, imin(34, cur_g - 6)); w = rand(8, 12 + imin(level, 8));
+  FOR i = cur_x TO cur_x + w - 1
+    top[i] = cur_g - h + 1 - rand(0, 1); bot[i] = cur_g + thick(i);
+  END
+  add_ob(0, cur_x, cur_g, w);
+  cur_x = cur_x + w; nd[5]++;
+  RETURN 0;
+END
+
+// Obstacle 1: a chasm down to the water -> one builder, two for wide ones.
+FUNCTION ob_gap(wide);
+PRIVATE w, i;
+BEGIN
+  runup(rand(18, 26) + rand(0, spread), 14, 1);
+  IF (wide) w = rand(30, 36); ELSE w = rand(9, 15); END
+  FOR i = cur_x TO cur_x + w - 1 top[i] = CH; bot[i] = 0; END
+  add_ob(1, cur_x - 1, cur_g, w);
+  cur_x = cur_x + w;
+  cur_g = cur_g + rand(0, 4);
+  nd[4] = nd[4] + 1 + wide;
+  RETURN 0;
+END
+
+// Obstacle 2: a cliff too high to survive -> miner (dig a slope down).
+// The key column is where a miner reaches the face 8 cells above the
+// lower ground.
+FUNCTION ob_cliff();
+PRIVATE d;
+BEGIN
+  d = rand(34, 42);
+  deep_to = cur_g + d + 20;                        // no hollow under the slope
+  runup(d + rand(6, 12) + rand(0, spread), d + 10, 0);
+  deep_to = 0;
+  add_ob(2, cur_x - d + 8, cur_g, d);
+  cur_g = cur_g + d; nd[6]++;
+  RETURN 0;
+END
+
+// Obstacle 3: a steel wall up to the sky, with a cave under the floor in
+// front of it that runs below the wall -> digger.
+FUNCTION ob_cave();
+PRIVATE t, g2, cl, i;
+BEGIN
+  t = rand(6, 9); cl = rand(14, 20);
+  runup(rand(28, 36) + rand(0, spread), 30, 1);
+  g2 = cur_g + t + 8;
+  FOR i = cur_x - 30 TO cur_x + 5 bot[i] = imax(bot[i], g2 + 14); END
+  FOR i = cur_x TO cur_x + 5 top[i] = 0; END
+  add_steel(cur_x, cur_x + 5, 0, cur_g + t);
+  // the cave is cleared after the map is filled (ob_w = cave length)
+  add_ob(3, cur_x - cl / 2 - 2, cur_g, cl);
+  cave_box(cur_x - cl, cur_x + 5, cur_g + t + 1, g2);
+  cur_x = cur_x + 6; cur_g = g2; nd[7]++;
+  RETURN 0;
+END
+
+// Obstacle 4: a low steel wall that reaches below the ground -> builder
+// stairs over it. The key column is where the stairs should start.
+FUNCTION ob_steel();
+PRIVATE h, w, i;
+BEGIN
+  runup(rand(26, 32) + rand(0, spread), 28, 1);
+  h = rand(6, 9); w = rand(5, 8);
+  FOR i = cur_x TO cur_x + w - 1 top[i] = cur_g - h + 1; bot[i] = cur_g + 24; END
+  add_steel(cur_x, cur_x + w - 1, cur_g - h + 1, cur_g + 6);
+  add_ob(4, cur_x - 2 * h - 2, cur_g, h);
+  cur_x = cur_x + w; nd[4]++;
+  RETURN 0;
+END
+
+// Remember a cave to clear once the map is filled.
+FUNCTION cave_box(x0, x1, j0, j1);
+BEGIN
+  cv_x0[n_cv] = imin(scr(x0), scr(x1)); cv_x1[n_cv] = imax(scr(x0), scr(x1));
+  cv_y0[n_cv] = j0; cv_y1[n_cv] = j1; n_cv++;
+  RETURN 0;
+END
+
+// Set or clear a box in route coordinates (decorations).
+FUNCTION area(x0, x1, j0, j1, v);
+PRIVATE a, b, j;
+BEGIN
+  a = imax(imin(scr(x0), scr(x1)), 0); b = imin(imax(scr(x0), scr(x1)), CW - 1);
+  j0 = imax(j0, 0); j1 = imin(j1, CH - 1);
+  IF (a > b) RETURN 0; END
+  FOR j = j0 TO j1 set_span(j, a, b, v); END
+  RETURN 0;
+END
+
+// Lowest solid top over route columns a..b (gaps ignored).
+FUNCTION min_top(a, b);
+PRIVATE i, m;
+BEGIN
+  m = CH;
+  FOR i = imax(a, 0) TO imin(b, CW - 1)
+    IF (top[i] < 190) m = imin(m, top[i]); END
+  END
+  RETURN m;
+END
+
+// =====================================================================
+// Graphics
+// =====================================================================
+
+// Filled rectangle in sprite colour c.
+FUNCTION pc(gr, px, py, w, h, c);
+BEGIN
+  gfx_rect(gr, px, py, w, h, pr[c], pg[c], pb[c]);
+  RETURN 0;
+END
+
+// Head with the green hair flopping back, facing right; (hx, hy) is the
+// top-left of the face.
+FUNCTION head(gr, hx, hy);
+BEGIN
+  pc(gr, hx, hy, 3, 3, 1);
+  pc(gr, hx - 1, hy - 2, 4, 2, 0);
+  pc(gr, hx - 2, hy - 1, 2, 3, 0);
+  gfx_pixel(gr, hx + 2, hy + 1, 0, 0, 0);
+  RETURN 0;
+END
+
+// Standing body (robe) plus the two legs in one of two poses.
+FUNCTION body(gr, bx, by, legs);
+BEGIN
+  pc(gr, bx, by, 3, 5, 2);
+  IF (legs == 0) pc(gr, bx - 1, by + 6, 2, 3, 3); pc(gr, bx + 2, by + 6, 2, 3, 3); END
+  IF (legs == 1) pc(gr, bx, by + 5, 3, 4, 3); END
+  IF (legs == 2) pc(gr, bx - 2, by + 6, 2, 3, 3); pc(gr, bx + 3, by + 6, 2, 3, 3); END
+  RETURN 0;
+END
+
+// Draw lemming frame f (12x16, facing right, feet on the bottom row).
+FUNCTION make_frame(f);
+PRIVATE gr;
+BEGIN
+  gr = new_graphic(12, 16); gfx_fill_rgba(gr, 0, 0, 0, 0);
+  SWITCH (f)
+    CASE 0, 1, 2, 3                                // walk cycle
+      head(gr, 5, 3); body(gr, 5, 7, f % 2 + (f == 2));
+      IF (f == 0) pc(gr, 8, 8, 2, 2, 1); END
+      IF (f == 2) pc(gr, 3, 8, 2, 2, 1); END
+      IF (f % 2) pc(gr, 6, 8, 1, 3, 1); END
+    CASE 4, 5                                      // falling, arms up
+      head(gr, 5, 5); body(gr, 5, 8, 0);
+      pc(gr, 3 - (f - 4), 2 + (f - 4), 1, 5, 1); pc(gr, 9 + (f - 4), 2 + (f - 4), 1, 5, 1);
+    CASE 6, 7                                      // floating under an umbrella
+      pc(gr, 1, 0, 10, 2, 6 - (f - 6)); pc(gr, 3, 0, 6, 1, 5 + (f - 6));
+      pc(gr, 6, 2, 1, 4, 7);
+      head(gr, 5, 6); body(gr, 5, 9, 1); pc(gr, 7, 6, 1, 2, 1);
+    CASE 8, 9                                      // climbing a wall on the right
+      head(gr, 7, 3); pc(gr, 7, 6, 3, 5, 2);
+      pc(gr, 10, 2 + (f - 8) * 3, 1, 4, 1);
+      pc(gr, 7 + (f - 8), 11, 2, 4 - (f - 8), 3);
+    CASE 10                                        // blocker, arms spread
+      head(gr, 5, 3); body(gr, 5, 7, 2);
+      pc(gr, 1, 7, 4, 2, 1); pc(gr, 8, 7, 4, 2, 1);
+    CASE 11, 12                                    // builder laying a brick
+      head(gr, 6, 5); pc(gr, 5, 8, 4, 4, 2); pc(gr, 4, 12, 5, 3, 3);
+      pc(gr, 9, 8 + (f - 11) * 3, 3, 2, 4);
+    CASE 13, 14                                    // basher swinging
+      head(gr, 5, 3); body(gr, 5, 7, 0);
+      pc(gr, 8, 6 + (f - 13) * 4, 4, 2, 1);
+    CASE 15, 16                                    // miner with a pickaxe
+      head(gr, 5, 3); body(gr, 5, 7, 0);
+      IF (f == 15) pc(gr, 8, 1, 1, 7, 7); pc(gr, 6, 1, 5, 1, 5);
+      ELSE pc(gr, 8, 10, 4, 1, 7); pc(gr, 11, 9, 1, 4, 5); END
+    CASE 17, 18                                    // digger, bent over
+      head(gr, 5, 7); pc(gr, 4, 10, 4, 4, 2);
+      pc(gr, 3, 12 + (f - 17), 1, 3, 1); pc(gr, 8, 12 + (f - 17), 1, 3, 1);
+      IF (f == 18) pc(gr, 2, 14, 1, 1, 4); pc(gr, 9, 13, 1, 1, 4); END
+    CASE 19                                        // splat
+      pc(gr, 2, 13, 8, 2, 2); pc(gr, 1, 15, 10, 1, 6); pc(gr, 4, 12, 3, 1, 0);
+    CASE 20                                        // drowning
+      head(gr, 5, 11); pc(gr, 3, 9, 1, 4, 1); pc(gr, 9, 9, 1, 4, 1);
+    CASE 21, 22                                    // going home, cheering
+      head(gr, 5, 4 - (f - 21)); body(gr, 5, 8 - (f - 21), 1);
+      pc(gr, 3, 1, 1, 5, 1); pc(gr, 9, 1, 1, 5, 1);
+    CASE 23                                        // shrug: out of bricks
+      head(gr, 5, 3); body(gr, 5, 7, 1);
+      pc(gr, 2, 7, 3, 1, 1); pc(gr, 8, 7, 3, 1, 1); pc(gr, 2, 5, 1, 2, 1); pc(gr, 10, 5, 1, 2, 1);
+  END
+  g_f[f] = gr;
+  RETURN 0;
+END
+
+FUNCTION make_graphics();
+PRIVATE i, gr, j;
+BEGIN
+  // sprite colours: hair, skin, robe, dark robe, brick, white, red, grey
+  pr[0] = 60; pg[0] = 210; pb[0] = 70;
+  pr[1] = 250; pg[1] = 205; pb[1] = 165;
+  pr[2] = 70; pg[2] = 100; pb[2] = 240;
+  pr[3] = 40; pg[3] = 55; pb[3] = 170;
+  pr[4] = 225; pg[4] = 190; pb[4] = 120;
+  pr[5] = 245; pg[5] = 245; pb[5] = 245;
+  pr[6] = 230; pg[6] = 50; pb[6] = 50;
+  pr[7] = 150; pg[7] = 150; pb[7] = 160;
+  FOR i = 0 TO 23 make_frame(i); END
+  // hatch: closed and open trapdoor
+  FOR i = 0 TO 1
+    gr = new_graphic(40, 18); gfx_fill_rgba(gr, 0, 0, 0, 0);
+    gfx_rect(gr, 0, 0, 40, 12, 120, 80, 45); gfx_rect(gr, 2, 2, 36, 8, 80, 50, 30);
+    gfx_rect(gr, 0, 0, 40, 2, 170, 120, 70);
+    IF (i == 0)
+      gfx_rect(gr, 3, 10, 34, 3, 150, 150, 160);
+    ELSE
+      gfx_rect(gr, 4, 6, 32, 6, 5, 5, 10);
+      gfx_rect(gr, 1, 10, 4, 8, 150, 150, 160); gfx_rect(gr, 35, 10, 4, 8, 150, 150, 160);
+    END
+    g_hatch[i] = gr;
+  END
+  g_map = new_graphic(640, 480);
+  // title picture: gradient sky, generated hills and the name
+  g_title = new_graphic(640, 480);
+  FOR j = 0 TO 119
+    gfx_rect(g_title, 0, j * 4, 640, 4, 10 + j / 4, 12 + j / 3, 40 + j);
+  END
+  FOR i = 0 TO 79 gfx_rect(g_title, rand(0, 639), rand(0, 300), 2, 2, 200, 200, 255); END
+  FOR i = 0 TO 159
+    j = 400 + sin(i * 9000) * 18 + sin(i * 23000 + 5000) * 8;
+    gfx_rect(g_title, i * 4, j, 4, 480 - j, 110, 75, 45);
+    gfx_rect(g_title, i * 4, j, 4, 5, 70, 180, 60);
+  END
+  gfx_text(g_title, 124, 64, "BURROWERS", 20, 20, 40, 64);
+  gfx_text(g_title, 120, 60, "BURROWERS", 120, 230, 110, 64);
+  gfx_text(g_title, 186, 132, "a puzzle game in the style of Lemmings", 210, 220, 255, 13);
+  RETURN 0;
+END
+
+// Paint the whole level into g_map from the collision map: background,
+// earth with wavy strata and a light top edge, steel plates, the exit
+// door and the static part of the skill panel. Run from the builder.
+PROCESS painter();
+PRIVATE i, j, n, b, rt, rb, j2, band, k, wob, ph, sh, bx;
+BEGIN
+  FOR j = 0 TO CH - 1 bg_rgb(j); gfx_rect(g_map, 0, j * 2, 640, 2, cr, cg, cb); END
+  FRAME;
+  ph = rand(0, 359999);
+  FOR i = 0 TO CW - 1
+    n = i / 16; b = pw[i % 16];
+    wob = int(sin(i * 4000 + ph) * 3); sh = rand(-6, 6);
+    j = 0;
+    WHILE (j < CH)
+      IF ((sol[j * 20 + n] / b) % 2 == 0) j++; CONTINUE; END
+      rt = j;
+      WHILE (j < CH AND (sol[j * 20 + n] / b) % 2) j++; END
+      rb = j - 1;
+      j2 = rt;
+      WHILE (j2 <= rb)
+        band = (j2 + wob + 400) / 7;
+        k = imin(rb, band * 7 + 6 - wob - 400);
+        IF (band % 2 == 0)
+          gfx_rect(g_map, i * 2, j2 * 2, 2, (k - j2 + 1) * 2, m_r + sh, m_g + sh, m_b + sh);
+        ELSE
+          gfx_rect(g_map, i * 2, j2 * 2, 2, (k - j2 + 1) * 2, m_r * 0.8 + sh, m_g * 0.8 + sh, m_b * 0.8 + sh);
+        END
+        j2 = k + 1;
+      END
+      IF (rt > 0) gfx_rect(g_map, i * 2, rt * 2, 2, 3 + rand(0, 2), t_r + sh, t_g + sh, t_b + sh); END
+      IF (rb < CH - 1) gfx_rect(g_map, i * 2, rb * 2 + 1, 2, 1, m_r * 0.5, m_g * 0.5, m_b * 0.5); END
+      IF (rb - rt > 10 AND rand(0, 3) == 0)
+        gfx_rect(g_map, i * 2, (rt + rand(4, rb - rt)) * 2, 3, 2, m_r * 0.6, m_g * 0.6, m_b * 0.6);
+      END
+    END
+    IF (i % 16 == 15) gen_pct = 60 + i * 30 / CW; FRAME; END
+  END
+  // steel plates with rivets
+  FOR n = 0 TO n_st - 1
+    i = st_x0[n] * 2; j = st_y0[n] * 2;
+    b = (st_x1[n] - st_x0[n] + 1) * 2; k = (st_y1[n] - st_y0[n] + 1) * 2;
+    gfx_rect(g_map, i, j, b, k, 95, 100, 112);
+    FOR j2 = 0 TO k / 12
+      gfx_rect(g_map, i + 1, j + j2 * 12 + 1, b - 2, 10, 140, 146, 160);
+      gfx_rect(g_map, i + 2, j + j2 * 12 + 2, 2, 2, 90, 92, 100);
+      gfx_rect(g_map, i + b - 4, j + j2 * 12 + 2, 2, 2, 90, 92, 100);
+    END
+  END
+  // exit door: a stone arch with a dark doorway
+  i = exit_x * 2 + 1; j = (exit_y + 1) * 2;
+  gfx_rect(g_map, i - 16, j - 34, 32, 34, 120, 105, 90);
+  gfx_rect(g_map, i - 18, j - 38, 36, 5, 160, 140, 110);
+  gfx_rect(g_map, i - 9, j - 22, 18, 22, 10, 6, 4);
+  gfx_circle(g_map, i, j - 22, 9, 10, 6, 4);
+  gfx_rect(g_map, i - 1, j - 50, 2, 13, 200, 200, 200);
+  gfx_rect(g_map, i + 1, j - 50, 9, 6, 240, 200, 40);
+  // skill panel
+  gfx_rect(g_map, 0, 400, 640, 80, 28, 30, 40);
+  gfx_rect(g_map, 0, 400, 640, 2, 90, 95, 120);
+  FOR n = 0 TO 12
+    bx = 8 + n * 48;
+    gfx_rect(g_map, bx, 418, 46, 58, 70, 74, 92);
+    gfx_rect(g_map, bx + 1, 419, 44, 56, 48, 52, 66);
+  END
+  gfx_text(g_map, 11, 462, "RATE-", 220, 220, 230, 10);
+  gfx_text(g_map, 59, 462, "RATE+", 220, 220, 230, 10);
+  gfx_text(g_map, 107, 462, "CLIMB", 220, 220, 230, 10);
+  gfx_text(g_map, 155, 462, "FLOAT", 220, 220, 230, 10);
+  gfx_text(g_map, 206, 462, "BOMB", 220, 220, 230, 10);
+  gfx_text(g_map, 251, 462, "BLOCK", 220, 220, 230, 10);
+  gfx_text(g_map, 299, 462, "BUILD", 220, 220, 230, 10);
+  gfx_text(g_map, 350, 462, "BASH", 220, 220, 230, 10);
+  gfx_text(g_map, 398, 462, "MINE", 220, 220, 230, 10);
+  gfx_text(g_map, 449, 462, "DIG", 220, 220, 230, 10);
+  gfx_text(g_map, 491, 462, "PAUSE", 220, 220, 230, 10);
+  gfx_text(g_map, 542, 462, "FAST", 220, 220, 230, 10);
+  gfx_text(g_map, 590, 462, "NUKE", 255, 120, 100, 10);
+  gfx_rect(g_map, 504, 436, 5, 16, 230, 230, 240); gfx_rect(g_map, 513, 436, 5, 16, 230, 230, 240);
+  FOR n = 0 TO 7 gfx_line(g_map, 548 + n, 436 + n, 548 + n, 451 - n, 230, 230, 240); END
+  FOR n = 0 TO 7 gfx_line(g_map, 558 + n, 436 + n, 558 + n, 451 - n, 230, 230, 240); END
+  gfx_circle(g_map, 607, 440, 9, 230, 90, 40); gfx_rect(g_map, 603, 446, 8, 8, 200, 80, 40);
+  gfx_text(g_map, 13, 424, "-", 220, 220, 230, 18); gfx_text(g_map, 61, 424, "+", 220, 220, 230, 18);
+  gen_pct = 100;
+END
+
+// =====================================================================
+// Level builder: plans the route, fills the map, carves caves, adds
+// decoration and paints, spread over many frames.
+// =====================================================================
+PROCESS builder();
+PRIVATE i, j, k, n, t, last, nob, npool, tries, w, m, bot, cx, dep, a, b, pal, mg;
+BEGIN
+  state = 1; gen_pct = 0;
+  signal(TYPE lem, s_kill); signal(TYPE hatch, s_kill); signal(TYPE icon, s_kill);
+  signal(TYPE boom, s_kill); signal(TYPE painter, s_kill);
+  put_screen(0, 0);
+  FRAME;
+  rand_seed(level * 7919 + 17);                    // level N is always the same
+  FOR i = 0 TO 1999 sol[i] = 0; END
+  FRAME;
+  FOR i = 2000 TO 3999 sol[i] = 0; END
+  FOR i = 0 TO 7 nd[i] = 0; END
+  n_st = 0; n_ob = 0; n_cv = 0; deep_to = 0;
+  flip = rand(0, 1); pal = rand(0, 3); lava = pal % 2;
+  ph1 = rand(0, 359999); ph2 = rand(0, 359999);
+  SWITCH (pal)
+    CASE 0 m_r = 135; m_g = 92; m_b = 55; t_r = 80; t_g = 185; t_b = 70;
+    CASE 1 m_r = 165; m_g = 95; m_b = 115; t_r = 235; t_g = 170; t_b = 195;
+    CASE 2 m_r = 70; m_g = 100; m_b = 170; t_r = 160; t_g = 210; t_b = 255;
+    CASE 3 m_r = 185; m_g = 150; m_b = 85; t_r = 235; t_g = 215; t_b = 140;
+  END
+  // water (or lava) fills the bottom of the whole level
+  n_hz = 1; hz_x0[0] = 0; hz_x1[0] = CW - 1; hz_y0[0] = 186;
+  // ---- 1. plan the route with a cursor walking left to right
+  cur_x = 0; cur_g = rand(46, 64);
+  runup(rand(34, 42), 40, 0);
+  hatch_x = scr(rand(12, 20)); hatch_y = cur_g - 18; hatch_dir = 1 - 2 * flip;
+  nob = imin(1 + level / 2, 5);
+  npool = imin(level, 5);
+  spread = imin(imax(0, (CW - 80 - nob * 56) / nob), 60);   // spare room per obstacle
+  last = -1;
+  FOR k = 0 TO nob - 1
+    // a newly unlocked obstacle comes first on its level
+    t = rand(0, npool - 1); tries = 0;
+    WHILE (t == last AND tries < 6) t = rand(0, npool - 1); tries++; END
+    IF (k == 0 AND level >= 2 AND level <= 5) t = level - 1; END
+    IF (t == 2 AND cur_g > 128) t = 0; END          // no room below for a cliff
+    IF (t == 3 AND cur_g > 150) t = 1; END
+    // width it may take, and the final run must still fit
+    w = 50; IF (t == 2) w = 58; END
+    IF (t == 1 AND level >= 6) w = 64; END
+    IF (cur_x + w + spread + 34 > CW) BREAK; END
+    SWITCH (t)
+      CASE 0 ob_wall();
+      CASE 1 ob_gap(level >= 6 AND rand(0, 2) == 0);
+      CASE 2 ob_cliff();
+      CASE 3 ob_cave();
+      CASE 4 ob_steel();
+    END
+    last = t;
+  END
+  // the last run holds the exit door on its flat end
+  runup(CW - cur_x, 34, 0);
+  exit_x = scr(CW - rand(12, 30)); exit_y = cur_g;
+  gen_pct = 10;
+  FRAME;
+  // ---- 2. fill the collision map from top[]/bot[], row by row: a word
+  // is all rock between its highest top and its lowest bottom, all air
+  // above its lowest top or below its highest bottom
+  FOR i = 0 TO CW - 1 stp[scr(i)] = top[i]; sbt[scr(i)] = imin(bot[i], CH - 1); END
+  FOR k = 0 TO 19
+    wt0[k] = 999; wt1[k] = 0; wb0[k] = 999; wb1[k] = 0;
+    FOR i = k * 16 TO k * 16 + 15
+      wt0[k] = imin(wt0[k], stp[i]); wt1[k] = imax(wt1[k], stp[i]);
+      wb0[k] = imin(wb0[k], sbt[i]); wb1[k] = imax(wb1[k], sbt[i]);
+    END
+  END
+  FOR j = 0 TO CH - 1
+    FOR k = 0 TO 19
+      IF (j >= wt1[k] AND j <= wb0[k]) sol[j * 20 + k] = 65535;
+      ELSE
+        IF (j >= wt0[k] AND j <= wb1[k])
+          n = 0;
+          FOR i = 0 TO 15
+            IF (j >= stp[k * 16 + i] AND j <= sbt[k * 16 + i]) n += pw[i]; END
+          END
+          sol[j * 20 + k] = n;
+        END
+      END
+    END
+    IF (j % 20 == 19) gen_pct = 10 + j * 20 / CH; FRAME; END
+  END
+  // ---- 3. caves, then decoration kept well clear of the route: rock
+  // hanging from the sky and a few floating islands
+  FOR n = 0 TO n_cv - 1
+    FOR j = cv_y0[n] TO cv_y1[n] set_span(j, cv_x0[n], cv_x1[n], 0); END
+  END
+  FRAME;
+  n = rand(3, 6);
+  FOR k = 1 TO n
+    cx = rand(8, CW - 9); w = rand(8, 24);
+    bot = imin(min_top(cx - w, cx + w) - 42, rand(8, 36));
+    IF (bot >= 6)
+      FOR i = -w TO w
+        dep = int(bot * sqrt(1 - (i * i) / (w * w + 0.001))) + rand(0, 2);
+        area(cx + i, cx + i, 0, dep, 1);
+        IF ((i + w) % 8 == 7) FRAME; END   // a wide, deep piece is too much for one frame
+      END
+    END
+    FRAME;
+  END
+  n = rand(0, 2);
+  FOR k = 1 TO n
+    cx = rand(20, CW - 21); w = rand(8, 16);
+    m = min_top(cx - w - 4, cx + w + 4) - rand(44, 56);
+    IF (m >= 12)
+      FOR i = -w TO w
+        dep = int(5 * sqrt(1 - (i * i) / (w * w + 0.001)));
+        area(cx + i, cx + i, m - 2, m + dep, 1);
+        IF ((i + w) % 8 == 7) FRAME; END
+      END
+    END
+    FRAME;
+  END
+  // ---- 4. rules of the level: more lemmings, a higher share to save,
+  // a faster minimum release rate and less time as the levels go on
+  total = imin(20 + (level - 1) * 5, 80);
+  need_pct = imin(40 + level * 5, 85);
+  need = (total * need_pct + 99) / 100;
+  need = imin(need, total - n_ob - 3);
+  rrate_min = imin(20 + level * 6, 85); rrate = rrate_min;
+  time_left = imax(3, 6 - level / 3) * 60 * 15;
+  mg = imax(1, 3 - level / 3);
+  FOR i = 0 TO 7 sk_n[i] = nd[i] + mg; END
+  sk_n[3] = 1 + n_ob / 2 + mg;                     // blockers to hold the crowd
+  sk_n[2] = 1 + mg;
+  sel = 4;
+  gen_pct = 60;
+  rand_seed();
+  // ---- 5. paint (in its own process, so its instruction budget is its own)
+  painter();
+  WHILE (gen_pct < 100) FRAME; END
+  put_screen(0, g_map);
+  // reset the run
+  FOR i = 0 TO 79 l_st[i] = 12; END
+  released = 0; saved = 0; dead = 0; nuking = 0; nukes = 0; paused = 0; fast = 0;
+  acc = 0; end_t = 0; opening = 40; rel_t = 0; steps = 0;
+  hatch();
+  FOR i = 0 TO 7
+    SWITCH (i)
+      CASE 0 a = 8;
+      CASE 1 a = 6;
+      CASE 2 a = 4;
+      CASE 3 a = 10;
+      CASE 4 a = 11;
+      CASE 5 a = 13;
+      CASE 6 a = 15;
+      CASE 7 a = 17;
+    END
+    icon(8 + (i + 2) * 48 + 23, 448, a);
+  END
+  state = 2;
+END
+
+// =====================================================================
+// Lemmings
+// =====================================================================
+
+// Put lemming k into the level at the hatch.
+FUNCTION spawn(k);
+BEGIN
+  l_st[k] = 1; l_x[k] = hatch_x; l_y[k] = hatch_y; l_ox[k] = hatch_x; l_oy[k] = hatch_y;
+  l_dir[k] = hatch_dir; l_climb[k] = 0; l_float[k] = 0; l_fuse[k] = 0;
+  l_n[k] = 0; l_b[k] = 0; l_fall[k] = 0; l_anim[k] = k;
+  lem(k);
+  RETURN 0;
+END
+
+// One game step of lemming k. Every state looks at a few cells only.
+FUNCTION lem_step(k);
+PRIVATE st, st0, cx, cy, dir, nx, h, i, a, b;
+BEGIN
+  st = l_st[k]; st0 = st; cx = l_x[k]; cy = l_y[k]; dir = l_dir[k];
+  l_ox[k] = cx; l_oy[k] = cy;
+  l_anim[k]++; l_n[k]++;
+  // splatting, drowning and leaving only play their animation
+  IF (st >= 9)
+    IF (l_n[k] >= 12)
+      l_st[k] = 12;
+      IF (st == 11) saved++; ELSE dead++; END
+    END
+    RETURN 0;
+  END
+  // bomber fuse
+  IF (l_fuse[k] > 0)
+    l_fuse[k]--;
+    IF (l_fuse[k] == 0)
+      carve(cx, cy - 3, 9);
+      boom(cx * 2 + 1, cy * 2 - 4);
+      l_st[k] = 12; dead++;
+      RETURN 0;
+    END
+  END
+  SWITCH (st)
+    CASE 0                                         // ---- walker
+      i = 0;                                       // pushed up out of rock
+      WHILE (solidc(cx, cy) AND i < 4) cy--; i++; END
+      FOR i = 0 TO n_bl - 1                        // blockers turn us round
+        IF (abs(cy - bl_y[i]) <= 6)
+          IF (dir > 0 AND cx < bl_x[i] AND cx + 4 >= bl_x[i]) dir = -1; END
+          IF (dir < 0 AND cx > bl_x[i] AND cx - 4 <= bl_x[i]) dir = 1; END
+        END
+      END
+      nx = cx + dir;
+      IF (solidc(nx, cy))
+        h = 1;                                     // height of the step ahead
+        WHILE (h < 7 AND solidc(nx, cy - h)) h++; END
+        IF (h <= 3)
+          cx = nx; cy = cy - h;
+        ELSE
+          IF (l_climb[k]) st = 2; ELSE dir = -dir; END
+        END
+      ELSE
+        cx = nx; h = 0;
+        WHILE (h < 4 AND solidc(cx, cy + 1 + h) == 0) h++; END
+        IF (h < 4) cy = cy + h; ELSE st = 1; l_fall[k] = 0; END
+      END
+    CASE 1                                         // ---- faller
+      a = 2;
+      IF (l_float[k] AND l_fall[k] > 6) a = 1; END // umbrella open: slow
+      FOR i = 1 TO a
+        IF (solidc(cx, cy + 1) == 0) cy++; l_fall[k]++; END
+      END
+      IF (solidc(cx, cy + 1))
+        IF (l_fall[k] > SAFE AND l_float[k] == 0) st = 9; ELSE st = 0; END
+      END
+    CASE 2                                         // ---- climber
+      IF (solidc(cx, cy - 6) OR cy < 8)
+        dir = -dir; st = 1; l_fall[k] = 0;         // head hit (or sky top): fall back off
+      ELSE
+        cy--;
+        IF (solidc(cx + dir, cy) == 0) cx = cx + dir; st = 0; END
+      END
+    CASE 3                                         // ---- blocker
+      IF (solidc(cx, cy + 1) == 0) st = 1; l_fall[k] = 0; END
+    CASE 4                                         // ---- builder
+      IF (solidc(cx, cy + 1) == 0)
+        st = 1; l_fall[k] = 0;
+      ELSE
+        IF (l_n[k] % 4 == 1)
+          IF (solidc(cx + dir * 2, cy - 1) OR solidc(cx + dir, cy - 1))
+            st = 0;                                // ran into a wall
+          ELSE
+            IF (solidc(cx + dir * 2, cy - 6))
+              dir = -dir; st = 0;                  // no head room
+            ELSE
+              brick(cx + dir, cx + dir * 4, cy);
+              cx = cx + dir * 2; cy--; l_b[k]++;
+              IF (l_b[k] >= 12) st = 8; END
+            END
+          END
+        END
+      END
+    CASE 5                                         // ---- basher
+      IF (l_n[k] % 2 == 1)
+        a = imin(cx + dir, cx + dir * 3); b = imax(cx + dir, cx + dir * 3);
+        IF (has_solid(a, b, cy - 5, cy))
+          IF (a < 0 OR b >= CW OR dig_area(a, b, cy - 6, cy) == 0)
+            st = 0;                                // steel or the map edge
+          ELSE
+            l_b[k] = 1; cx = cx + dir;
+          END
+        ELSE
+          IF (l_b[k]) st = 0; ELSE cx = cx + dir; END  // through, or walking up to the wall
+        END
+        IF (st == 5)
+          h = 0;
+          WHILE (h < 4 AND solidc(cx, cy + 1 + h) == 0) h++; END
+          IF (h < 4) cy = cy + h; ELSE st = 1; l_fall[k] = 0; END
+        END
+      END
+    CASE 6                                         // ---- miner
+      IF (l_n[k] % 3 == 1)
+        a = imin(cx + dir, cx + dir * 3); b = imax(cx + dir, cx + dir * 3);
+        IF (a < 0 OR b >= CW OR dig_area(a, b, cy - 5, cy + 1) == 0)
+          st = 0;
+        ELSE
+          cx = cx + dir; cy++;
+          IF (solidc(cx, cy + 1) == 0) st = 1; l_fall[k] = 0; END
+        END
+      END
+    CASE 7                                         // ---- digger
+      IF (l_n[k] % 3 == 1)
+        IF (has_solid(cx - 2, cx + 2, cy + 1, cy + 1) == 0)
+          st = 1; l_fall[k] = 0;                   // dug through
+        ELSE
+          IF (dig_area(cx - 2, cx + 2, cy + 1, cy + 1) == 0) st = 0; ELSE cy++; END
+        END
+      END
+    CASE 8                                         // ---- shrug, then walk on
+      IF (l_n[k] >= 10) st = 0; END
+      IF (solidc(cx, cy + 1) == 0) st = 1; l_fall[k] = 0; END
+  END
+  // fell out of the map, into a pool, or reached the door?
+  IF (cy >= CH + 2) l_st[k] = 12; dead++; RETURN 0; END
+  FOR i = 0 TO n_hz - 1
+    IF (cx >= hz_x0[i] AND cx <= hz_x1[i] AND cy >= hz_y0[i]) st = 10; END
+  END
+  IF ((st <= 1 OR st == 5) AND abs(cx - exit_x) <= 1 AND cy >= exit_y - 3 AND cy <= exit_y)
+    st = 11; cx = exit_x; cy = exit_y; l_fuse[k] = 0;
+  END
+  IF (st != st0) l_n[k] = 0; IF (st != 8) l_b[k] = 0; END END
+  l_st[k] = st; l_x[k] = cx; l_y[k] = cy; l_dir[k] = dir;
+  RETURN 0;
+END
+
+// Animation frame for lemming k.
+FUNCTION frame_of(k);
+PRIVATE a;
+BEGIN
+  a = l_anim[k];
+  SWITCH (l_st[k])
+    CASE 0 RETURN a % 4;
+    CASE 1
+      IF (l_float[k] AND l_fall[k] > 6) RETURN 6 + (a / 3) % 2; END
+      RETURN 4 + (a / 2) % 2;
+    CASE 2 RETURN 8 + (a / 2) % 2;
+    CASE 3 RETURN 10;
+    CASE 4 RETURN 11 + (l_n[k] / 2) % 2;
+    CASE 5 RETURN 13 + a % 2;
+    CASE 6 RETURN 15 + (a / 2) % 2;
+    CASE 7 RETURN 17 + (a / 2) % 2;
+    CASE 8 RETURN 23;
+    CASE 9 RETURN 19;
+    CASE 10 RETURN 20;
+    CASE 11 RETURN 21 + (a / 2) % 2;
+  END
+  RETURN 0;
+END
+
+PROCESS lem(k);
+PRIVATE s;
+BEGIN
+  z = -10;
+  LOOP
+    FOR s = 1 TO step_now lem_step(k); END
+    IF (l_st[k] == 12) BREAK; END
+    x = lerp(l_ox[k], l_x[k], frac) * 2 + 1;
+    y = (lerp(l_oy[k], l_y[k], frac) + 1) * 2 - 8;
+    graph = g_f[frame_of(k)];
+    flags = (l_dir[k] < 0);
+    IF (l_fuse[k] > 0)
+      set_color('#ffffff'); text(x - 3, y - 18, "" + (l_fuse[k] / 15 + 1));
+    END
+    FRAME;
+  END
+END
+
+// Explosion flash with a ring of flying specks.
+PROCESS boom(bx, by);
+PRIVATE t, i;
+BEGIN
+  FOR t = 0 TO 20
+    set_color('#ff8a30'); circle(bx, by, 22 - t);
+    set_color('#fff080'); circle(bx, by, imax(12 - t, 1));
+    set_color('#d0a070');
+    FOR i = 0 TO 7
+      circle(bx + get_distx(i * 45000 + 10000, t * 2.2), by + get_disty(i * 45000 + 10000, t * 2.2) + t * t * 0.05, 2);
+    END
+    FRAME;
+  END
+END
+
+PROCESS hatch();
+BEGIN
+  x = hatch_x * 2 + 1; y = (hatch_y + 1) * 2 - 22; z = -5;
+  LOOP
+    graph = g_hatch[opening == 0];
+    FRAME;
+  END
+END
+
+PROCESS icon(ix, iy, f);
+BEGIN
+  x = ix; y = iy; graph = g_f[f]; z = -20; size = 150;
+  LOOP FRAME; END
+END
+
+// Little walkers on the title screen.
+PROCESS title_walker(px, d);
+PRIVATE t;
+BEGIN
+  y = 392; z = -5;
+  LOOP
+    t++;
+    px = px + d * 0.5;
+    IF (px > 660) px = -20; END
+    IF (px < -20) px = 660; END
+    x = px; y = 396 + sin(px * 9000 / 4) * 18 + sin(px * 23000 / 4 + 5000) * 8 - 8;
+    graph = g_f[(t / 8) % 4]; flags = (d < 0);
+    FRAME;
+  END
+END
+
+// =====================================================================
+// Player actions
+// =====================================================================
+
+// Can lemming k take skill s now?
+FUNCTION can_take(k, s);
+PRIVATE st;
+BEGIN
+  st = l_st[k];
+  IF (st > 8) RETURN 0; END
+  SWITCH (s)
+    CASE 0 RETURN l_climb[k] == 0;
+    CASE 1 RETURN l_float[k] == 0;
+    CASE 2 RETURN l_fuse[k] == 0;
+  END
+  IF (st == 0 OR st == 8 OR (st >= 4 AND st <= 7 AND st != s)) RETURN 1; END
+  RETURN 0;
+END
+
+FUNCTION assign(k, s);
+BEGIN
+  IF (can_take(k, s) == 0) RETURN 0; END
+  SWITCH (s)
+    CASE 0 l_climb[k] = 1;
+    CASE 1 l_float[k] = 1;
+    CASE 2 l_fuse[k] = 75;                         // five seconds
+    DEFAULT
+      IF (s == 3 AND solidc(l_x[k], l_y[k] + 1) == 0) RETURN 0; END
+      l_st[k] = s; l_n[k] = 0; l_b[k] = 0;
+  END
+  RETURN 1;
+END
+
+// The lemming under the mouse, preferring one that can take skill s.
+FUNCTION pick(mx, my, s);
+PRIVATE k, best, bd, d, dx, dy;
+BEGIN
+  best = -1; bd = 9999;
+  FOR k = 0 TO released - 1
+    IF (l_st[k] <= 8)
+      dx = abs(mx - (lerp(l_ox[k], l_x[k], frac) * 2 + 1));
+      dy = abs(my - ((lerp(l_oy[k], l_y[k], frac) + 1) * 2 - 7));
+      IF (dx <= 8 AND dy <= 11)
+        d = dx + dy;
+        IF (can_take(k, s)) d = d - 100; END
+        IF (d < bd) bd = d; best = k; END
+      END
+    END
+  END
+  RETURN best;
+END
+
+FUNCTION nuke();
+PRIVATE k, n;
+BEGIN
+  IF (nuking) RETURN 0; END
+  nuking = 1; nukes++; n = 0;
+  FOR k = 0 TO released - 1
+    IF (l_st[k] <= 8 AND l_fuse[k] == 0) l_fuse[k] = 30 + n; n++; END
+  END
+  RETURN 0;
+END
+
+FUNCTION end_level();
+BEGIN
+  signal(TYPE lem, s_kill); signal(TYPE boom, s_kill);
+  passed = (saved >= need);
+  IF (passed AND level == max_level) max_level++; END
+  IF (passed) title_sel = imin(level + 1, max_level); ELSE title_sel = level; END
+  state = 3;
+  RETURN 0;
+END
+
+// One game step for the level: open the hatch, release, run the clock.
+FUNCTION level_step();
+PRIVATE k;
+BEGIN
+  steps++;
+  IF (opening > 0) opening--; RETURN 0; END
+  IF (released < total AND nuking == 0)
+    rel_t--;
+    IF (rel_t <= 0)
+      spawn(released); released++;
+      rel_t = 4 + (99 - rrate) / 3;
+    END
+  END
+  time_left--;
+  RETURN 0;
+END
+
+FUNCTION panel_click(b);
+BEGIN
+  IF (b >= 2 AND b <= 9) sel = b - 2; END
+  IF (b == 10) paused = 1 - paused; END
+  IF (b == 11) fast = 1 - fast; END
+  IF (b == 12) nuke(); END
+  RETURN 0;
+END
+
+// Mouse button box (for the title and result screens).
+FUNCTION button(bx, by, w, h, label, click);
+PRIVATE over;
+BEGIN
+  over = (mouse.x >= bx AND mouse.x < bx + w AND mouse.y >= by AND mouse.y < by + h);
+  IF (over) draw_rect(bx, by, w, h, '#6a8ae0'); ELSE draw_rect(bx, by, w, h, '#3a4a78'); END
+  draw_rect(bx + 1, by + 1, w - 2, 1, '#a0b8ff');
+  set_color('#ffffff'); text(bx + 8, by + h / 2 - 6, label);
+  RETURN over AND click;
+END
+
+// =====================================================================
+// Screens
+// =====================================================================
+
+FUNCTION draw_hud();
+PRIVATE i, bx, sec, s, k;
+BEGIN
+  // pools: translucent water or lava with moving crests
+  FOR i = 0 TO n_hz - 1
+    bx = hz_x0[i] * 2;
+    IF (lava) draw_rect(bx, 372, (hz_x1[i] - hz_x0[i] + 1) * 2, 20, 'rgba(240,90,20,0.85)');
+    ELSE draw_rect(bx, 372, (hz_x1[i] - hz_x0[i] + 1) * 2, 20, 'rgba(40,110,230,0.75)'); END
+    FOR k = 0 TO (hz_x1[i] - hz_x0[i]) / 6
+      IF (lava) set_color('#ffd040'); ELSE set_color('#bfe4ff'); END
+      circle(bx + k * 12 + (steps / 2 + k * 5) % 12, 373 + sin(steps * 9000 + k * 60000) * 1.5, 2);
+    END
+  END
+  // torches on the exit door
+  bx = exit_x * 2 + 1; i = (exit_y + 1) * 2;
+  set_color('#ff9020'); circle(bx - 13, i - 40 - (steps % 3), 3); circle(bx + 13, i - 40 - ((steps + 1) % 3), 3);
+  set_color('#fff080'); circle(bx - 13, i - 39, 1); circle(bx + 13, i - 39, 1);
+  // counts on the panel and the selected skill
+  set_color('#ffffff');
+  text(20, 440, "" + rrate_min); text(66, 440, "" + rrate);
+  FOR i = 0 TO 7
+    text(8 + (i + 2) * 48 + 18, 421, "" + sk_n[i]);
+  END
+  bx = 8 + (sel + 2) * 48;
+  draw_rect(bx - 1, 417, 48, 2, '#ffe040'); draw_rect(bx - 1, 475, 48, 2, '#ffe040');
+  draw_rect(bx - 1, 417, 2, 60, '#ffe040'); draw_rect(bx + 45, 417, 2, 60, '#ffe040');
+  IF (paused) draw_rect(488, 417, 48, 3, '#40ff60'); END
+  IF (fast) draw_rect(536, 417, 48, 3, '#40ff60'); END
+  IF (nuking) draw_rect(584, 417, 48, 3, '#ff5030'); END
+  // status line
+  sec = imax(time_left, 0) / 15;
+  IF (sec % 60 < 10) s = "" + sec / 60 + ":0" + sec % 60; ELSE s = "" + sec / 60 + ":" + sec % 60; END
+  set_color('#a0ffa0');
+  text(8, 405, "LEVEL " + level + "   OUT " + (released - saved - dead) + "   IN " + (saved * 100 / total)
+       + "%   NEED " + need_pct + "%   TIME " + s);
+  IF (hover >= 0)
+    k = hover;
+    SWITCH (l_st[k])
+      CASE 0 s = "WALKER"; CASE 1 s = "FALLER"; CASE 2 s = "CLIMBER"; CASE 3 s = "BLOCKER";
+      CASE 4 s = "BUILDER"; CASE 5 s = "BASHER"; CASE 6 s = "MINER"; CASE 7 s = "DIGGER";
+      DEFAULT s = "WALKER";
+    END
+    IF (l_climb[k]) s = s + " +CLIMB"; END
+    IF (l_float[k]) s = s + " +FLOAT"; END
+    set_color('#ffffff'); text(430, 405, s);
+    bx = lerp(l_ox[k], l_x[k], frac) * 2 + 1; i = (lerp(l_oy[k], l_y[k], frac) + 1) * 2 - 8;
+    draw_rect(bx - 8, i - 10, 16, 1, '#ffffff'); draw_rect(bx - 8, i + 9, 16, 1, '#ffffff');
+    draw_rect(bx - 8, i - 10, 1, 20, '#ffffff'); draw_rect(bx + 7, i - 10, 1, 20, '#ffffff');
+  END
+  IF (paused) set_color('#ffe040'); text(292, 190, "PAUSED"); END
+  RETURN 0;
+END
+
+FUNCTION play_frame(click);
+PRIVATE b, k, s;
+BEGIN
+  // keyboard
+  IF (key_pressed(_p) OR key_pressed(_space)) paused = 1 - paused; END
+  IF (key_pressed(_f)) fast = 1 - fast; END
+  IF (key_pressed(_1)) sel = 0; END
+  IF (key_pressed(_2)) sel = 1; END
+  IF (key_pressed(_3)) sel = 2; END
+  IF (key_pressed(_4)) sel = 3; END
+  IF (key_pressed(_5)) sel = 4; END
+  IF (key_pressed(_6)) sel = 5; END
+  IF (key_pressed(_7)) sel = 6; END
+  IF (key_pressed(_8)) sel = 7; END
+  IF (key_pressed(_esc)) end_level(); RETURN 0; END
+  // panel: clicks, and the release rate changes while the button is held
+  b = -1;
+  IF (mouse.y >= 418 AND mouse.y < 476 AND mouse.x >= 8) b = int((mouse.x - 8) / 48); END
+  IF (click AND b >= 2) panel_click(b); END
+  IF (mouse.left AND (b == 0 OR b == 1))
+    rr_hold++;
+    IF (rr_hold == 1 OR (rr_hold > 15 AND rr_hold % 3 == 0))
+      IF (b == 0) rrate = imax(rrate - 1, rrate_min); ELSE rrate = imin(rrate + 1, 99); END
+    END
+  ELSE
+    rr_hold = 0;
+  END
+  // blockers of this frame
+  n_bl = 0;
+  FOR k = 0 TO released - 1
+    IF (l_st[k] == 3) bl_x[n_bl] = l_x[k]; bl_y[n_bl] = l_y[k]; n_bl++; END
+  END
+  // game steps: one every 4 frames, one per frame in fast forward
+  step_now = 0;
+  IF (paused == 0)
+    IF (fast)
+      step_now = 1; frac = 1.0; acc = 0;
+    ELSE
+      acc++;
+      IF (acc >= 4) acc = 0; step_now = 1; END
+      frac = (acc + 1) * 0.25;
+    END
+  END
+  IF (step_now) level_step(); END
+  // skills are handed out by clicking a lemming
+  hover = -1;
+  IF (mouse.y < 400)
+    hover = pick(mouse.x, mouse.y, sel);
+    IF (click AND hover >= 0 AND sk_n[sel] > 0)
+      IF (assign(hover, sel)) sk_n[sel]--; END
+    END
+  END
+  draw_hud();
+  // the end: everybody out or gone, or the clock ran out
+  IF ((released >= total OR nuking) AND released - saved - dead <= 0 AND opening == 0)
+    end_t++;
+    IF (end_t > 50) end_level(); END
+  END
+  IF (time_left <= 0) end_level(); END
+  RETURN 0;
+END
+
+FUNCTION title_frame(click);
+PRIVATE i, bx, by;
+BEGIN
+  set_color('#ffffff');
+  text(150, 180, "Guide the walkers from the hatch to the exit door.");
+  text(150, 198, "Pick a skill in the bottom panel, then click a lemming.");
+  text(150, 216, "Blockers turn others round, builders lay stairs, bashers,");
+  text(150, 234, "miners and diggers tunnel, floaters survive long falls.");
+  text(150, 252, "P / SPACE pause   F fast   1-8 skills   ESC give up");
+  set_color('#ffe070'); text(150, 282, "Choose a level (ENTER plays the highlighted one):");
+  FOR i = 1 TO imin(max_level, 30)
+    bx = 150 + ((i - 1) % 10) * 34; by = 300 + ((i - 1) / 10) * 30;
+    IF (i == title_sel) draw_rect(bx - 2, by - 2, 34, 28, '#ffe040'); END
+    IF (button(bx, by, 30, 24, "" + i, click)) level = i; builder(); RETURN 0; END
+  END
+  IF (key_pressed(_right)) title_sel = imin(title_sel + 1, max_level); END
+  IF (key_pressed(_left)) title_sel = imax(title_sel - 1, 1); END
+  IF (key_pressed(_enter)) level = title_sel; builder(); END
+  RETURN 0;
+END
+
+FUNCTION result_frame(click);
+PRIVATE pct;
+BEGIN
+  draw_hud();
+  draw_rect(150, 120, 340, 200, 'rgba(0,0,0,0.8)');
+  pct = saved * 100 / total;
+  set_color('#ffe070'); text(170, 136, "LEVEL " + level + " RESULT");
+  set_color('#ffffff');
+  text(170, 164, "You rescued " + pct + "%  (" + saved + " of " + total + ")");
+  text(170, 182, "You needed  " + need_pct + "%  (" + need + ")");
+  IF (passed)
+    set_color('#80ff80'); text(170, 210, "Well done - on to level " + (level + 1) + "!");
+    IF (button(170, 260, 140, 30, "NEXT LEVEL", click) OR key_pressed(_enter))
+      level++; builder(); RETURN 0;
+    END
+  ELSE
+    set_color('#ff8080'); text(170, 210, "Not enough. Try again!");
+  END
+  IF (button(330, 260, 70, 30, "RETRY", click) OR key_pressed(_r) OR (passed == 0 AND key_pressed(_enter)))
+    builder(); RETURN 0;
+  END
+  IF (button(410, 260, 64, 30, "MENU", click) OR key_pressed(_esc)) go_title(); END
+  RETURN 0;
+END
+
+FUNCTION go_title();
+PRIVATE i;
+BEGIN
+  signal(TYPE lem, s_kill); signal(TYPE hatch, s_kill); signal(TYPE icon, s_kill);
+  signal(TYPE boom, s_kill);
+  put_screen(0, g_title);
+  FOR i = 0 TO 4 title_walker(rand(0, 640), 1 - 2 * (i % 2)); END
+  state = 0;
+  RETURN 0;
+END
+
+// =====================================================================
+// MAIN
+// =====================================================================
+PRIVATE i, ml, click;
+BEGIN
+  set_mode(640, 480);
+  set_fps(60, 0);
+  screen_color('#06081a');
+  pw[0] = 1;
+  FOR i = 1 TO 15 pw[i] = pw[i - 1] * 2; END
+  make_graphics();
+  go_title();
+  LOOP
+    ml = mouse.left;
+    click = (ml AND lprev == 0); lprev = ml;
+    IF (state != 0) signal(TYPE title_walker, s_kill); END
+    SWITCH (state)
+      CASE 0 title_frame(click);
+      CASE 1
+        draw_rect(220, 220, 200, 40, 'rgba(0,0,0,0.7)');
+        set_color('#ffffff'); text(250, 234, "Building level " + level + "... " + gen_pct + "%");
+      CASE 2 play_frame(click);
+      CASE 3 result_frame(click);
+    END
+    FRAME;
+  END
+END

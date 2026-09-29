@@ -1,0 +1,374 @@
+PROGRAM cave_flyer;
+
+// CAVE FLYER - an endless side-scrolling cave.
+// The ceiling and floor are never stored as a map: every 4-pixel column is
+// generated just ahead of the screen from 1D value noise (random "knots"
+// joined with smoothstep) plus two sines, and kept in a ring buffer of
+// column heights. The ship collides by reading those heights directly, so
+// the whole cave costs no processes at all.
+
+GLOBAL
+  scr_w = 480; scr_h = 320;
+  col_w = 4;                 // width of one terrain column in pixels
+  ring  = 256;               // ring buffer size (columns), > one screen
+  top_h[255];                // ceiling height of column c at [c % ring]
+  bot_h[255];                // floor start (y) of column c at [c % ring]
+  gen_col = 0;               // next column to generate
+
+  // value noise state: centre line moves from knot_a to knot_b
+  knot_len = 28; knot_a = 160; knot_b = 160;
+  phase1 = 0; phase2 = 0;    // random sine phases, new every run
+
+  // stalactite / stalagmite being built into the columns
+  spike_left = 0; spike_w = 0; spike_h = 0; spike_up = 0; spike_next = 150;
+
+  // floating boulders and gems, in world coordinates
+  rock_on[11]; rock_x[11]; rock_y[11]; rock_r[11]; rock_next = 320;
+  gem_on[11];  gem_x[11];  gem_y[11];  gem_next = 60;
+
+  // particles (explosion debris, exhaust, gem sparkles), world coordinates
+  np = 160;
+  p_life[159]; p_x[159]; p_y[159]; p_vx[159]; p_vy[159]; p_col[159];
+  p_next = 0;
+
+  state = 0;                 // 0 title, 1 flying, 2 crashed
+  scroll_x = 0.0;            // world x of the screen's left edge
+  speed = 0.0;
+  score = 0; best = 0; bonus = 0; gems = 0; level = 1;
+  crashed = 0; dead_t = 0; shake = 0;
+  g_ship1 = 0; g_ship2 = 0;
+
+// Rotor blade frames for the little copter (26x16, facing right).
+FUNCTION make_ship(g, blade);
+BEGIN
+  gfx_fill_rgba(g, 0, 0, 0, 0);
+  gfx_rect(g, 0, 7, 10, 3, 200, 90, 40);          // tail boom
+  gfx_rect(g, 0, 4, 3, 5, 230, 120, 50);          // tail fin
+  gfx_circle(g, 15, 9, 6, 250, 160, 50);          // body
+  gfx_circle(g, 18, 8, 3, 150, 220, 255);         // cockpit glass
+  gfx_rect(g, 14, 1, 2, 3, 90, 90, 90);           // mast
+  IF (blade == 0) gfx_rect(g, 4, 0, 22, 2, 220, 220, 220);
+  ELSE            gfx_rect(g, 10, 0, 10, 2, 160, 160, 160);
+  END
+  gfx_rect(g, 9, 15, 12, 1, 120, 120, 120);       // skid
+  RETURN g;
+END
+
+// Take the next particle slot (oldest one is recycled when full).
+FUNCTION spawn_particle(wx, wy, vx, vy, life, col);
+BEGIN
+  p_x[p_next] = wx; p_y[p_next] = wy;
+  p_vx[p_next] = vx; p_vy[p_next] = vy;
+  p_life[p_next] = life; p_col[p_next] = col;
+  p_next = (p_next + 1) % np;
+  RETURN 0;
+END
+
+// Build column c: noise centre line, narrowing gap, spikes, gems, rocks.
+FUNCTION gen_column(c);
+PRIVATE k; t; centre; gap; top; bot; i; half; prof; free; r; j;
+BEGIN
+  // difficulty: the gap narrows with distance (and breathes a little)
+  gap = 210 - c / 28;
+  IF (gap < 78) gap = 78; END
+  gap = gap + sin(c * 1700 + phase2) * 14;
+
+  // value noise: a new random knot every knot_len columns
+  k = c % knot_len;
+  IF (k == 0)
+    knot_a = knot_b;
+    // limit each step so the slope stays flyable even at top speed
+    knot_b = clamp(knot_a + rand(-48, 48), gap / 2 + 14, scr_h - gap / 2 - 14);
+  END
+  t = smoothstep(0, knot_len, k);
+  centre = lerp(knot_a, knot_b, t) + sin(c * 2300 + phase1) * 12 + sin(c * 9100 + phase2) * 3;
+
+  top = centre - gap / 2 + rand(0, 2);            // rand() gives rocky grain
+  bot = centre + gap / 2 - rand(0, 2);
+  IF (top < 8) top = 8; bot = top + gap; END
+  IF (bot > scr_h - 8) bot = scr_h - 8; top = bot - gap; END
+
+  // stalactites (from the ceiling) and stalagmites (from the floor)
+  IF (spike_left == 0 AND c >= spike_next)
+    spike_w = rand(6, 10);
+    spike_left = spike_w;
+    spike_h = (bot - top) * rand(30, 48) / 100;
+    IF (spike_h > bot - top - 58) spike_h = bot - top - 58; END  // room to fly
+    IF (spike_h < 0) spike_h = 0; END
+    spike_up = rand(0, 1);
+    spike_next = c + spike_w + rand(22, 70) - c / 150;
+    IF (spike_next < c + spike_w + 10) spike_next = c + spike_w + 10; END
+  END
+  IF (spike_left > 0)
+    i = spike_w - spike_left;
+    half = spike_w * 0.5;
+    prof = 1 - abs(i + 0.5 - half) / half;        // triangle 0..1..0
+    IF (spike_up) top = top + spike_h * prof;
+    ELSE          bot = bot - spike_h * prof;
+    END
+    spike_left = spike_left - 1;
+  END
+  IF (bot - top < 44) bot = top + 44; END         // always passable
+
+  top_h[c % ring] = top;
+  bot_h[c % ring] = bot;
+
+  // gems float in the middle of the gap
+  IF (c >= gem_next AND spike_left == 0)
+    FOR j = 0 TO 11
+      IF (gem_on[j] == 0)
+        gem_on[j] = 1; gem_x[j] = c * col_w; gem_y[j] = (top + bot) / 2;
+        BREAK;
+      END
+    END
+    gem_next = c + rand(45, 110);
+  END
+
+  // floating boulders, more often further in
+  IF (c >= rock_next AND spike_left == 0)
+    r = rand(9, 16);
+    free = bot - top - 2 * r;
+    IF (free > 90)
+      FOR j = 0 TO 11
+        IF (rock_on[j] == 0)
+          rock_on[j] = 1; rock_x[j] = c * col_w; rock_r[j] = r;
+          rock_y[j] = rand(top + r + 40, bot - r - 40);
+          IF (spike_next < c + 14) spike_next = c + 14; END  // no spike on it
+          BREAK;
+        END
+      END
+    END
+    rock_next = c + rand(35, 90) - c / 120;
+    IF (rock_next < c + 20) rock_next = c + 20; END
+  END
+  RETURN 0;
+END
+
+// Generate the columns entering on the right of the screen.
+FUNCTION fill_ahead();
+PRIVATE target;
+BEGIN
+  target = floor(scroll_x / col_w) + scr_w / col_w + 4;
+  WHILE (gen_col <= target)
+    gen_column(gen_col);
+    gen_col = gen_col + 1;
+  END
+  RETURN 0;
+END
+
+// Start a fresh cave (new random phases, empty world).
+FUNCTION reset_world();
+PRIVATE j;
+BEGIN
+  scroll_x = 0; gen_col = 0; bonus = 0; gems = 0; crashed = 0; shake = 0;
+  phase1 = rand(0, 359999); phase2 = rand(0, 359999);
+  knot_a = scr_h / 2; knot_b = scr_h / 2;
+  spike_left = 0; spike_next = 150; rock_next = 320; gem_next = 60;
+  FOR j = 0 TO 11 rock_on[j] = 0; gem_on[j] = 0; END
+  FOR j = 0 TO np - 1 p_life[j] = 0; END
+  fill_ahead();
+  RETURN 0;
+END
+
+// Is the world point (wx, wy) inside the rock of the cave walls?
+FUNCTION in_wall(wx, wy);
+PRIVATE k;
+BEGIN
+  k = floor(wx / col_w) % ring;
+  IF (wy < top_h[k] OR wy > bot_h[k]) RETURN 1; END
+  RETURN 0;
+END
+
+// The player: one button - hold to climb, release to fall.
+PROCESS ship();
+PRIVATE vy = 0.0; tick = 0; wx; j; n; up;
+BEGIN
+  x = 110; y = scr_h / 2; graph = g_ship1; z = -10;
+  LOOP
+    tick = tick + 1;
+    up = key(_space) OR key(_up) OR key(_w) OR mouse_button(0);
+    IF (up) vy = vy - 0.40; ELSE vy = vy + 0.28; END
+    vy = clamp(vy, -5, 6);
+    y = y + vy;
+    angle = -vy * 4000;                            // nose follows the climb
+    IF (tick % 4 < 2) graph = g_ship1; ELSE graph = g_ship2; END
+
+    wx = scroll_x + x;
+    IF (up AND tick % 3 == 0)                      // exhaust puff
+      spawn_particle(wx - 12, y + 4, -1 - rand(0, 10) * 0.1, 0.6, 22, 4);
+    END
+
+    // terrain: test the ship's corners against the column heights
+    IF (in_wall(wx - 10, y - 5) OR in_wall(wx + 10, y - 5) OR
+        in_wall(wx - 10, y + 6) OR in_wall(wx + 10, y + 6) OR
+        in_wall(wx, y - 7) OR in_wall(wx, y + 7))
+      crashed = 1;
+    END
+    FOR j = 0 TO 11
+      IF (rock_on[j] AND distance(wx, y, rock_x[j], rock_y[j]) < rock_r[j] + 7)
+        crashed = 1;
+      END
+      IF (gem_on[j] AND distance(wx, y, gem_x[j], gem_y[j]) < 16)
+        gem_on[j] = 0; gems = gems + 1; bonus = bonus + 25;
+        FOR n = 0 TO 9
+          spawn_particle(gem_x[j], gem_y[j], rand(-20, 20) * 0.1, rand(-20, 20) * 0.1, 25, 3);
+        END
+      END
+    END
+
+    IF (crashed)
+      FOR j = 0 TO 69                              // explosion debris
+        spawn_particle(wx, y, rand(-40, 40) * 0.1 + speed * 0.4,
+                       rand(-50, 30) * 0.1, rand(30, 70), rand(0, 2));
+      END
+      shake = 14;
+      BREAK;                                       // the ship is gone
+    END
+    FRAME;
+  END
+END
+
+// Cave colours get warmer the deeper (further) you fly.
+FUNCTION cave_rgb(shade);
+PRIVATE r; g; b; l;
+BEGIN
+  l = (level - 1) % 5;
+  r = 40 + l * 22; g = 50 + (4 - l) * 8; b = 90 - l * 12;
+  r = r * shade / 100; g = g * shade / 100; b = b * shade / 100;
+  RETURN "rgb(" + r + "," + g + "," + b + ")";
+END
+
+// Draw every visible column in three passes: body, inner band, bright rim.
+FUNCTION draw_cave(ox, oy);
+PRIVATE first; off; i; k; sx; n;
+BEGIN
+  first = floor(scroll_x / col_w);
+  off = scroll_x - first * col_w;
+  n = scr_w / col_w + 1;
+  set_color(cave_rgb(60));
+  FOR i = 0 TO n
+    k = (first + i) % ring; sx = i * col_w - off + ox;
+    draw_rect(sx, 0, col_w + 1, top_h[k] + oy);
+    draw_rect(sx, bot_h[k] + oy, col_w + 1, scr_h - bot_h[k] - oy);
+  END
+  set_color(cave_rgb(100));
+  FOR i = 0 TO n
+    k = (first + i) % ring; sx = i * col_w - off + ox;
+    draw_rect(sx, top_h[k] + oy - 12, col_w + 1, 12);
+    draw_rect(sx, bot_h[k] + oy, col_w + 1, 12);
+  END
+  set_color(cave_rgb(170));
+  FOR i = 0 TO n
+    k = (first + i) % ring; sx = i * col_w - off + ox;
+    draw_rect(sx, top_h[k] + oy - 3, col_w + 1, 3);
+    draw_rect(sx, bot_h[k] + oy, col_w + 1, 3);
+  END
+  RETURN 0;
+END
+
+// Boulders, gems and particles (all stored in world coordinates).
+FUNCTION draw_things(ox, oy);
+PRIVATE j; sx; c; pulse;
+BEGIN
+  FOR j = 0 TO 11
+    IF (rock_on[j])
+      sx = rock_x[j] - scroll_x + ox;
+      IF (sx < -40) rock_on[j] = 0; END
+      set_color('#4a3f3a'); circle(sx, rock_y[j] + oy, rock_r[j]);
+      set_color('#7a6a60'); circle(sx - rock_r[j] / 3, rock_y[j] + oy - rock_r[j] / 3, rock_r[j] / 2);
+    END
+    IF (gem_on[j])
+      sx = gem_x[j] - scroll_x + ox;
+      IF (sx < -40) gem_on[j] = 0; END
+      pulse = sin(get_time() * 400000 + j * 60000) * 2;
+      set_color('#1fd6a8');                         // diamond from 3 bars
+      draw_rect(sx - 2, gem_y[j] - 7 - pulse + oy, 4, 14 + pulse * 2);
+      draw_rect(sx - 5, gem_y[j] - 4 + oy, 10, 8);
+      draw_rect(sx - 7 - pulse, gem_y[j] - 1 + oy, 14 + pulse * 2, 2);
+      set_color('#d8fff4'); draw_rect(sx - 2, gem_y[j] - 3 + oy, 2, 2);
+    END
+  END
+  FOR j = 0 TO np - 1
+    IF (p_life[j] > 0)
+      p_life[j] = p_life[j] - 1;
+      p_x[j] = p_x[j] + p_vx[j]; p_y[j] = p_y[j] + p_vy[j];
+      c = p_col[j];
+      IF (c < 3) p_vy[j] = p_vy[j] + 0.12; END     // debris falls
+      IF (c == 0) set_color('#ffd84a'); END
+      IF (c == 1) set_color('#ff7a2a'); END
+      IF (c == 2) set_color('#fff4d0'); END
+      IF (c == 3) set_color('#7fffe0'); END
+      IF (c == 4) set_color('#5a6078'); END
+      circle(p_x[j] - scroll_x + ox, p_y[j] + oy, 1 + p_life[j] / 12);
+    END
+  END
+  RETURN 0;
+END
+
+PRIVATE ox; oy;
+BEGIN
+  set_mode(480, 320);
+  set_fps(60, 0);
+  screen_color('#07070f');
+  g_ship1 = make_ship(new_graphic(26, 16), 0);
+  g_ship2 = make_ship(new_graphic(26, 16), 1);
+  reset_world();
+
+  write(0, 240, 120, 4, "C A V E   F L Y E R");
+  write(0, 240, 150, 4, "HOLD SPACE (or UP / mouse) TO CLIMB");
+  write(0, 240, 164, 4, "let go to fall - avoid the rock, grab gems");
+  write(0, 240, 196, 4, "PRESS SPACE TO START");
+
+  LOOP
+    // ---- state changes ----
+    IF (state == 0 AND key_pressed(_space))
+      delete_text(all_text);
+      reset_world();
+      state = 1;
+      ship();
+    END
+    IF (state == 1 AND crashed)
+      state = 2; dead_t = 0;
+      IF (score > best) best = score; END
+    END
+    IF (state == 2)
+      dead_t = dead_t + 1;
+      IF (dead_t > 45 AND key_pressed(_space))
+        reset_world();
+        state = 1;
+        ship();
+      END
+    END
+
+    // ---- scroll: faster the further you get ----
+    IF (state == 0) speed = 1.5; END
+    IF (state == 1) speed = clamp(2.4 + scroll_x / 5000, 2.4, 7); END
+    IF (state == 2) speed = speed * 0.9; END
+    scroll_x = scroll_x + speed;
+    level = 1 + floor(scroll_x / 4000);
+    IF (state == 1) score = floor(scroll_x / 10) + bonus; END
+
+    fill_ahead();
+
+    // ---- draw ----
+    ox = 0; oy = 0;
+    IF (shake > 0) ox = rand(-shake, shake) / 2; oy = rand(-shake, shake) / 2; shake = shake - 1; END
+    draw_cave(ox, oy);
+    draw_things(ox, oy);
+
+    set_color('#ffffff');
+    IF (state > 0)
+      text(8, 6, "DIST " + score + "   GEMS " + gems + "   LEVEL " + level);
+      text(372, 6, "BEST " + best);
+    END
+    IF (state == 2 AND dead_t > 20)
+      set_color('#000000'); draw_rect(140, 128, 200, 62);   // panel
+      set_color('#ffd84a');
+      text(204, 140, "CRASHED!");
+      set_color('#ffffff');
+      text(186, 156, "DISTANCE " + score);
+      IF (dead_t > 45) text(162, 176, "PRESS SPACE TO RETRY"); END
+    END
+    FRAME;
+  END
+END

@@ -1,0 +1,2955 @@
+PROGRAM fighter;
+
+// ---------------------------------------------------------------------
+// STREET DUEL - a one-on-one versus fighting game in the style of Street
+// Fighter II, with a touch of Pit-Fighter (a warehouse pit where the
+// cheering crowd throws bottles, crates and food into the ring).
+//
+// * Articulated fighters (the skeleton of karate.div): 14 joints placed
+//   by forward kinematics from a pose table, blended with smoothstep,
+//   drawn as rotated capsule sprites. Every character has its own limb
+//   lengths, thickness, scale, colours, speed, weight and move set.
+// * Hits are tested against the real body: the striking fist, foot or
+//   knee against the defender's head, torso and legs (hurtboxes follow
+//   the pose, so a high punch whiffs over a crouching fighter).
+// * Frame data per move (startup / active / recovery keys), hitstun and
+//   blockstun, chip damage, pushback, hit stop, juggles, combo counter,
+//   stun meter (dizzy), super meter, throws, motion inputs read from a
+//   48-frame input buffer relative to the facing direction.
+// * 99-second rounds, best of three, arcade ladder with rising CPU
+//   difficulty and a final boss; two-player versus.
+// * No asset files: stages, fighters, portraits and texts are drawn in
+//   code at start-up (spread over frames).
+// ---------------------------------------------------------------------
+
+GLOBAL
+  // --- World -----------------------------------------------------------
+  SW = 1100;                  // stage width (the camera scrolls over it)
+  GY = 376;                   // ground line on screen
+  GRAV = 0.52;                // gravity (pixels per frame per frame)
+  NP = 14;                    // values per pose
+  NM = 58;                    // number of moves
+  MAXSEP = 540;               // fighters can not be further apart
+  L_FT = 11; L_NECK = 13;
+
+  // --- Fighter states --------------------------------------------------
+  ST_FREE = 0; ST_PREJ = 1; ST_AIR = 2; ST_LAND = 3; ST_ATK = 4; ST_AATK = 5;
+  ST_HIT = 6; ST_BLOCK = 7; ST_FALL = 8; ST_DOWN = 9; ST_GETUP = 10;
+  ST_THROWN = 11; ST_DIZZY = 12; ST_KO = 13; ST_POSE = 14;
+
+  // --- Pose library ------------------------------------------------------
+  // Per pose: dx, lift, rot, lean, head, shoulderA, elbowA, shoulderB,
+  // elbowB, hipA, kneeA, hipB, kneeB, turn. Degrees, for a fighter facing
+  // right: 0 = down, 90 = forward, 180 = up. A = lead (far) side, B = rear
+  // (near) side. rot turns the whole body; lift raises it; turn > 0.5
+  // shows the back. Poses 0-35 come from karate.div.
+  pose[881] =
+     0, 0,   0,   5,  0,   50, 80,   15,120,   28, 24,  -18,  0, 0,  // 0 stance
+     0, 0,   0,   8,  3,   53, 76,   18,116,   30, 28,  -19,  2, 0,  // 1 stance (breathe)
+     0, 0,   0,   5,  0,   48, 82,   18,118,   36, 12,  -26, 22, 0,  // 2 walk 1
+     0, 0,   0,   5,  0,   52, 78,   12,122,   10, 30,   -8,  4, 0,  // 3 walk 2
+     0, 0,   0,  18, -8,   55, 85,   25,115,   95,105,   25,115, 0,  // 4 crouch
+    -2, 0,   0,  -3, -5,   72, 95,   60, 95,   30, 22,  -22,  4, 0,  // 5 block
+     0, 0,   0,  14,  6,   38,  5,   25,115,   36, 30,  -26,  4, 0,  // 6 (unused)
+    -3, 0,   0,   0,  0,   60, 70,   -5,135,   28, 24,  -18,  0, 0,  // 7 punch chamber
+    14, 0,   0,  12, -5,   20,110,  124,  0,   50, 45,  -35,  0, 0,  // 8 lunge punch
+     0, 0,   0,  -8,  0,   55, 80,   20,115,   95,125,   -5,  8, 0,  // 9 kick chamber
+     6, 0,   0, -15,  5,   50, 90,   20,120,   88,  0,   -4,  6, 0,  // 10 front kick
+    10, 0,   0, -24, 12,   95, 60,  -25, 50,  128,  0,   -8,  4, 0,  // 11 high kick
+    10, 0,   0,   2,  0,   50, 80,   20,120,   55,  0,  -12, 22, 0,  // 12 low kick
+     6, 0,   0,  25,-10,   70, 30,   40, 60,   78,  0,   95, 95, 0,  // 13 low sweep kick
+    16, 0,   0, -25, 10,   60, 90,   10,100,   95,  0,   20,115, 0,  // 14 flying kick
+     0, 0,   0,   5,  0,   80, 80,   40,110,   70,120,   35,110, 0,  // 15 jump (tucked)
+     0, 0,   0, -10,  0,   55, 80,   20,115,   -5,  8,   85,125, 0,  // 16 roundhouse chamber
+    10, 0,   0, -28, 15,  100, 30,  -30, 40,  -10,  4,  120,  8, 1,  // 17 roundhouse
+    -4, 0,   0, -20, 10,   45, 95,   30,100,    0,  6,   75,130, 1,  // 18 back kick chamber
+     6, 0,   0, -50, 25,   40,100,   80, 80,    5,  8,   92,  0, 1,  // 19 back kick
+     8, 0,   0,  25,-10,   40,100,   95,  0,   95,105,   25,115, 0,  // 20 crouch punch
+     0, 0,-120,  30, 10,  100,100,  100,100,  130,150,  120,150, 0,  // 21 roll forward 1
+     0, 0,-240,  30, 10,  100,100,  100,100,  130,150,  120,150, 0,  // 22 roll forward 2
+     0, 0, 120,  30, 10,  100,100,  100,100,  130,150,  120,150, 0,  // 23 roll back 1
+     0, 0, 240,  30, 10,  100,100,  100,100,  130,150,  120,150, 0,  // 24 roll back 2
+    -8, 0,   8, -25,-25,  100, 20,   60, 30,   35, 10,  -25, 25, 0,  // 25 hit to the head
+    -6, 0,   0,  40, 20,   20, 90,   10,100,   20, 30,  -20, 20, 0,  // 26 hit to the body
+   -40, 0,  88,   0,-10,   60, 20,  120, 10,   30, 60,   10, 10, 0,  // 27 on the floor
+     0, 0,   0,  50, 25,    5,  5,    5,  5,    3,  0,   -3,  0, 0,  // 28 bow
+     0, 0,   0,   0,  0,   12, 10,   -8, 10,    6,  0,   -6,  0, 0,  // 29 at ease
+     0, 0,   0,  -3, -5,    5, 10,  150,  5,    6,  0,   -6,  0, 0,  // 30 (unused)
+     0, 0,   0,   5,  0,   95,  5,   90,  0,    8,  0,   -8,  0, 0,  // 31 (unused)
+     0, 0,   0,  -5,-12,   20,110,  170,  5,   10,  0,  -10,  0, 0,  // 32 victory
+     0, 0,   0,  -5,  0,   60, 70,  200, 30,   30, 25,  -25,  5, 0,  // 33 (unused)
+     6, 0,   0,  35, 10,   20, 60,   80,  0,   45, 55,  -30, 10, 0,  // 34 (unused)
+     0, 0,   0,   0,  0,   50, 80,   90,  0,   28, 24,  -18,  0, 0,  // 35 (unused)
+     0, 0,   0,  18, -8,   85, 95,   72, 95,   95,105,   25,115, 0,  // 36 crouch block
+     4, 0,   0,   5,  0,   97,  0,   30,120,   30, 26,  -20,  2, 0,  // 37 jab
+     8, 0,   0,  10, -3,   40,100,  100,  0,   40, 35,  -30,  0, 0,  // 38 straight
+     6, 0,   0, -12,-10,   20, 60,  148, 20,   70, 80,  -15,  5, 0,  // 39 uppercut
+     4, 0,   0,  18, -4,  105,  0,   60,110,   95,105,   25,115, 0,  // 40 crouch jab
+     8, 0,   0,   8, -8,   30, 90,  132, 30,   95,105,   25,115, 0,  // 41 crouch uppercut
+     4, 0,   0,  20,  0,   80, 90,   60,100,   72,  0,   25,115, 0,  // 42 crouch short kick
+     0, 0,   0,  10,  0,   80,  0,   40,110,   80,120,   40,110, 0,  // 43 jump punch
+     0, 0,   0, -15,  5,  100, 60,   30,100,   55,  0,   60,120, 0,  // 44 jump kick
+     8, 0,   0,  12,  5,  100,  0,   96,  0,   45, 35,  -32,  0, 0,  // 45 fireball push
+    -4, 0,   0,  -5, -5,  -20,100,  -30,100,   35, 30,  -25,  5, 0,  // 46 fireball chamber
+     0,20,   0,  -5,  0,   60, 30,  -40, 20,   92,  0,  -10, 60, 0,  // 47 spin kick, front
+     0,20,   0,  -5,  0,  -40, 20,   60, 30,  -85,  0,  -10, 60, 1,  // 48 spin kick, back
+     6, 0,   0, -12,  5,  110, 40,   90, 60,  110,140,  -20,  0, 0,  // 49 knee
+     0, 0,  50,   0, 10,   30, 20,  -10, 30,   90,  0,   10, 40, 0,  // 50 flash kick
+     0, 0,   0,   0,  0,   92,  0,  -88,  0,   30, 20,  -30, 10, 0,  // 51 lariat A
+     0, 0,   0,   0,  0,  -88,  0,   92,  0,   30, 20,  -30, 10, 1,  // 52 lariat B
+    10, 0,   0,  20,  5,   95, 25,  100, 20,   40, 35,  -30,  0, 0,  // 53 grab
+    -4, 0,   0, -25,-10,  200, 10,  195, 10,   30, 30,  -30,  5, 0,  // 54 lift overhead
+     6, 0,   0,  25, 25,  -30, 30,  -20, 40,   45, 35,  -30,  0, 0,  // 55 fire breath
+     0, 0,   0,  25, 35,    5, 15,   -5, 15,   20, 30,  -10, 30, 0,  // 56 dizzy
+     0, 0,   0,  30, 10,   60, 40,   30, 30,   90, 95,    0,120, 0,  // 57 kneel
+     0, 0,  70,   0,-20,  150, 30,  120, 40,   50, 30,   20, 50, 0,  // 58 knocked flying
+     0, 0,   0,   0, -3,   70,110,   50,120,   28, 24,  -18,  0, 0,  // 59 guard up
+     0, 0, 150,  10,  0,  150, 20,  130, 30,   40, 60,   20, 40, 0,  // 60 thrown
+     0, 0,   0,  15,  5,   70,  0,  160, 20,   85,120,   40,110, 0,  // 61 jump hammer
+     8, 0,   0,  35,-10,   30, 20,   20, 30,   86,  0,  110,120, 0;  // 62 sweep
+
+  // --- Moves: up to 6 keys (pose, frames) ---------------------------------
+  M_IDLE = 0; M_WALKF = 1; M_WALKB = 2; M_CROUCH = 3; M_BLOCK = 4; M_CBLOCK = 5;
+  M_PREJ = 6; M_JUMP = 7; M_JUMPF = 8; M_JUMPB = 9; M_LAND = 10;
+  M_SLP = 11; M_CLP = 17; M_JLP = 23;         // + button (0..5 = LP MP HP LK MK HK)
+  M_HITHI = 29; M_HITLO = 30; M_HITCR = 31; M_FALL = 32; M_FLOOR = 33; M_GETUP = 34;
+  M_DIZZY = 35; M_THROW = 36; M_THROWN = 37; M_WIN = 38; M_INTRO = 39;
+  M_FIRE = 40; M_UPPER = 41; M_SPIN = 42; M_KNEE = 43; M_FLASH = 44; M_LARIAT = 45;
+  M_GRAB = 46; M_SLAM = 47; M_FLAME = 48; M_TELE = 49; M_RUSH = 50; M_SHOULDER = 51;
+  M_DPUNCH = 52; M_SFIRE = 53; M_LOSE = 54; M_TOSS = 55; M_SGRAB = 56;
+  mv_p[347]; mv_l[347];              // [move * 6 + key] pose and length
+  mv_n[57]; mv_loop[57];             // keys; 0 ends, 1 loops, 2 holds the last
+  mv_ha[57]; mv_hb[57];              // first and last active key (-1 = no attack)
+  mv_pt[57]; mv_rad[57];             // striking joint (98 front foot, 99 front hand), radius
+  mv_dmg[57]; mv_hs[57]; mv_bs[57]; mv_ht[57];   // damage, hit/block stun, 0 high 1 mid 2 low 3 overhead
+  mv_kd[57]; mv_push[57]; mv_stun[57]; mv_multi[57];
+  mv_cancel[57]; mv_chip[57]; mv_jug[57]; mv_inv[57]; mv_proj[57];
+  mv_vx[57]; mv_k0[57]; mv_k1[57];   // travel per frame during keys k0..k1-1
+  mv_reach[289];                     // [char * NM + move] reach of the strike
+
+  // --- Characters: 0 Kenji 1 Lena 2 Brutus 3 Zala 4 Kage (boss) ------------
+  ch_name[4] = "KENJI", "LENA", "BRUTUS", "ZALA", "KAGE";
+  ch_style[4] = "KARATE - JAPAN", "KICKBOXING - THAILAND", "PIT WRESTLING - USA", "YOGA ARTS - INDIA", "SHADOW KARATE - ???";
+  ch_sc[4] = 1.12, 1.06, 1.24, 1.10, 1.20;     // scale
+  ch_th[4] = 28, 29, 26, 35, 29;               // thigh
+  ch_sh[4] = 28, 30, 25, 36, 29;               // shin
+  ch_ua[4] = 21, 20, 23, 31, 22;               // upper arm
+  ch_fa[4] = 21, 20, 22, 33, 22;               // forearm
+  ch_tor[4] = 40, 38, 47, 40, 43;              // torso
+  ch_thk[4] = 100, 86, 145, 80, 112;           // limb thickness %
+  ch_hp[4] = 1000, 900, 1200, 950, 1300;
+  ch_pow[4] = 100, 88, 124, 94, 115;           // damage dealt %
+  ch_def[4] = 100, 108, 84, 104, 90;           // damage taken %
+  ch_tempo[4] = 100, 84, 118, 106, 94;         // animation length %
+  ch_walk[4] = 2.3, 3.0, 1.6, 1.9, 2.4;
+  ch_jvx[4] = 3.3, 3.9, 2.6, 3.0, 3.4;
+  ch_jvy[4] = 10.6, 11.3, 9.8, 10.2, 10.8;
+  ch_stunmax[4] = 100, 88, 125, 95, 130;
+  ch_home[4] = 0, 2, 3, 1, 3;                  // stage
+  ch_w[4] = 25, 22, 31, 22, 27;                // body half width (push box)
+  ch_nlen[4] = 5, 4, 6, 4, 4;                  // name length
+  ch_hiph[4];                                  // standing hip height (computed)
+  // specials: 3 plus the super (index 3); CPU preferences
+  ch_sp[19] = 1, 2, 3, 4,   3, 5, 6, 7,   8, 9, 10, 11,   12, 13, 14, 15,   17, 2, 16, 4;
+  ch_combo[4] = 1, 3, 9, 13, 17;
+  ch_aa[4] = 2, 5, 9, 0, 2;
+  ch_zone[4] = 1, 0, 0, 12, 17;
+  ch_pun[4] = 2, 6, 8, 13, 16;
+  ch_quote[4] = "THE FIGHT IS THE ANSWER. TRAIN HARDER!", "TOO SLOW! MY KICKS SAW YOU COMING.",
+    "IN THE PIT THE BIG ONES EAT FIRST!", "THE BODY BENDS. THE SPIRIT DOES NOT.",
+    "YOUR SHADOW BELONGS TO ME NOW.";
+  ch_end[4] = "KENJI LEAVES THE PIT AND WALKS ON, LOOKING FOR THE NEXT FIGHT.",
+    "LENA TAKES THE BELT BACK TO HER GYM IN BANGKOK.", "BRUTUS BUYS THE WAREHOUSE. THE PIT IS HIS NOW.",
+    "ZALA RETURNS TO THE MOUNTAIN, AT PEACE.", "THE SHADOW RULES THE STREETS.";
+  // colours per set (char * 2 + palette): top, bottom, skin, hair, accent
+  col[149] =
+    240,240,240,  235,235,235,  228,176,134,   40, 25, 20,  215, 30, 30,  // Kenji
+     70, 70, 80,   60, 60, 70,  228,176,134,   40, 25, 20,  250,210, 40,
+     40,160,220,   30, 40,120,  240,196,160,  240,200, 90,  220, 30, 30,  // Lena
+    230, 60,150,  120, 20, 80,  240,196,160,  200, 70, 40,  245,245,245,
+     60, 40, 30,  150, 30, 30,  200,140,100,   60, 35, 25,   45, 35, 35,  // Brutus
+     60, 40, 30,   40,120, 60,  200,140,100,   60, 35, 25,   45, 35, 35,
+    160,100, 65,  230,150, 40,  160,100, 65,   20, 20, 20,  230,200, 70,  // Zala
+    160,100, 65,   90,160,230,  160,100, 65,   20, 20, 20,  210,210,225,
+     45, 35, 60,   30, 25, 42,  210,190,180,   30, 20, 30,  220, 40, 40,  // Kage
+     80, 25, 25,   50, 15, 15,  210,190,180,   30, 20, 30,   80,220,255;
+
+  // --- Specials -------------------------------------------------------------
+  // id: 1 fireball 2 uppercut 3 spin kick 4 SUPER fireball 5 flash kick
+  // 6 dash knee 7 SUPER rush 8 bear grab 9 lariat 10 shoulder 11 SUPER grab
+  // 12 yoga fire 13 fire breath 14 teleport 15 SUPER flame 16 dash punch
+  // 17 shadow fireball
+  MO_QCF = 1; MO_DP = 2; MO_QCB = 3; MO_HCF = 4; MO_HCB = 5; MO_CBF = 6; MO_CDU = 7; MO_QCF2 = 8;
+  sp_mot[17] = 0, 1, 2, 3, 8, 7, 6, 8, 4, 3, 6, 8, 1, 5, 2, 8, 6, 1;
+  sp_kick[17] = 0, 0, 0, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0;
+  sp_move[17] = 0, 40, 41, 42, 53, 44, 43, 50, 46, 45, 51, 56, 40, 48, 49, 53, 52, 40;
+  sp_ptype[17] = -1, 0, -1, -1, 1, -1, -1, -1, -1, -1, -1, -1, 2, 3, -1, 4, -1, 5;
+  sp_name[17] = "", "HADO FIREBALL", "RISING DRAGON", "WHIRLWIND KICK", "SUPER: SHINKU HADO",
+    "FLASH KICK", "TIGER KNEE", "SUPER: THUNDER RUSH", "BEAR GRAB", "SPINNING LARIAT",
+    "SHOULDER RAM", "SUPER: GRIZZLY BOMB", "YOGA FIRE", "YOGA FLAME", "YOGA TELEPORT",
+    "SUPER: YOGA INFERNO", "SHADOW DASH", "SHADOW FIREBALL";
+  sp_keys[17] = "", "D DF F + P", "F D DF + P", "D DB B + K", "D DF F D DF F + P",
+    "CHARGE D, U + K", "CHARGE B, F + K", "D DF F D DF F + K", "B D F + P (CLOSE)",
+    "D DB B + P", "CHARGE B, F + P", "D DF F D DF F + P", "D DF F + P", "F D B + P",
+    "F D DF + K", "D DF F D DF F + P", "CHARGE B, F + P", "D DF F + P";
+  mo_prio[8] = 0, 3, 5, 3, 4, 4, 1, 1, 9;
+
+  // --- Projectiles: 0 fireball 1 super fireball 2 yoga fire 3 flame
+  // 4 super flame 5 shadow fireball 6 bottle 7 crate
+  pt_dmg[7] = 80, 55, 85, 95, 60, 90, 70, 110;
+  pt_hits[7] = 1, 5, 1, 1, 5, 1, 1, 1;
+  pt_rad[7] = 14, 24, 15, 24, 26, 15, 10, 16;
+  pt_spd[7] = 4.2, 5.0, 3.0, 0, 5.5, 4.6, 7.0, 5.0;
+  pt_life[7] = 400, 400, 400, 20, 400, 400, 400, 400;
+  pr_on[3]; pr_own[3]; pr_x[3]; pr_y[3]; pr_vx[3]; pr_vy[3]; pr_typ[3];
+  pr_hits[3]; pr_t[3]; pr_rt[3];
+
+  // --- Items thrown in by the crowd: 0 bottle 1 crate 2 roast chicken ------
+  it_on[2]; it_typ[2]; it_x[2]; it_y[2]; it_vx[2]; it_vy[2]; it_h[2];
+  item_t = 0;
+
+  // --- Skeletons: 0 and 1 are the fighters, 2 is a scratch skeleton ---------
+  cur[41]; src[41];
+  an_m[2]; an_k[2]; an_t[2]; an_len[2]; an_ser[2]; an_end[2]; an_ks[2];
+  sk_x[2]; sk_gy[2]; sk_dir[2]; sk_sc[2]; sk_gi[2]; sk_vis[2]; sk_z[2]; sk_ch[2]; sk_air[2];
+  tx[15]; ty[15]; da[15];
+  pt_x[47]; pt_y[47];
+  piv[12] = 0, 0, 2, 13, 3, 13, 5, 0, 7, 8, 0, 10, 11;   // joint a segment hangs from
+  part_seg[11] = 7, 8, 9, 3, 4, 1, 2, 10, 11, 12, 5, 6;  // draw order, far to near
+  part_dz[11] = 4, 4, 4, 5, 5, 3, 2, 1, 1, 1, 0, 0;
+  pp_x[23]; pp_y[23]; pp_a[23]; pp_g[23]; pp_f[23]; pp_z[23];
+
+  // --- Fighters ----------------------------------------------------------------
+  fc[1]; fpal[1]; fctrl[1];          // character, palette, 0 P1 keys 1 P2 keys 2 CPU
+  fs[1]; ft[1];                      // state and state timer
+  fx[1]; fy[1]; fvx[1]; fvy[1]; fdir[1];
+  hp[1]; hp_max[1]; hp_red[1]; meter[1]; stun[1]; stun_t[1];
+  jg[1]; inv[1]; air_used[1]; lag[1];
+  f_done[1]; f_conn[1]; f_rt[1]; f_sp[1]; f_str[1]; f_grab[1]; f_hold[1];
+  cb_n[1]; cb_show[1]; cb_t[1];      // combo received, combo shown for the attacker
+  rw[1];                             // rounds won
+  in_fw[1]; in_v[1];                 // stick: forward (+1) / back, up (-1) / down
+  ib[95]; ib_pos[1];                 // input buffer: 48 numpad directions per player
+  chb[1]; chbm[1]; chbg[1]; chd[1]; chdm[1]; chdg[1];     // charge counters
+  pend_b[1]; pend_t[1]; pend_sp[1];  // buffered button press
+  last_nd[1]; mash[1];
+
+  // --- CPU -----------------------------------------------------------------------
+  ci_fw[1]; ci_v[1]; ci_b[1]; ci_sp[1];
+  ai_lv[1]; ai_react[1]; ai_pblock[1]; ai_paa[1]; ai_pcombo[1]; ai_ppun[1]; ai_think[1];
+  ai_seen[1]; ai_rt[1]; ai_kind[1]; ai_aa[1]; ai_pt[1]; ai_pfw[1]; ai_pv[1];
+  ai_nt[1]; ai_cmb[1]; ai_pun[1];
+
+  // --- Game state ------------------------------------------------------------------
+  scene = 0;                  // 0 loading 1 title 2 select 3 vs 4 fight 5 win 6 continue 7 ending
+  mode = 1;                   // 1 arcade, 2 versus
+  diff = 1;                   // 0 easy 1 normal 2 hard
+  stage = 0; cam_x = 0; shx = 0; shy = 0; shake_t = 0; shake_a = 0;
+  hitstop = 0; slowmo = 0; sfl_t = 0; hype = 0;
+  timer = 0; rnum = 1; rphase = 0; rt = 0; ctl_on = 0; ko_flag = 0; demo = 0;
+  round_win = -1; lad_i = 0; score = 0; hiscore = 0;
+  lad[3]; show_boxes = 0;
+  ban_g = 0; ban_t = 0; ban_y = 150;
+  // statistics (read by the automated test)
+  n_hits = 0; n_blocks = 0; n_chip = 0; n_throws = 0; n_sp = 0; last_sp = 0; last_move = 0;
+  n_supers = 0; n_dizzy = 0; max_combo = 0; last_combo = 0; n_ko = 0; n_aa = 0; n_clash = 0;
+  n_proj_hits = 0; n_items = 0; n_item_throws = 0; n_rounds = 0; n_timeouts = 0;
+  n_perfect = 0; n_cancels = 0; n_juggles = 0; n_lows_blocked = 0; n_highs_blocked = 0;
+  dbg_ai = 0; dbg_low = 0; n_aa_sp = 0; n_zone = 0; n_punish = 0;
+  // buttons LP MP HP LK MK HK of P1 and P2
+  btn_key[11] = "a", "s", "d", "z", "x", "c", "1", "2", "3", "4", "5", "6";
+  // the blow being resolved (set before hit_land) and the zone it found
+  h_dmg = 0; h_hs = 0; h_bs = 0; h_ht = 0; h_kd = 0; h_push = 0; h_stun = 0; h_chip = 0;
+  hz = 0;
+  sp_used[17];
+
+  // --- Graphics ------------------------------------------------------------------------
+  g_part[119]; g_torso[9]; g_head[9]; g_por[4]; g_nm[4]; g_win[4];
+  g_far[3]; g_mid[3]; g_flr[3]; g_crowd[15]; g_hits[20]; g_dig[9];
+  g_lab[29]; g_star[2]; g_dust = 0; g_shadow = 0; g_proj[7]; g_item[2]; g_logo = 0;
+  g_selbg = 0; g_vsbg = 0;
+  stage_name[3] = "DUSK STREET", "MOUNTAIN TEMPLE", "NIGHT HARBOUR", "THE PIT";
+  crowd_front[3] = 1, 1, 1, 0;       // the pit's crowd stands behind the fence
+  crowd_n[3] = 9, 7, 9, 60;          // people per row
+  cap_split = 0; cap_sr = 0; cap_sg = 0; cap_sb = 0;    // capsule options
+  cap_fist = 0; cap_fr = 0; cap_fg = 0; cap_fb = 0;
+  cap_band = 0; cap_br = 0; cap_bg = 0; cap_bb = 0;
+  ui_g[11]; ui_x[11]; ui_y[11]; ui_s[11]; ui_f[11]; ui_a[11];
+
+// ======================================================================
+// Move tables
+// ======================================================================
+
+FUNCTION defmove(m, n, lp, p0, l0, p1, l1, p2, l2, p3, l3, p4, l4, p5, l5);
+BEGIN
+  mv_n[m] = n; mv_loop[m] = lp;
+  mv_p[m * 6] = p0; mv_p[m * 6 + 1] = p1; mv_p[m * 6 + 2] = p2;
+  mv_p[m * 6 + 3] = p3; mv_p[m * 6 + 4] = p4; mv_p[m * 6 + 5] = p5;
+  mv_l[m * 6] = l0; mv_l[m * 6 + 1] = l1; mv_l[m * 6 + 2] = l2;
+  mv_l[m * 6 + 3] = l3; mv_l[m * 6 + 4] = l4; mv_l[m * 6 + 5] = l5;
+  mv_ha[m] = -1; mv_hb[m] = -1; mv_inv[m] = -1;
+  RETURN 0;
+END
+
+// An attack: active keys ha..hb, striking joint, hit radius, damage,
+// hitstun, blockstun and height (0 high 1 mid 2 low 3 overhead).
+FUNCTION atk(m, ha, hb, pt, rad, dmg, hs, bs, ht);
+BEGIN
+  mv_ha[m] = ha; mv_hb[m] = hb; mv_pt[m] = pt; mv_rad[m] = rad;
+  mv_dmg[m] = dmg; mv_hs[m] = hs; mv_bs[m] = bs; mv_ht[m] = ht;
+  mv_push[m] = 3 + dmg / 30; mv_stun[m] = dmg / 8;
+  RETURN 0;
+END
+
+// Extra properties: knockdown (1) or command grab (9), cancellable into
+// specials, chip damage when blocked, can juggle, re-hit every n frames.
+FUNCTION atk2(m, kd, cancel, chip, jug, multi);
+BEGIN
+  mv_kd[m] = kd; mv_cancel[m] = cancel; mv_chip[m] = chip; mv_jug[m] = jug; mv_multi[m] = multi;
+  RETURN 0;
+END
+
+FUNCTION trav(m, vx, k0, k1);
+BEGIN
+  mv_vx[m] = vx; mv_k0[m] = k0; mv_k1[m] = k1;
+  RETURN 0;
+END
+
+FUNCTION init_moves();
+BEGIN
+  //       move      keys loop  pose,len ...
+  defmove(M_IDLE,   2, 1,  0, 34,  1, 34,  0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_WALKF,  2, 1,  2, 9,   3, 9,   0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_WALKB,  2, 1,  3, 10,  2, 10,  0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_CROUCH, 1, 2,  4, 5,   0, 0,   0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_BLOCK,  1, 2,  5, 4,   0, 0,   0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_CBLOCK, 1, 2, 36, 4,   0, 0,   0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_PREJ,   1, 2,  4, 3,   0, 0,   0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_JUMP,   1, 2, 15, 8,   0, 0,   0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_JUMPF,  3, 2, 21, 9,  22, 9,  15, 10, 0, 0,  0, 0,  0, 0);
+  defmove(M_JUMPB,  3, 2, 23, 9,  24, 9,  15, 10, 0, 0,  0, 0,  0, 0);
+  defmove(M_LAND,   2, 0,  4, 3,   0, 5,   0, 0,  0, 0,  0, 0,  0, 0);
+  // standing normals: LP MP HP LK MK HK
+  defmove(11, 4, 0,  7, 2,  37, 2,  37, 3,   0, 6,  0, 0,  0, 0);
+  defmove(12, 4, 0,  7, 3,  38, 3,  38, 4,   0, 9,  0, 0,  0, 0);
+  defmove(13, 4, 0,  7, 6,   8, 3,   8, 4,   0, 15, 0, 0,  0, 0);
+  defmove(14, 4, 0,  9, 3,  12, 3,  12, 3,   0, 8,  0, 0,  0, 0);
+  defmove(15, 4, 0,  9, 5,  10, 3,  10, 4,   0, 10, 0, 0,  0, 0);
+  defmove(16, 4, 0, 16, 7,  17, 4,  17, 4,   0, 16, 0, 0,  0, 0);
+  // crouching normals
+  defmove(17, 4, 0,  4, 2,  40, 2,  40, 3,   4, 5,  0, 0,  0, 0);
+  defmove(18, 4, 0,  4, 3,  20, 3,  20, 4,   4, 9,  0, 0,  0, 0);
+  defmove(19, 4, 0,  4, 4,  41, 4,  41, 5,   4, 14, 0, 0,  0, 0);
+  defmove(20, 4, 0,  4, 3,  42, 2,  42, 3,   4, 6,  0, 0,  0, 0);
+  defmove(21, 4, 0,  4, 3,  13, 3,  13, 4,   4, 9,  0, 0,  0, 0);
+  defmove(22, 4, 0,  4, 5,  62, 4,  62, 5,   4, 16, 0, 0,  0, 0);
+  // jumping normals: the pose is held until landing
+  defmove(23, 3, 2, 43, 3,  43, 12, 43, 90,  0, 0,  0, 0,  0, 0);
+  defmove(24, 3, 2, 61, 4,  61, 12, 61, 90,  0, 0,  0, 0,  0, 0);
+  defmove(25, 3, 2,  8, 5,   8, 12,  8, 90,  0, 0,  0, 0,  0, 0);
+  defmove(26, 3, 2, 44, 3,  44, 12, 44, 90,  0, 0,  0, 0,  0, 0);
+  defmove(27, 3, 2, 44, 4,  44, 12, 44, 90,  0, 0,  0, 0,  0, 0);
+  defmove(28, 3, 2, 14, 5,  14, 12, 14, 90,  0, 0,  0, 0,  0, 0);
+  // reactions and poses
+  defmove(M_HITHI,  2, 2, 25, 4,  25, 200, 0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_HITLO,  2, 2, 26, 4,  26, 200, 0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_HITCR,  2, 2, 57, 4,  57, 200, 0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_FALL,   2, 2, 58, 6,  58, 200, 0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_FLOOR,  2, 2, 27, 7,  27, 300, 0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_GETUP,  2, 0, 57, 12,  0, 12,  0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_DIZZY,  2, 1, 56, 24, 26, 24,  0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_THROW,  3, 0, 53, 5,  54, 16, 59, 12, 0, 0,  0, 0,  0, 0);
+  defmove(M_THROWN, 2, 2, 60, 6,  60, 200, 0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_WIN,    2, 2, 59, 10, 32, 400, 0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_INTRO,  2, 2, 28, 24, 59, 16,  0, 0,  0, 0,  0, 0,  0, 0);
+  defmove(M_LOSE,   2, 2, 26, 10, 56, 400, 0, 0,  0, 0,  0, 0,  0, 0);
+  // specials
+  defmove(M_FIRE,   4, 0, 46, 8,  45, 4,  45, 16,  0, 10, 0, 0,  0, 0);
+  defmove(M_SFIRE,  4, 0, 46, 14, 45, 6,  45, 24,  0, 12, 0, 0,  0, 0);
+  defmove(M_UPPER,  4, 0,  4, 2,  39, 5,  39, 10, 15, 14, 0, 0,  0, 0);
+  defmove(M_SPIN,   6, 0, 16, 4,  47, 5,  48, 5,  47, 5, 48, 5,  0, 10);
+  defmove(M_KNEE,   3, 0, 46, 5,  49, 14,  0, 12,  0, 0, 0, 0,  0, 0);
+  defmove(M_FLASH,  3, 0,  4, 4,  50, 12, 15, 12,  0, 0, 0, 0,  0, 0);
+  defmove(M_LARIAT, 6, 0, 51, 4,  52, 4,  51, 4,  52, 4, 51, 4,  0, 10);
+  defmove(M_GRAB,   3, 0, 53, 6,  53, 5,   0, 14,  0, 0, 0, 0,  0, 0);
+  defmove(M_SGRAB,  3, 0, 53, 8,  53, 6,   0, 14,  0, 0, 0, 0,  0, 0);
+  defmove(M_SLAM,   3, 0, 54, 18,  4, 10,  0, 12,  0, 0, 0, 0,  0, 0);
+  defmove(M_FLAME,  3, 0, 46, 8,  55, 24,  0, 12,  0, 0, 0, 0,  0, 0);
+  defmove(M_TELE,   3, 0,  4, 6,   4, 16,  0, 10,  0, 0, 0, 0,  0, 0);
+  defmove(M_RUSH,   6, 0, 49, 6,  47, 5,  48, 5,  47, 5, 48, 5, 39, 12);
+  defmove(M_SHOULDER, 3, 0, 46, 6, 53, 16, 0, 14,  0, 0, 0, 0,  0, 0);
+  defmove(M_DPUNCH, 3, 0, 46, 5,   8, 14,  0, 12,  0, 0, 0, 0,  0, 0);
+  defmove(M_TOSS,   4, 0, 54, 6,  38, 4,  38, 8,   0, 8, 0, 0,  0, 0);
+  //  move     keys  joint rad dmg  hs  bs  height
+  atk(11,  2, 2,  4,  9,  35, 13,  9, 0);  atk2(11, 0, 1, 0, 0, 0);
+  atk(12,  2, 2,  6,  9,  65, 17, 12, 0);  atk2(12, 0, 1, 0, 0, 0);
+  atk(13,  2, 2,  6, 10, 105, 21, 15, 0);  atk2(13, 0, 1, 0, 0, 0);
+  atk(14,  2, 2,  8,  9,  40, 13,  9, 1);  atk2(14, 0, 1, 0, 0, 0);
+  atk(15,  2, 2,  8,  9,  70, 17, 12, 1);  atk2(15, 0, 1, 0, 0, 0);
+  atk(16,  2, 2, 11, 10, 110, 21, 15, 0);  atk2(16, 0, 0, 0, 0, 0);
+  atk(17,  2, 2,  4,  9,  30, 12,  8, 1);  atk2(17, 0, 1, 0, 0, 0);
+  atk(18,  2, 2,  6,  9,  60, 16, 11, 1);  atk2(18, 0, 1, 0, 0, 0);
+  atk(19,  2, 2,  6, 12,  95, 20, 14, 1);  atk2(19, 0, 1, 0, 1, 0);
+  atk(20,  2, 2,  8,  9,  30, 12,  8, 2);  atk2(20, 0, 1, 0, 0, 0);
+  atk(21,  2, 2,  8,  9,  60, 17, 12, 2);  atk2(21, 0, 1, 0, 0, 0);
+  atk(22,  2, 2,  8, 10,  95, 20, 14, 2);  atk2(22, 1, 0, 0, 0, 0);
+  atk(23,  1, 1,  4, 10,  40, 15,  9, 3);  atk2(23, 0, 0, 0, 0, 0);
+  atk(24,  1, 1,  4, 10,  70, 18, 12, 3);  atk2(24, 0, 0, 0, 0, 0);
+  atk(25,  1, 1,  6, 11, 100, 22, 15, 3);  atk2(25, 0, 0, 0, 0, 0);
+  atk(26,  1, 1,  8, 10,  45, 15,  9, 3);  atk2(26, 0, 0, 0, 0, 0);
+  atk(27,  1, 1,  8, 10,  75, 18, 12, 3);  atk2(27, 0, 0, 0, 0, 0);
+  atk(28,  1, 1,  8, 11, 105, 22, 15, 3);  atk2(28, 0, 0, 0, 0, 0);
+  atk(M_UPPER,  1, 2,  6, 14, 130, 24, 16, 1); atk2(M_UPPER, 1, 0, 1, 1, 0);  mv_inv[M_UPPER] = 1;
+  atk(M_SPIN,   1, 4, 98, 12,  50, 18, 12, 0); atk2(M_SPIN, 0, 0, 1, 1, 10);
+  atk(M_KNEE,   1, 1,  7, 14, 110, 22, 15, 1); atk2(M_KNEE, 1, 0, 1, 0, 0);
+  atk(M_FLASH,  1, 1,  8, 15, 120, 24, 16, 1); atk2(M_FLASH, 1, 0, 1, 1, 0);  mv_inv[M_FLASH] = 1;
+  atk(M_LARIAT, 0, 4, 99, 13,  55, 18, 12, 1); atk2(M_LARIAT, 0, 0, 1, 1, 8);
+  atk(M_GRAB,   1, 1,  4, 26,   0,  0,  0, 1); atk2(M_GRAB, 9, 0, 0, 0, 0);
+  atk(M_SGRAB,  1, 1,  4, 40,   0,  0,  0, 1); atk2(M_SGRAB, 9, 0, 0, 0, 0);  mv_inv[M_SGRAB] = 0;
+  atk(M_RUSH,   1, 5, 98, 14,  45, 20, 12, 1); atk2(M_RUSH, 0, 0, 1, 1, 7);   mv_inv[M_RUSH] = 0;
+  atk(M_SHOULDER, 1, 1, 13, 17, 115, 22, 15, 1); atk2(M_SHOULDER, 1, 0, 1, 0, 0);
+  atk(M_DPUNCH, 1, 1,  6, 13, 110, 22, 15, 1); atk2(M_DPUNCH, 1, 0, 1, 0, 0);
+  mv_inv[M_TELE] = 2; mv_inv[M_SFIRE] = 1;
+  mv_stun[M_SPIN] = 5; mv_stun[M_LARIAT] = 5; mv_stun[M_RUSH] = 4;
+  mv_proj[M_FIRE] = 2; mv_proj[M_SFIRE] = 2; mv_proj[M_FLAME] = 1; mv_proj[M_TOSS] = 2;
+  trav(M_SPIN, 2.8, 1, 5); trav(M_KNEE, 6.5, 1, 2); trav(M_LARIAT, 1.2, 0, 5);
+  trav(M_RUSH, 5.5, 1, 5); trav(M_SHOULDER, 7.0, 1, 2); trav(M_DPUNCH, 7.0, 1, 2);
+  trav(13, 0.8, 1, 2); trav(22, 0.6, 1, 2);
+  RETURN 0;
+END
+
+// Reach of every attack of character c: forward kinematics of its strike
+// pose on the scratch skeleton 2 (the CPU uses it); and its hip height.
+FUNCTION compute_reach(c);
+PRIVATE m;
+BEGIN
+  sk_x[2] = 0; sk_gy[2] = 0; sk_dir[2] = 1; sk_air[2] = 0;
+  sk_ch[2] = c; sk_sc[2] = ch_sc[c];
+  set_pose(2, 0); fk(2);
+  ch_hiph[c] = -pt_y[32] / ch_sc[c];
+  FOR m = 11 TO NM - 2
+    IF (mv_ha[m] >= 0)
+      set_pose(2, mv_p[m * 6 + mv_ha[m]]);
+      fk(2);
+      mv_reach[c * NM + m] = pt_x[32 + strike_joint(2, mv_pt[m])];
+    END
+  END
+  RETURN 0;
+END
+
+// ======================================================================
+// Animation and forward kinematics
+// ======================================================================
+
+FUNCTION set_pose(s, p);
+PRIVATE j;
+BEGIN
+  FOR j = 0 TO NP - 1 cur[s * NP + j] = pose[p * NP + j]; src[s * NP + j] = cur[s * NP + j]; END
+  RETURN 0;
+END
+
+// Starts key k of the current move; the blend starts where the body is.
+// Rotations are unwound so rolls keep turning the same way.
+FUNCTION next_key(s, k);
+PRIVATE j; b; p;
+BEGIN
+  an_k[s] = k; an_t[s] = 0; an_ks[s] = 1;
+  an_len[s] = max(1, round(mv_l[an_m[s] * 6 + k] * ch_tempo[sk_ch[s]] / 100));
+  b = s * NP; p = mv_p[an_m[s] * 6 + k] * NP;
+  FOR j = 0 TO NP - 1 src[b + j] = cur[b + j]; END
+  WHILE (src[b + 2] - pose[p + 2] > 180) src[b + 2] -= 360; END
+  WHILE (src[b + 2] - pose[p + 2] < -180) src[b + 2] += 360; END
+  RETURN 0;
+END
+
+FUNCTION start_move(s, m);
+BEGIN
+  an_m[s] = m; an_ser[s]++; an_end[s] = 0;
+  IF (s < 2) f_done[s] = 0; f_conn[s] = 0; f_rt[s] = 0; last_move = m; END
+  next_key(s, 0);
+  RETURN 0;
+END
+
+// One frame of animation: travel, blend towards the key pose, next key.
+FUNCTION anim(s);
+PRIVATE m; k; b; p; j; w;
+BEGIN
+  m = an_m[s]; k = an_k[s];
+  an_t[s]++; an_ks[s] = 0;
+  IF (k >= mv_k0[m] AND k < mv_k1[m] AND s < 2)
+    move_x(s, sk_dir[s] * mv_vx[m] * (0.8 + f_str[s] * 0.2));
+  END
+  b = s * NP; p = mv_p[m * 6 + k] * NP;
+  w = smoothstep(0, an_len[s], an_t[s]);
+  FOR j = 0 TO NP - 1 cur[b + j] = src[b + j] + (pose[p + j] - src[b + j]) * w; END
+  IF (an_t[s] >= an_len[s])
+    IF (k + 1 < mv_n[m])
+      next_key(s, k + 1);
+    ELSE
+      IF (mv_loop[m] == 1) next_key(s, 0); ELSE an_end[s] = 1; an_t[s] = an_len[s]; END
+    END
+  END
+  RETURN 0;
+END
+
+// Point at distance len from joint i along body direction d (0 down,
+// 90 forward) into joint o.
+FUNCTION bone(i, o, d, len);
+BEGIN
+  da[o] = d;
+  tx[o] = tx[i] + sin(d * 1000) * len;
+  ty[o] = ty[i] + cos(d * 1000) * len;
+  RETURN 0;
+END
+
+// Forward kinematics of skeleton s with the limb lengths of its
+// character: joints in body space; on the ground the lowest part touches
+// the floor, in the air the hip is anchored; then mirrored and placed.
+FUNCTION fk(s);
+PRIVATE b; sc; rot; dT; dD; lo; i; k; d; q; dir; gi; fl; c;
+BEGIN
+  b = s * NP; sc = sk_sc[s]; dir = sk_dir[s]; c = sk_ch[s];
+  rot = cur[b + 2];
+  dT = rot + 180 - cur[b + 3];
+  dD = dT - 180;
+  tx[0] = cur[b]; ty[0] = 0;
+  bone(0, 1, dT, ch_tor[c]);
+  bone(0, 13, dT, ch_tor[c] * 0.87);
+  bone(1, 2, dT + cur[b + 4], L_NECK);
+  bone(13, 3, dD + cur[b + 5], ch_ua[c]);
+  bone(3, 4, da[3] + cur[b + 6], ch_fa[c]);
+  bone(13, 5, dD + cur[b + 7], ch_ua[c]);
+  bone(5, 6, da[5] + cur[b + 8], ch_fa[c]);
+  bone(0, 7, rot + cur[b + 9], ch_th[c]);
+  bone(7, 8, da[7] - cur[b + 10], ch_sh[c]);
+  bone(8, 9, da[8] + 90, L_FT);
+  bone(0, 10, rot + cur[b + 11], ch_th[c]);
+  bone(10, 11, da[10] - cur[b + 12], ch_sh[c]);
+  bone(11, 12, da[11] + 90, L_FT);
+  da[1] = dT;
+  IF (sk_air[s])
+    lo = ch_hiph[c];
+  ELSE
+    lo = ty[0] + 11;
+    IF (ty[1] + 11 > lo) lo = ty[1] + 11; END
+    IF (ty[2] + 10 > lo) lo = ty[2] + 10; END
+    FOR i = 3 TO 12
+      q = ty[i] + 4;
+      IF (q > lo) lo = q; END
+    END
+  END
+  FOR i = 0 TO 13
+    pt_x[s * 16 + i] = sk_x[s] + dir * tx[i] * sc;
+    pt_y[s * 16 + i] = sk_gy[s] + (ty[i] - lo - cur[b + 1]) * sc;
+  END
+  IF (s > 1) RETURN 0; END
+  // limb sprites (world coordinates; the limb processes subtract the camera)
+  gi = sk_gi[s];
+  FOR k = 0 TO 11
+    i = part_seg[k];
+    q = s * 12 + k;
+    pp_x[q] = pt_x[s * 16 + piv[i]];
+    pp_y[q] = pt_y[s * 16 + piv[i]];
+    d = da[i];
+    IF (dir > 0) pp_a[q] = (d - 90) * 1000; ELSE pp_a[q] = (270 - d) * 1000; END
+    pp_g[q] = g_part[gi * 12 + k];
+    fl = 0;
+    IF (k == 5 OR k == 6)
+      IF (dir < 0) fl = 2; END
+      IF (k == 5)
+        pp_g[q] = g_torso[gi];
+        IF (cur[b + 13] > 0.5) fl = 2 - fl; END
+      ELSE
+        pp_g[q] = g_head[gi];
+      END
+    END
+    pp_f[q] = fl;
+    pp_z[q] = sk_z[s] + part_dz[k];
+  END
+  RETURN 0;
+END
+
+// Joint that strikes: 99 = the hand further forward, 98 = the foot.
+FUNCTION strike_joint(s, pt);
+PRIVATE a; b;
+BEGIN
+  IF (pt < 98) RETURN pt; END
+  IF (pt == 99) a = 4; b = 6; ELSE a = 8; b = 11; END
+  IF ((pt_x[s * 16 + b] - pt_x[s * 16 + a]) * sk_dir[s] > 0) RETURN b; END
+  RETURN a;
+END
+
+// ======================================================================
+// Graphics: fighters
+// ======================================================================
+
+FUNCTION shade(v, p);
+BEGIN
+  RETURN clamp(v * p / 100, 0, 255);
+END
+
+// A shaded capsule L long and T thick along +x, pivot on its first joint.
+// Options (globals cap_*): the far part in another colour (sleeve/skin),
+// a band near the end, a fist or glove at the end.
+FUNCTION capsule(L, T, r, gr, b);
+PRIVATE g; h; c; x0;
+BEGIN
+  T = round(T);
+  g = new_graphic(L + T + 2 + cap_fist * 4, T + 2 + cap_fist * 4);
+  h = round(T * 0.5);
+  c = h + 1 + cap_fist * 2;
+  gfx_circle(g, c, c, h, shade(r, 35), shade(gr, 35), shade(b, 35));
+  gfx_circle(g, c + L, c, h, shade(r, 35), shade(gr, 35), shade(b, 35));
+  gfx_rect(g, c, c - h, L, T, shade(r, 35), shade(gr, 35), shade(b, 35));
+  gfx_circle(g, c, c, h - 1, shade(r, 80), shade(gr, 80), shade(b, 80));
+  gfx_rect(g, c, c - h + 1, L, T - 2, shade(r, 80), shade(gr, 80), shade(b, 80));
+  gfx_rect(g, c, c - h + 1, L, h, r, gr, b);
+  gfx_rect(g, c, c - h + 2, L, 2, r + (255 - r) / 2, gr + (255 - gr) / 2, b + (255 - b) / 2);
+  IF (cap_split > 0)
+    x0 = c + round(L * (1 - cap_split));
+    gfx_rect(g, x0, c - h + 1, c + L - x0, T - 2, shade(cap_sr, 80), shade(cap_sg, 80), shade(cap_sb, 80));
+    gfx_rect(g, x0, c - h + 1, c + L - x0, h, cap_sr, cap_sg, cap_sb);
+    gfx_circle(g, c + L, c, h - 1, shade(cap_sr, 80), shade(cap_sg, 80), shade(cap_sb, 80));
+  ELSE
+    gfx_circle(g, c + L, c, h - 1, shade(r, 80), shade(gr, 80), shade(b, 80));
+  END
+  IF (cap_band)
+    gfx_rect(g, c + L - 7, c - h, 4, T, cap_br, cap_bg, cap_bb);
+  END
+  IF (cap_fist > 0)
+    gfx_circle(g, c + L, c, h + cap_fist * 2, shade(cap_fr, 30), shade(cap_fg, 30), shade(cap_fb, 30));
+    gfx_circle(g, c + L, c, h + cap_fist * 2 - 1, cap_fr, cap_fg, cap_fb);
+    gfx_circle(g, c + L + 1, c - 1, (h + cap_fist * 2) / 2, clamp(cap_fr + 30, 0, 255), clamp(cap_fg + 30, 0, 255), clamp(cap_fb + 30, 0, 255));
+  END
+  set_point(0, g, 0, c, c);
+  cap_split = 0; cap_fist = 0; cap_band = 0;
+  RETURN g;
+END
+
+FUNCTION colr(set, slot, ch);
+BEGIN
+  RETURN col[set * 15 + slot * 3 + ch];
+END
+
+// Torso: +x runs from the hip up to the neck, +y is the chest side.
+FUNCTION torso(c, pal);
+PRIVATE g; set; r; gr; b; sr; sg; sb; ar; ag; ab; W; H; m; i; t;
+BEGIN
+  set = c * 2 + pal;
+  r = colr(set, 0, 0); gr = colr(set, 0, 1); b = colr(set, 0, 2);
+  sr = colr(set, 2, 0); sg = colr(set, 2, 1); sb = colr(set, 2, 2);
+  ar = colr(set, 4, 0); ag = colr(set, 4, 1); ab = colr(set, 4, 2);
+  t = ch_thk[c];
+  W = ch_tor[c] + 14; H = round(26 * (0.6 + t * 0.004)) + 4; m = H / 2;
+  g = new_graphic(W, H);
+  gfx_circle(g, 10, m, m - 3, shade(r, 35), shade(gr, 35), shade(b, 35));
+  gfx_circle(g, W - 12, m, m - 1, shade(r, 35), shade(gr, 35), shade(b, 35));
+  gfx_rect(g, 10, 2, W - 22, H - 4, shade(r, 35), shade(gr, 35), shade(b, 35));
+  gfx_circle(g, 10, m, m - 4, shade(r, 82), shade(gr, 82), shade(b, 82));
+  gfx_circle(g, W - 12, m, m - 2, shade(r, 82), shade(gr, 82), shade(b, 82));
+  gfx_rect(g, 10, 3, W - 22, H - 6, shade(r, 82), shade(gr, 82), shade(b, 82));
+  gfx_rect(g, 6, m, W - 12, m - 4, r, gr, b);
+  SWITCH (c)
+    CASE 0                                   // karate gi: lapels and belt
+      FOR i = 0 TO W - 26
+        gfx_pixel(g, W - 8 - i, m + i / 3, shade(r, 45), shade(gr, 45), shade(b, 45));
+      END
+      gfx_rect(g, W - 14, m - 3, 8, 8, sr, sg, sb);
+      gfx_rect(g, 7, 2, 6, H - 4, 30, 25, 25);
+    CASE 1                                   // tank top and shorts
+      gfx_rect(g, W - 16, m + 1, 10, m - 4, sr, sg, sb);
+      gfx_rect(g, 4, 3, 9, H - 6, colr(set, 1, 0), colr(set, 1, 1), colr(set, 1, 2));
+      gfx_rect(g, 12, 3, 2, H - 6, 250, 250, 250);
+    CASE 2                                   // bare chest, straps, champion belt
+      gfx_line(g, 14, 3, W - 12, H - 5, 50, 30, 25);
+      gfx_line(g, 14, 4, W - 12, H - 4, 50, 30, 25);
+      gfx_rect(g, W - 24, m + 2, 10, 4, shade(r, 60), shade(gr, 60), shade(b, 60));
+      gfx_rect(g, 4, 2, 10, H - 4, 60, 40, 20);
+      gfx_rect(g, 5, m - 5, 8, 10, 240, 200, 60);
+      gfx_rect(g, 7, m - 3, 4, 6, 255, 240, 150);
+    CASE 3                                   // bare, necklace of beads, sash
+      FOR i = 0 TO 5 gfx_circle(g, W - 14 - i * 2, m + 2 + i * 2, 2, 240, 235, 220); END
+      gfx_rect(g, 3, 2, 9, H - 4, colr(set, 1, 0), colr(set, 1, 1), colr(set, 1, 2));
+      gfx_line(g, 16, m + 4, 24, m + 6, 250, 250, 250);
+      gfx_line(g, 16, m + 7, 24, m + 9, 250, 250, 250);
+    CASE 4                                   // armour plates and a red sash
+      FOR i = 0 TO 3
+        gfx_rect(g, 14 + i * 8, m + 1, 6, m - 5, shade(r, 130), shade(gr, 130), shade(b, 130));
+      END
+      gfx_rect(g, W - 16, 3, 6, H - 6, ar, ag, ab);
+      gfx_rect(g, 6, 2, 7, H - 4, ar, ag, ab);
+  END
+  set_point(0, g, 0, 8, m);
+  RETURN g;
+END
+
+// Head: +x is the top of the head, +y the face side.
+FUNCTION head(c, pal);
+PRIVATE g; set; sr; sg; sb; hr; hg; hb; ar; ag; ab;
+BEGIN
+  set = c * 2 + pal;
+  sr = colr(set, 2, 0); sg = colr(set, 2, 1); sb = colr(set, 2, 2);
+  hr = colr(set, 3, 0); hg = colr(set, 3, 1); hb = colr(set, 3, 2);
+  ar = colr(set, 4, 0); ag = colr(set, 4, 1); ab = colr(set, 4, 2);
+  g = new_graphic(34, 34);
+  gfx_circle(g, 17, 17, 11, shade(sr, 30), shade(sg, 30), shade(sb, 30));
+  IF (c == 0 OR c == 1) gfx_circle(g, 17, 17, 10, hr, hg, hb); ELSE gfx_circle(g, 17, 17, 10, shade(sr, 85), shade(sg, 85), shade(sb, 85)); END
+  gfx_circle(g, 15, 19, 9, sr, sg, sb);
+  gfx_circle(g, 13, 22, 5, clamp(sr + 12, 0, 255), clamp(sg + 18, 0, 255), clamp(sb + 20, 0, 255));
+  gfx_rect(g, 18, 23, 2, 2, 20, 20, 30);                  // eye
+  gfx_rect(g, 14, 14, 3, 3, shade(sr, 85), shade(sg, 80), shade(sb, 80));   // ear
+  gfx_rect(g, 10, 26, 2, 3, 150, 90, 80);                 // mouth
+  SWITCH (c)
+    CASE 0                                                // headband with tails
+      gfx_rect(g, 20, 7, 3, 21, ar, ag, ab);
+      gfx_line(g, 21, 8, 15, 1, ar, ag, ab); gfx_line(g, 20, 8, 12, 3, shade(ar, 80), shade(ag, 80), shade(ab, 80));
+    CASE 1                                                // ponytail and fringe
+      gfx_circle(g, 22, 8, 5, hr, hg, hb); gfx_circle(g, 18, 3, 4, hr, hg, hb);
+      gfx_rect(g, 22, 18, 5, 8, hr, hg, hb);
+    CASE 2                                                // bald with a big beard
+      gfx_circle(g, 10, 21, 7, hr, hg, hb); gfx_circle(g, 8, 17, 5, hr, hg, hb);
+      gfx_rect(g, 19, 21, 3, 5, 20, 20, 20);
+      gfx_rect(g, 18, 23, 2, 2, 250, 250, 250);
+    CASE 3                                                // bald, painted forehead
+      gfx_rect(g, 21, 19, 2, 7, 250, 250, 250); gfx_rect(g, 20, 22, 3, 2, 210, 30, 30);
+    CASE 4                                                // horned helmet, red eye
+      gfx_circle(g, 18, 16, 11, 40, 35, 50); gfx_circle(g, 18, 16, 9, 70, 60, 85);
+      gfx_rect(g, 13, 20, 7, 9, 30, 25, 35);
+      gfx_rect(g, 18, 23, 3, 2, ar, ag, ab);
+      gfx_line(g, 26, 12, 32, 6, 200, 190, 170); gfx_line(g, 25, 22, 32, 28, 200, 190, 170);
+  END
+  set_point(0, g, 0, 17, 17);
+  RETURN g;
+END
+
+// The 12 limb graphics of one character in one palette.
+FUNCTION make_fighter(c, pal);
+PRIVATE k; set; sh; t; tr; tg; tb; br; bg; bb; sr; sg; sb; ar; ag; ab; g;
+BEGIN
+  set = c * 2 + pal; t = ch_thk[c] * 0.01;
+  FOR k = 0 TO 11
+    sh = 100;
+    IF (k < 5) sh = 78; END                // the far side is darker
+    tr = shade(colr(set, 0, 0), sh); tg = shade(colr(set, 0, 1), sh); tb = shade(colr(set, 0, 2), sh);
+    br = shade(colr(set, 1, 0), sh); bg = shade(colr(set, 1, 1), sh); bb = shade(colr(set, 1, 2), sh);
+    sr = shade(colr(set, 2, 0), sh); sg = shade(colr(set, 2, 1), sh); sb = shade(colr(set, 2, 2), sh);
+    ar = shade(colr(set, 4, 0), sh); ag = shade(colr(set, 4, 1), sh); ab = shade(colr(set, 4, 2), sh);
+    g = 0;
+    SWITCH (k)
+      CASE 0, 7                            // thigh
+        IF (c == 1 OR c == 3) cap_split = 0.45; cap_sr = sr; cap_sg = sg; cap_sb = sb; END
+        g = capsule(ch_th[c], 14 * t + 1, br, bg, bb);
+      CASE 1, 8                            // shin
+        IF (c == 1) cap_band = 1; cap_br = 245; cap_bg = 245; cap_bb = 245; g = capsule(ch_sh[c], 11 * t + 1, sr, sg, sb); END
+        IF (c == 3) cap_band = 1; cap_br = ar; cap_bg = ag; cap_bb = ab; g = capsule(ch_sh[c], 11 * t + 1, sr, sg, sb); END
+        IF (c == 2 OR c == 4) cap_split = 0.55; cap_sr = ar; cap_sg = ag; cap_sb = ab; g = capsule(ch_sh[c], 11 * t + 1, br, bg, bb); END
+        IF (c == 0) g = capsule(ch_sh[c], 11 * t + 1, br, bg, bb); END
+      CASE 2, 9                            // foot
+        IF (c == 2 OR c == 4) g = capsule(L_FT, 7 * t + 1, ar, ag, ab); ELSE g = capsule(L_FT, 7, sr, sg, sb); END
+      CASE 3, 10                           // upper arm
+        IF (c == 0 OR c == 4) g = capsule(ch_ua[c], 11 * t + 1, tr, tg, tb); ELSE g = capsule(ch_ua[c], 11 * t + 1, sr, sg, sb); END
+      CASE 4, 11                           // forearm and fist
+        cap_fist = 1; cap_fr = sr; cap_fg = sg; cap_fb = sb;
+        IF (c == 0) cap_split = 0.55; cap_sr = sr; cap_sg = sg; cap_sb = sb; g = capsule(ch_fa[c], 10 * t + 1, tr, tg, tb); END
+        IF (c == 1) cap_fist = 2; cap_fr = ar; cap_fg = ag; cap_fb = ab; g = capsule(ch_fa[c], 10 * t + 1, sr, sg, sb); END
+        IF (c == 2) cap_band = 1; cap_br = 40; cap_bg = 30; cap_bb = 30; g = capsule(ch_fa[c], 10 * t + 1, sr, sg, sb); END
+        IF (c == 3) cap_band = 1; cap_br = ar; cap_bg = ag; cap_bb = ab; g = capsule(ch_fa[c], 10 * t + 1, sr, sg, sb); END
+        IF (c == 4) cap_split = 0.5; cap_sr = ar; cap_sg = ag; cap_sb = ab; cap_fr = 60; cap_fg = 55; cap_fb = 70; g = capsule(ch_fa[c], 10 * t + 1, tr, tg, tb); END
+    END
+    g_part[set * 12 + k] = g;
+  END
+  g_torso[set] = torso(c, pal);
+  g_head[set] = head(c, pal);
+  RETURN 0;
+END
+
+// Head-and-shoulders portrait for the select and win screens.
+FUNCTION portrait(c);
+PRIVATE g; i; set; tr; tg; tb; sr; sg; sb; hr; hg; hb; ar; ag; ab;
+BEGIN
+  set = c * 2;
+  tr = colr(set, 0, 0); tg = colr(set, 0, 1); tb = colr(set, 0, 2);
+  sr = colr(set, 2, 0); sg = colr(set, 2, 1); sb = colr(set, 2, 2);
+  hr = colr(set, 3, 0); hg = colr(set, 3, 1); hb = colr(set, 3, 2);
+  ar = colr(set, 4, 0); ag = colr(set, 4, 1); ab = colr(set, 4, 2);
+  g = new_graphic(110, 120);
+  FOR i = 0 TO 29 gfx_rect(g, 0, i * 4, 110, 4, 30 + i * 3 + c * 8, 20 + i * 2, 50 + i * 2 - c * 4); END
+  // shoulders and chest
+  IF (c == 0 OR c == 1 OR c == 4)
+    gfx_circle(g, 55, 150, 62, shade(tr, 40), shade(tg, 40), shade(tb, 40)); gfx_circle(g, 55, 150, 60, tr, tg, tb);
+  ELSE
+    gfx_circle(g, 55, 150, 62, shade(sr, 40), shade(sg, 40), shade(sb, 40)); gfx_circle(g, 55, 150, 60, sr, sg, sb);
+  END
+  IF (c == 0) gfx_line(g, 40, 92, 55, 120, 150, 150, 150); gfx_line(g, 70, 92, 55, 120, 150, 150, 150); END
+  IF (c == 1) gfx_rect(g, 35, 90, 40, 12, sr, sg, sb); END
+  IF (c == 2) gfx_line(g, 20, 95, 60, 120, 50, 30, 25); gfx_line(g, 21, 95, 61, 120, 50, 30, 25); END
+  IF (c == 3) FOR i = 0 TO 8 gfx_circle(g, 32 + i * 6, 100 + abs(i - 4) * -2 + 8, 3, 240, 235, 220); END END
+  IF (c == 4) gfx_rect(g, 20, 96, 70, 6, ar, ag, ab); END
+  gfx_rect(g, 46, 70, 18, 26, shade(sr, 80), shade(sg, 80), shade(sb, 80));   // neck
+  // head (hair behind the face for the two with hair)
+  IF (c < 2) gfx_circle(g, 55, 44, 31, hr, hg, hb); gfx_circle(g, 55, 56, 25, shade(sr, 30), shade(sg, 30), shade(sb, 30)); gfx_circle(g, 55, 56, 24, sr, sg, sb);
+  ELSE gfx_circle(g, 55, 52, 30, shade(sr, 30), shade(sg, 30), shade(sb, 30)); gfx_circle(g, 55, 52, 28, sr, sg, sb); END
+  gfx_circle(g, 49, 46, 14, clamp(sr + 14, 0, 255), clamp(sg + 18, 0, 255), clamp(sb + 20, 0, 255));
+  SWITCH (c)
+    CASE 0
+      gfx_rect(g, 27, 33, 56, 7, ar, ag, ab); gfx_line(g, 83, 34, 98, 44, ar, ag, ab); gfx_line(g, 83, 36, 96, 50, ar, ag, ab);
+    CASE 1
+      gfx_circle(g, 86, 30, 9, hr, hg, hb); gfx_circle(g, 94, 44, 7, hr, hg, hb);
+      gfx_rect(g, 30, 30, 22, 10, hr, hg, hb);
+    CASE 2
+      gfx_circle(g, 55, 74, 20, hr, hg, hb); gfx_rect(g, 46, 66, 18, 4, 120, 60, 50);
+      gfx_circle(g, 48, 30, 6, 255, 230, 200);
+    CASE 3
+      gfx_rect(g, 50, 26, 3, 14, 250, 250, 250); gfx_rect(g, 57, 26, 3, 14, 250, 250, 250);
+      gfx_circle(g, 55, 42, 3, 210, 30, 30);
+    CASE 4
+      gfx_circle(g, 55, 46, 30, 40, 35, 50); gfx_circle(g, 55, 46, 27, 75, 65, 90);
+      gfx_rect(g, 30, 50, 50, 28, 30, 25, 35);
+      gfx_line(g, 32, 28, 16, 4, 220, 210, 190); gfx_line(g, 33, 29, 17, 5, 220, 210, 190);
+      gfx_line(g, 78, 28, 94, 4, 220, 210, 190); gfx_line(g, 77, 29, 93, 5, 220, 210, 190);
+  END
+  // eyes and mouth
+  IF (c == 4)
+    gfx_rect(g, 40, 56, 10, 3, 255, 40, 40); gfx_rect(g, 60, 56, 10, 3, 255, 40, 40);
+  ELSE
+    gfx_rect(g, 40, 52, 10, 5, 250, 250, 250); gfx_rect(g, 60, 52, 10, 5, 250, 250, 250);
+    gfx_rect(g, 44, 53, 4, 4, 30, 30, 40); gfx_rect(g, 62, 53, 4, 4, 30, 30, 40);
+    gfx_rect(g, 38, 48, 14, 3, shade(hr, 80), shade(hg, 80), shade(hb, 80));
+    gfx_rect(g, 58, 48, 14, 3, shade(hr, 80), shade(hg, 80), shade(hb, 80));
+    gfx_rect(g, 47, 70, 16, 3, 140, 70, 60);
+  END
+  gfx_rect_outline(g, 0, 0, 110, 120, 20, 15, 15);
+  gfx_rect_outline(g, 1, 1, 108, 118, 200, 170, 90);
+  RETURN g;
+END
+
+// A text label with a dark outline (n = its length in characters).
+FUNCTION make_label(s, n, sz, r, gr, b);
+PRIVATE g;
+BEGIN
+  g = new_graphic(n * sz * 62 / 100 + 16, sz + 14);
+  gfx_text(g, 8, 10, s, 0, 0, 0, sz);
+  gfx_text(g, 5, 7, s, 30, 10, 10, sz);
+  gfx_text(g, 11, 7, s, 30, 10, 10, sz);
+  gfx_text(g, 8, 4, s, 30, 10, 10, sz);
+  gfx_text(g, 8, 10, s, 30, 10, 10, sz);
+  gfx_text(g, 8, 7, s, r, gr, b, sz);
+  RETURN g;
+END
+
+// Sparks, dust, shadow, projectiles and items.
+FUNCTION make_effects();
+PRIVATE i; g; k; r;
+BEGIN
+  FOR k = 0 TO 2
+    g = new_graphic(48, 48); g_star[k] = g;
+    FOR i = 0 TO 9
+      r = 14 + (i % 2) * 9;
+      IF (k == 0) gfx_line(g, 24, 24, 24 + cos(i * 36000) * r, 24 + sin(i * 36000) * r, 255, 240, 140); END
+      IF (k == 1) gfx_line(g, 24, 24, 24 + cos(i * 36000) * r, 24 + sin(i * 36000) * r, 150, 210, 255); END
+      IF (k == 2) gfx_line(g, 24, 24, 24 + cos(i * 36000) * (r + 1), 24 + sin(i * 36000) * (r + 1), 255, 150, 60); END
+    END
+    IF (k == 1) gfx_circle(g, 24, 24, 8, 180, 230, 255); ELSE gfx_circle(g, 24, 24, 9, 255, 220, 120); END
+    gfx_circle(g, 24, 24, 5, 255, 255, 240);
+  END
+  g_dust = new_graphic(24, 16);
+  gfx_circle(g_dust, 12, 9, 7, 150, 140, 125); gfx_circle(g_dust, 7, 10, 5, 170, 160, 145); gfx_circle(g_dust, 17, 10, 5, 130, 120, 110);
+  g_shadow = new_graphic(64, 12);
+  FOR i = 0 TO 11 g = 32 - abs(i * 2 - 11) * 5 / 2; gfx_rect(g_shadow, 32 - g, i, g * 2, 1, 0, 0, 0); END
+  // projectiles: +x is the direction of travel
+  g = new_graphic(52, 32); g_proj[0] = g;
+  FOR i = 0 TO 6 gfx_circle(g, 10 + i * 4, 16, 3 + i, 40, 80 + i * 10, 200); END
+  gfx_circle(g, 36, 16, 13, 90, 150, 255); gfx_circle(g, 37, 16, 9, 180, 220, 255); gfx_circle(g, 38, 16, 5, 255, 255, 255);
+  g = new_graphic(90, 64); g_proj[1] = g;
+  FOR i = 0 TO 8 gfx_circle(g, 12 + i * 5, 32, 5 + i * 2, 60 + i * 10, 60, 200); END
+  gfx_circle(g, 62, 32, 26, 150, 90, 255); gfx_circle(g, 63, 32, 19, 200, 170, 255); gfx_circle(g, 64, 32, 11, 255, 255, 255);
+  g = new_graphic(52, 32); g_proj[2] = g;
+  FOR i = 0 TO 6 gfx_circle(g, 8 + i * 4, 16 + (i % 2) * 2 - 1, 3 + i, 200, 60 + i * 10, 20); END
+  gfx_circle(g, 36, 16, 13, 250, 130, 30); gfx_circle(g, 37, 16, 9, 255, 200, 60); gfx_circle(g, 38, 16, 4, 255, 255, 200);
+  g = new_graphic(80, 44); g_proj[3] = g;
+  FOR i = 0 TO 12 gfx_circle(g, 8 + i * 5, 22 + ((i * 7) % 5) - 2, 4 + i * 3 / 2, 230, 70 + i * 10, 20); END
+  FOR i = 0 TO 8 gfx_circle(g, 10 + i * 6, 22, 2 + i, 255, 200, 60); END
+  g = new_graphic(110, 70); g_proj[4] = g;
+  FOR i = 0 TO 12 gfx_circle(g, 10 + i * 6, 35 + ((i * 5) % 7) - 3, 6 + i * 2, 220, 40 + i * 12, 10); END
+  gfx_circle(g, 84, 35, 22, 255, 210, 60); gfx_circle(g, 86, 35, 12, 255, 255, 210);
+  g = new_graphic(52, 32); g_proj[5] = g;
+  FOR i = 0 TO 6 gfx_circle(g, 10 + i * 4, 16, 3 + i, 80 + i * 10, 20, 110); END
+  gfx_circle(g, 36, 16, 13, 170, 50, 220); gfx_circle(g, 37, 16, 9, 230, 120, 255); gfx_circle(g, 38, 16, 4, 255, 230, 255);
+  // items: bottle, crate, roast chicken
+  g = new_graphic(12, 28); g_proj[6] = g; g_item[0] = g;
+  gfx_rect(g, 2, 9, 8, 18, 30, 90, 40); gfx_rect(g, 4, 1, 4, 9, 30, 90, 40); gfx_rect(g, 3, 11, 2, 12, 120, 200, 130);
+  gfx_rect(g, 3, 14, 6, 6, 230, 220, 190);
+  g = new_graphic(30, 30); g_proj[7] = g; g_item[1] = g;
+  gfx_rect(g, 0, 0, 30, 30, 70, 45, 20); gfx_rect(g, 2, 2, 26, 26, 170, 120, 60);
+  gfx_line(g, 2, 2, 27, 27, 90, 60, 25); gfx_line(g, 27, 2, 2, 27, 90, 60, 25);
+  gfx_rect_outline(g, 4, 4, 22, 22, 110, 75, 35);
+  g = new_graphic(30, 22); g_item[2] = g;
+  gfx_circle(g, 12, 13, 9, 120, 60, 20); gfx_circle(g, 12, 12, 8, 200, 120, 50); gfx_circle(g, 10, 10, 3, 240, 180, 110);
+  gfx_line(g, 19, 10, 27, 5, 240, 230, 210); gfx_circle(g, 27, 5, 2, 250, 245, 235);
+  FOR i = 0 TO 9
+    g_dig[i] = new_graphic(22, 32);
+    gfx_text(g_dig[i], 3, 3, "" + i, 0, 0, 0, 30);
+    gfx_text(g_dig[i], 1, 1, "" + i, 255, 230, 120, 30);
+  END
+  RETURN 0;
+END
+
+// All texts drawn as graphics (one batch per frame).
+FUNCTION make_labels(part);
+PRIVATE i;
+BEGIN
+  IF (part == 0)
+    g_lab[0] = make_label("ROUND 1", 7, 44, 255, 240, 200);
+    g_lab[1] = make_label("ROUND 2", 7, 44, 255, 240, 200);
+    g_lab[2] = make_label("FINAL ROUND", 11, 44, 255, 220, 160);
+    g_lab[3] = make_label("FIGHT!", 6, 60, 255, 90, 60);
+    g_lab[4] = make_label("K.O.", 4, 72, 255, 60, 40);
+    g_lab[5] = make_label("PERFECT", 7, 52, 255, 230, 90);
+    g_lab[6] = make_label("TIME OVER", 9, 46, 255, 240, 200);
+    g_lab[7] = make_label("DOUBLE K.O.", 11, 44, 255, 90, 60);
+    g_lab[8] = make_label("DRAW GAME", 9, 44, 255, 240, 200);
+    g_lab[9] = make_label("YOU WIN", 7, 48, 255, 230, 120);
+    g_lab[10] = make_label("YOU LOSE", 8, 48, 160, 170, 255);
+    g_lab[11] = make_label("VS", 2, 70, 255, 70, 50);
+    g_lab[12] = make_label("SELECT YOUR FIGHTER", 19, 30, 255, 230, 150);
+    g_lab[13] = make_label("CONTINUE?", 9, 44, 255, 240, 200);
+    g_lab[14] = make_label("GAME OVER", 9, 52, 255, 80, 60);
+    g_lab[15] = make_label("CONGRATULATIONS!", 16, 36, 255, 230, 120);
+    g_lab[16] = make_label("WINNER", 6, 40, 255, 230, 120);
+    g_lab[17] = make_label("SUPER!", 6, 34, 120, 220, 255);
+    g_lab[18] = make_label("DIZZY!", 6, 22, 255, 240, 100);
+    g_lab[19] = make_label("REVERSAL", 8, 16, 255, 200, 120);
+    g_lab[20] = make_label("FINAL BATTLE", 12, 34, 255, 60, 60);
+    g_lab[21] = make_label("+HEALTH", 7, 16, 120, 255, 120);
+    g_lab[22] = make_label("THROW", 5, 16, 255, 200, 120);
+  END
+  IF (part == 1)
+    FOR i = 2 TO 20 g_hits[i] = make_label("" + i + " HITS!", 7 + (i > 9), 28, 255, 210, 60); END
+  END
+  IF (part == 2)
+    FOR i = 0 TO 4
+      g_nm[i] = make_label(ch_name[i], 6, 18, 255, 250, 230);
+      g_win[i] = make_label(ch_name[i] + " WINS", 11, 40, 255, 230, 120);
+    END
+    g_logo = new_graphic(560, 120);
+    gfx_text(g_logo, 18, 16, "STREET DUEL", 0, 0, 0, 84);
+    gfx_text(g_logo, 10, 8, "STREET DUEL", 120, 20, 10, 84);
+    gfx_text(g_logo, 6, 4, "STREET DUEL", 255, 200, 60, 84);
+  END
+  RETURN 0;
+END
+
+// ======================================================================
+// Stages: parallax layers generated in code
+// Far layer (0.25 of the camera), mid layer (0.55), two crowd rows and
+// the floor (1:1). Crowd rows have two frames (arms down / some up).
+// ======================================================================
+
+FUNCTION grad(g, x, w, y0, y1, r0, g0, b0, r1, g1, b1);
+PRIVATE i; n; t;
+BEGIN
+  n = (y1 - y0) / 4;
+  FOR i = 0 TO n
+    t = i / (n + 0.001);
+    gfx_rect(g, x, y0 + i * 4, w, 4, r0 + (r1 - r0) * t, g0 + (g1 - g0) * t, b0 + (b1 - b0) * t);
+  END
+  RETURN 0;
+END
+
+FUNCTION lay_w(f);
+BEGIN
+  RETURN round(640 + (SW - 640) * f);
+END
+
+// Far layer: sky and the distant scenery.
+FUNCTION stage_far(s);
+PRIVATE g; w; x; y; h; i; k; c;
+BEGIN
+  w = lay_w(0.25); g = new_graphic(w, 330); g_far[s] = g;
+  SWITCH (s)
+    CASE 0                                   // dusk: purple to orange, a low sun, skyline
+      grad(g, 0, w, 0, 300, 40, 26, 80, 250, 140, 80);
+      grad(g, 0, w, 300, 330, 250, 140, 80, 255, 180, 110);
+      gfx_circle(g, 520, 250, 46, 255, 170, 90); gfx_circle(g, 520, 250, 38, 255, 215, 140);
+      x = 0;
+      WHILE (x < w)
+        k = rand(24, 50); h = rand(60, 170);
+        gfx_rect(g, x, 330 - h, k - 3, h, 60, 36, 80);
+        FOR i = 0 TO h / 12 gfx_rect(g, x + rand(3, k - 8), 330 - h + rand(4, h - 6), 3, 4, 255, 200, 110); END
+        x += k;
+      END
+    CASE 1                                   // temple: blue sky, clouds, two ranges of mountains
+      grad(g, 0, w, 0, 330, 70, 130, 220, 215, 235, 250);
+      FOR i = 0 TO 6
+        x = rand(0, w); y = rand(40, 150);
+        FOR k = 0 TO 5 gfx_circle(g, x + k * 13, y + (k % 2) * 5, rand(9, 16), 250, 250, 255); END
+      END
+      FOR x = 0 TO w - 1 STEP 3
+        y = 190 + sin(x * 500) * 34 + sin(x * 1400 + 20000) * 12;
+        gfx_rect(g, x, y, 3, 330 - y, 110, 140, 175);
+        IF (y < 170) gfx_rect(g, x, y, 3, 170 - y, 235, 240, 250); END
+        y = 250 + sin(x * 900 + 40000) * 18;
+        gfx_rect(g, x, y, 3, 330 - y, 70, 115, 90);
+      END
+    CASE 2                                   // harbour at night: stars, moon, far city
+      grad(g, 0, w, 0, 330, 8, 10, 36, 40, 44, 96);
+      FOR i = 0 TO 160 c = rand(90, 250); gfx_pixel(g, rand(0, w - 1), rand(0, 250), c, c, c + 5); END
+      gfx_circle(g, 150, 90, 26, 245, 240, 205); gfx_circle(g, 162, 84, 22, 16, 18, 52);
+      x = 0;
+      WHILE (x < w)
+        k = rand(16, 36); h = rand(20, 80);
+        gfx_rect(g, x, 280 - h, k - 2, h, 26, 28, 56);
+        FOR i = 0 TO h / 6 gfx_pixel(g, x + rand(2, k - 5), 280 - h + rand(3, h - 3), 250, 220, 120); END
+        x += k;
+      END
+      grad(g, 0, w, 280, 330, 22, 30, 70, 10, 14, 36);
+      FOR i = 0 TO 40 x = rand(0, w - 30); y = rand(284, 328); gfx_line(g, x, y, x + rand(8, 30), y, 70, 90, 140); END
+    CASE 3                                   // the pit: brick wall, high windows, lamps
+      gfx_rect(g, 0, 0, w, 330, 34, 26, 26);
+      FOR y = 0 TO 54
+        gfx_rect(g, 0, y * 6, w, 5, 70, 42, 36);
+        FOR x = 0 TO w / 26 gfx_line(g, x * 26 + (y % 2) * 13, y * 6, x * 26 + (y % 2) * 13, y * 6 + 5, 34, 26, 26); END
+      END
+      FOR i = 0 TO 150 gfx_rect(g, rand(0, w / 26) * 26 + 1, rand(0, 54) * 6, 25, 5, rand(50, 90), 36, 30); END
+      FOR i = 0 TO 4
+        x = 40 + i * 150;
+        gfx_rect(g, x, 50, 80, 60, 20, 22, 40);
+        gfx_rect(g, x + 3, 53, 74, 54, 70, 90, 140);
+        gfx_rect(g, x + 38, 53, 3, 54, 20, 22, 40); gfx_rect(g, x + 3, 78, 74, 3, 20, 22, 40);
+      END
+      gfx_rect(g, 0, 16, w, 8, 60, 55, 50);
+      FOR i = 0 TO 5 gfx_line(g, i * 140 + 60, 24, i * 140 + 60, 130, 50, 50, 50); END
+  END
+  RETURN 0;
+END
+
+// Mid layer: the street, the temple, the ships, the fence.
+FUNCTION stage_mid(s);
+PRIVATE g; w; x; y; h; i; k; c;
+BEGIN
+  w = lay_w(0.55); g = new_graphic(w, 330); g_mid[s] = g;
+  SWITCH (s)
+    CASE 0                                   // shop fronts with neon signs and lamps
+      x = 0;
+      WHILE (x < w)
+        k = rand(110, 170); h = rand(150, 220);
+        c = rand(0, 2);
+        gfx_rect(g, x, 330 - h, k - 4, h, 70 + c * 15, 40 + c * 6, 45);
+        FOR y = 330 - h + 12 TO 250 STEP 30
+          FOR i = 0 TO k / 30 - 1
+            IF (rand(0, 2) > 0) gfx_rect(g, x + 10 + i * 30, y, 16, 18, 255, 210, 120); ELSE gfx_rect(g, x + 10 + i * 30, y, 16, 18, 40, 30, 40); END
+          END
+        END
+        gfx_rect(g, x + 8, 270, k - 20, 60, 30, 20, 30);
+        gfx_rect(g, x + 12, 274, k - 28, 40, 200, 170, 110);
+        c = rand(0, 3);
+        gfx_rect(g, x + 14, 248, 64, 18, 20, 10, 20);
+        IF (c == 0) gfx_text(g, x + 18, 250, "BAR", 255, 60, 160, 14); END
+        IF (c == 1) gfx_text(g, x + 18, 250, "HOTEL", 90, 230, 255, 14); END
+        IF (c == 2) gfx_text(g, x + 18, 250, "RAMEN", 255, 220, 60, 14); END
+        IF (c == 3) gfx_text(g, x + 18, 250, "GYM", 120, 255, 120, 14); END
+        x += k;
+      END
+      FOR i = 0 TO 4
+        x = 60 + i * 190;
+        gfx_rect(g, x, 200, 4, 130, 30, 30, 36);
+        gfx_circle(g, x + 2, 198, 9, 255, 235, 170);
+      END
+      gfx_rect(g, 380, 300, 110, 22, 120, 20, 30); gfx_rect(g, 400, 286, 64, 18, 100, 20, 30);
+      gfx_circle(g, 400, 322, 8, 20, 20, 20); gfx_circle(g, 470, 322, 8, 20, 20, 20);
+    CASE 1                                   // pagoda, torii gate, wall and lanterns
+      FOR i = 0 TO 4
+        k = 120 - i * 18;
+        gfx_rect(g, 660 - k / 2, 290 - i * 46, k, 30, 170, 45, 35);
+        gfx_rect(g, 660 - k / 2 + 6, 294 - i * 46, k - 12, 20, 230, 190, 130);
+        FOR y = 0 TO 9 gfx_line(g, 660 - k / 2 - 12 + y, 280 - i * 46 + y, 660 + k / 2 + 12 - y, 280 - i * 46 + y, 50 + y * 3, 40, 45); END
+      END
+      gfx_rect(g, 658, 40, 4, 60, 190, 150, 60);
+      gfx_rect(g, 150, 150, 14, 180, 200, 40, 30); gfx_rect(g, 290, 150, 14, 180, 200, 40, 30);
+      gfx_rect(g, 124, 138, 206, 14, 40, 30, 30); gfx_rect(g, 134, 172, 186, 10, 200, 40, 30);
+      gfx_rect(g, 0, 286, w, 44, 235, 230, 215); gfx_rect(g, 0, 278, w, 10, 60, 50, 55);
+      FOR i = 0 TO 7
+        x = 30 + i * 120;
+        gfx_rect(g, x - 5, 294, 10, 36, 150, 150, 140); gfx_rect(g, x - 14, 284, 28, 12, 170, 170, 160);
+        gfx_rect(g, x - 8, 287, 16, 6, 255, 220, 120);
+      END
+      FOR i = 0 TO 3
+        x = 420 + i * 60 + rand(0, 20);
+        FOR k = 0 TO 4 gfx_circle(g, x + (k % 2) * 6 - 3, 250 - k * 14, 22 - k * 3, 30, 70 + k * 5, 45); END
+      END
+    CASE 2                                   // ships, cranes and containers
+      FOR i = 0 TO 2
+        x = 60 + i * 290;
+        gfx_rect(g, x, 250, 200, 40, 50, 25, 30); gfx_rect(g, x, 250, 200, 6, 160, 40, 40);
+        gfx_rect(g, x + 20, 220, 70, 30, 190, 190, 180);
+        FOR k = 0 TO 4 gfx_rect(g, x + 26 + k * 12, 228, 6, 6, 255, 230, 140); END
+        gfx_line(g, x + 140, 150, x + 140, 250, 120, 110, 100);
+        gfx_line(g, x + 140, 154, x + 196, 248, 80, 80, 80);
+        gfx_pixel(g, x + 140, 149, 255, 60, 60);
+      END
+      FOR i = 0 TO 9 gfx_line(g, 820 + i, 90, 820 + i, 330, 170, 120, 40); END
+      gfx_rect(g, 700, 90, 190, 10, 190, 135, 50);
+      gfx_line(g, 720, 100, 720, 180, 90, 90, 90);
+      FOR i = 0 TO 11
+        x = (i % 6) * 70 + (i / 6) * 30 + 180; y = 294 - (i / 6) * 30;
+        c = rand(0, 3);
+        IF (c == 0) gfx_rect(g, x, y, 66, 28, 170, 50, 40); END
+        IF (c == 1) gfx_rect(g, x, y, 66, 28, 40, 90, 150); END
+        IF (c == 2) gfx_rect(g, x, y, 66, 28, 60, 130, 70); END
+        IF (c == 3) gfx_rect(g, x, y, 66, 28, 190, 150, 50); END
+        FOR k = 1 TO 7 gfx_line(g, x + k * 8, y + 2, x + k * 8, y + 26, 30, 30, 30); END
+      END
+    CASE 3                                   // chain-link fence with posts, sign, lamps
+      FOR i = 0 TO 5
+        x = 50 + i * 170;
+        gfx_line(g, x, 0, x, 60, 40, 40, 40);
+        gfx_circle(g, x, 64, 14, 70, 60, 40);
+        gfx_circle(g, x, 66, 8, 255, 230, 150);
+      END
+      gfx_rect(g, 340, 90, 200, 44, 40, 20, 20);
+      gfx_rect(g, 344, 94, 192, 36, 150, 30, 30);
+      gfx_text(g, 368, 98, "THE PIT", 255, 230, 120, 28);
+      FOR x = -80 TO w STEP 12
+        gfx_line(g, x, 180, x + 150, 330, 120, 120, 125);
+        gfx_line(g, x + 150, 180, x, 330, 100, 100, 105);
+      END
+      gfx_rect(g, 0, 176, w, 5, 80, 80, 85);
+      FOR i = 0 TO 8 gfx_rect(g, i * 120 + 10, 176, 6, 154, 70, 70, 75); END
+  END
+  RETURN 0;
+END
+
+// A crowd row: silhouettes with heads and shoulders; frame 1 raises arms.
+FUNCTION stage_crowd(s, row, fr);
+PRIVATE g; w; i; x; y; n; c; hr; up; k;
+BEGIN
+  IF (row == 0) w = lay_w(0.65); ELSE w = lay_w(0.8); END
+  g = new_graphic(w, 90); g_crowd[s * 4 + row * 2 + fr] = g;
+  rand_seed(s * 7919 + row * 1543 + 99991);
+  FOR i = 0 TO 7 rand(0, 99); END
+  n = crowd_n[s];
+  IF (row == 1) n = n * 2 / 3; END
+  FOR i = 0 TO n - 1
+    IF (s == 3) x = i * w / n + rand(-6, 6); ELSE x = rand(20, w - 20); END
+    y = 90 - rand(0, 12);
+    hr = rand(7, 9);
+    c = rand(20, 45);
+    IF (row == 1) c = c + 25; END
+    up = rand(0, 99) < 55;
+    k = rand(0, 2);
+    IF (s == 1) gfx_circle(g, x, y - 12, 14, 200 - row * 60, 110 - row * 30, 30); END   // monks' robes
+    gfx_rect(g, x - 13, y - 30, 26, 30, c, c - 5 + k * 4, c + 5);
+    gfx_circle(g, x - 8, y - 28, 6, c, c - 5 + k * 4, c + 5); gfx_circle(g, x + 8, y - 28, 6, c, c - 5 + k * 4, c + 5);
+    gfx_circle(g, x, y - 40, hr, c + 6, c + 2, c);
+    IF (fr == 1 AND up)
+      gfx_line(g, x - 12, y - 30, x - 18 - k * 2, y - 56, c, c, c); gfx_line(g, x - 11, y - 30, x - 17 - k * 2, y - 56, c, c, c);
+      gfx_line(g, x + 12, y - 30, x + 18, y - 55 + k * 2, c, c, c); gfx_line(g, x + 11, y - 30, x + 17, y - 55 + k * 2, c, c, c);
+      gfx_circle(g, x - 18 - k * 2, y - 57, 3, c + 6, c + 2, c); gfx_circle(g, x + 18, y - 56 + k * 2, 3, c + 6, c + 2, c);
+    END
+  END
+  RETURN 0;
+END
+
+// Floor, 1:1 with the camera.
+FUNCTION stage_floor(s);
+PRIVATE g; i; x; y; t; r; gr; b;
+BEGIN
+  g = new_graphic(SW, 78); g_flr[s] = g;
+  SWITCH (s)
+    CASE 0 r = 70; gr = 64; b = 72;
+    CASE 1 r = 175; gr = 165; b = 150;
+    CASE 2 r = 120; gr = 86; b = 58;
+    CASE 3 r = 88; gr = 84; b = 80;
+  END
+  grad(g, 0, SW, 0, 78, r, gr, b, r * 55 / 100, gr * 55 / 100, b * 55 / 100);
+  y = 0; t = 3;
+  WHILE (y < 78)
+    IF (s != 0) gfx_line(g, 0, y, SW - 1, y, r * 45 / 100, gr * 45 / 100, b * 45 / 100); END
+    y += t; t += 2;
+  END
+  FOR i = -20 TO 20
+    IF (s == 1 OR s == 3 OR i % 3 == 0)
+      gfx_line(g, SW / 2 + i * 42, 0, SW / 2 + i * 90, 77, r * 50 / 100, gr * 50 / 100, b * 50 / 100);
+    END
+  END
+  IF (s == 0)                                // kerb and lane markings
+    gfx_rect(g, 0, 0, SW, 8, 150, 140, 140); gfx_rect(g, 0, 8, SW, 2, 40, 36, 40);
+    FOR x = 0 TO SW STEP 120 gfx_rect(g, x, 50, 60, 4, 230, 210, 120); END
+    gfx_circle(g, 300, 40, 12, 40, 40, 44); gfx_circle(g, 880, 34, 12, 40, 40, 44);
+  END
+  IF (s == 3)                                // oil stains and a painted ring
+    FOR i = 0 TO 14 gfx_circle(g, rand(0, SW), rand(10, 70), rand(4, 14), 78, 74, 72); END
+    gfx_rect(g, 0, 0, SW, 3, 200, 60, 40);
+  END
+  IF (s == 2)
+    FOR i = 0 TO 5 x = 90 + i * 190; gfx_rect(g, x, 2, 16, 14, 40, 35, 35); gfx_rect(g, x - 3, 0, 22, 5, 55, 50, 50); END
+  END
+  RETURN 0;
+END
+
+// ======================================================================
+// Rendering processes
+// ======================================================================
+
+// Limb k of fighter s: copies what fk() computed.
+PROCESS limb(s, k);
+PRIVATE q;
+BEGIN
+  q = s * 12 + k;
+  LOOP
+    IF (sk_vis[s] AND (scene == 1 OR scene == 2 OR scene == 4))
+      x = pp_x[q] - cam_x + shx; y = pp_y[q] + shy; angle = pp_a[q]; graph = pp_g[q];
+      flags = pp_f[q]; z = pp_z[q]; size = sk_sc[s] * 100;
+    ELSE
+      graph = 0;
+    END
+    FRAME;
+  END
+END
+
+PROCESS shadow(s);
+BEGIN
+  z = 90; graph = g_shadow; alpha = 40;
+  LOOP
+    IF (sk_vis[s] AND (scene == 4 OR scene == 1)) graph = g_shadow; ELSE graph = 0; END
+    x = (pt_x[s * 16 + 8] + pt_x[s * 16 + 11]) / 2 - cam_x + shx; y = GY + 1 + shy;
+    size = clamp(100 - fy[s] * 0.5, 30, 100) * sk_sc[s];
+    FRAME;
+  END
+END
+
+// Background layer (0 far, 1 mid, 2 floor, 3/4 crowd rows).
+PROCESS layer(kind);
+PRIVATE f; top; w; t; hop;
+BEGIN
+  LOOP
+    t++;
+    IF (scene != 4 AND scene != 1)
+      graph = 0;
+    ELSE
+      SWITCH (kind)
+        CASE 0 graph = g_far[stage]; f = 0.25; top = 0; z = 500;
+        CASE 1 graph = g_mid[stage]; f = 0.55; top = 0; z = 480;
+        CASE 2 graph = g_flr[stage]; f = 1.0; top = 322; z = 300;
+        CASE 3, 4
+          // crowds cheer with the hype: arms up and a bounce
+          IF (kind == 3) f = 0.65; ELSE f = 0.8; END
+          graph = g_crowd[stage * 4 + (kind - 3) * 2 + ((t / (8 + kind)) % 2) * (hype > 12)];
+          hop = abs(sin(t * (9000 + kind * 1300))) * min(hype, 60) * 0.08;
+          top = 244 - (kind - 3) * 10 - hop;
+          IF (crowd_front[stage]) z = 470 - (kind - 3) * 5; ELSE z = 490 - (kind - 3) * 3; END
+          IF (kind == 4) top = 250 - hop; END
+      END
+      w = lay_w(f);
+      x = w / 2 - cam_x * f + shx;
+      IF (kind == 2) y = top + 39 + shy; ELSE IF (kind >= 3) y = top + 45 + shy; ELSE y = top + 165 + shy * f; END END
+    END
+    FRAME;
+  END
+END
+
+// Projectile i.
+PROCESS proj_view(i);
+PRIVATE t;
+BEGIN
+  z = -15;
+  LOOP
+    IF (pr_on[i] AND scene == 4)
+      t++;
+      graph = g_proj[pr_typ[i]];
+      x = pr_x[i] - cam_x + shx; y = pr_y[i] + shy;
+      IF (pr_vx[i] < 0) flags = 1; ELSE flags = 0; END
+      IF (pr_typ[i] >= 6) angle += 14000; ELSE angle = 0; size = 100 + sin(t * 40000) * 8; END
+      IF (pr_typ[i] == 3) size = 60 + pr_t[i] * 4; alpha = 100 - pr_t[i] * 3; ELSE alpha = 100; END
+      IF (pr_typ[i] < 6) size = size; ELSE size = 100; END
+    ELSE
+      graph = 0; t = 0; angle = 0;
+    END
+    FRAME;
+  END
+END
+
+// Item i lying in the ring, falling or held.
+PROCESS item_view(i);
+BEGIN
+  z = -8;
+  LOOP
+    IF (it_on[i] AND scene == 4)
+      graph = g_item[it_typ[i]];
+      x = it_x[i] - cam_x + shx; y = GY - it_y[i] - 10 + shy;
+      IF (it_on[i] == 1) angle += 9000; ELSE angle = 0; END
+    ELSE
+      graph = 0;
+    END
+    FRAME;
+  END
+END
+
+// A burst of light where a blow lands (blue when blocked, orange heavy).
+PROCESS spark(wx, wy, kind);
+PRIVATE t;
+BEGIN
+  z = -20; graph = g_star[kind];
+  FOR t = 0 TO 12
+    x = wx - cam_x + shx; y = wy + shy;
+    size = 50 + t * 9; alpha = 100 - t * 8; angle += 11000;
+    IF (kind == 2) size += 30; END
+    FRAME;
+  END
+END
+
+PROCESS dust(wx, dir);
+PRIVATE t;
+BEGIN
+  z = 80; graph = g_dust;
+  FOR t = 0 TO 20
+    wx += dir * 0.8;
+    x = wx - cam_x + shx; y = GY - 4 - t / 3 + shy; size = 60 + t * 6; alpha = 70 - t * 3;
+    FRAME;
+  END
+END
+
+// Floating label (THROW, +HEALTH, REVERSAL, DIZZY).
+PROCESS popword(g, wx, wy);
+PRIVATE t;
+BEGIN
+  z = -45; graph = g;
+  FOR t = 0 TO 44
+    x = wx - cam_x; y = wy - t / 2; alpha = 100 - t * 2;
+    FRAME;
+  END
+END
+
+// Centre banner (ROUND 1, FIGHT!, K.O. ...): zooms in then fades.
+PROCESS banner();
+PRIVATE t;
+BEGIN
+  x = 320; z = -60;
+  LOOP
+    y = ban_y;
+    IF (ban_t > 0)
+      ban_t--; t++; graph = ban_g;
+      IF (t < 10) size = 40 + t * 6; ELSE size = 100; END
+      IF (ban_t < 12) alpha = ban_t * 8; ELSE alpha = 100; END
+    ELSE
+      graph = 0; t = 0;
+    END
+    FRAME;
+  END
+END
+
+// Combo counter of player f: "3 HITS!" on the attacker's side.
+PROCESS combo_view(f);
+BEGIN
+  z = -55; y = 112;
+  IF (f == 0) x = 120; ELSE x = 520; END
+  LOOP
+    IF (cb_t[f] > 0 AND scene == 4)
+      cb_t[f]--;
+      graph = g_hits[min(cb_show[f], 20)];
+      size = 100 + max(0, cb_t[f] - 70) * 3; alpha = min(100, cb_t[f] * 5);
+    ELSE
+      graph = 0;
+    END
+    FRAME;
+  END
+END
+
+// Timer digit (place 0 units, 1 tens).
+PROCESS digit(place);
+PRIVATE v;
+BEGIN
+  x = 331 - place * 22; y = 48; z = -30;
+  LOOP
+    v = (timer + 59) / 60;
+    IF (scene != 4 OR demo) graph = 0;
+    ELSE
+      IF (place == 0) graph = g_dig[v % 10]; ELSE graph = g_dig[(v / 10) % 10]; END
+    END
+    FRAME;
+  END
+END
+
+// Generic screen sprite i (portraits, logos, labels on menu screens).
+PROCESS ui(i);
+BEGIN
+  z = -40;
+  LOOP
+    graph = ui_g[i]; x = ui_x[i]; y = ui_y[i]; size = ui_s[i]; flags = ui_f[i]; alpha = ui_a[i];
+    FRAME;
+  END
+END
+
+FUNCTION put_ui(i, g, px, py, sz, fl);
+BEGIN
+  ui_g[i] = g; ui_x[i] = px; ui_y[i] = py; ui_s[i] = sz; ui_f[i] = fl; ui_a[i] = 100;
+  RETURN 0;
+END
+
+FUNCTION clear_ui();
+PRIVATE i;
+BEGIN
+  FOR i = 0 TO 11 ui_g[i] = 0; END
+  RETURN 0;
+END
+
+FUNCTION show_banner(g, t, py);
+BEGIN
+  ban_g = g; ban_t = t; ban_y = py;
+  RETURN 0;
+END
+
+FUNCTION shake(t, a);
+BEGIN
+  IF (a >= shake_a OR shake_t <= 0) shake_t = t; shake_a = a; END
+  RETURN 0;
+END
+
+// ======================================================================
+// Input: keys (or the CPU) -> stick, buffer, charges, buttons
+// ======================================================================
+
+FUNCTION read_input(f);
+PRIVATE h; v; b; i; nd;
+BEGIN
+  h = 0; v = 0; b = -1;
+  IF (ctl_on)
+    IF (fctrl[f] == 2)
+      cpu(f); h = ci_fw[f] * fdir[f]; v = ci_v[f]; b = ci_b[f];
+    ELSE
+      IF (fctrl[f] == 0) h = key(_right) - key(_left); v = key(_down) - key(_up);
+      ELSE h = key(_l) - key(_j); v = key(_k) - key(_i); END
+      FOR i = 0 TO 5 IF (key_pressed(btn_key[fctrl[f] * 6 + i])) b = i; END END
+    END
+  END
+  in_fw[f] = h * fdir[f]; in_v[f] = v;
+  // numpad notation relative to the facing: 6 forward, 4 back, 2 down, 8 up
+  nd = 5 + in_fw[f] - v * 3;
+  mash[f] = (b >= 0) OR (nd != last_nd[f]);
+  last_nd[f] = nd;
+  ib_pos[f] = (ib_pos[f] + 1) % 48;
+  ib[f * 48 + ib_pos[f]] = nd;
+  // charge: frames held back / down, remembered for 10 frames after release
+  IF (in_fw[f] < 0) chb[f]++; ELSE IF (chb[f] > 0) chbm[f] = chb[f]; chbg[f] = 10; END chb[f] = 0; END
+  IF (v > 0) chd[f]++; ELSE IF (chd[f] > 0) chdm[f] = chd[f]; chdg[f] = 10; END chd[f] = 0; END
+  IF (chbg[f] > 0) chbg[f]--; END
+  IF (chdg[f] > 0) chdg[f]--; END
+  IF (b >= 0)
+    pend_b[f] = b; pend_t[f] = 8;
+    IF (fctrl[f] == 2) pend_sp[f] = ci_sp[f]; ELSE pend_sp[f] = detect_special(f, b); END
+  END
+  RETURN 0;
+END
+
+// Does the buffer hold the directions a, b, c... in order within the last
+// win frames, finishing in the last 8? Returns 1 + the age of the finish.
+FUNCTION seq_ok(f, a, b, c, d, e, g, n, win);
+PRIVATE i; k; age; dd; want;
+BEGIN
+  k = 0;
+  FOR i = 0 TO win - 1
+    age = win - 1 - i;
+    dd = ib[f * 48 + (ib_pos[f] - age + 48) % 48];
+    SWITCH (k)
+      CASE 0 want = a;
+      CASE 1 want = b;
+      CASE 2 want = c;
+      CASE 3 want = d;
+      CASE 4 want = e;
+      CASE 5 want = g;
+    END
+    IF (dd == want)
+      k++;
+      IF (k == n) IF (age <= 8) RETURN age + 1; END RETURN 0; END
+    END
+  END
+  RETURN 0;
+END
+
+FUNCTION recent(f, d1, d2, frames);
+PRIVATE i; dd;
+BEGIN
+  FOR i = 0 TO frames - 1
+    dd = ib[f * 48 + (ib_pos[f] - i + 48) % 48];
+    IF (dd == d1 OR dd == d2) RETURN 1; END
+  END
+  RETURN 0;
+END
+
+FUNCTION motion_ok(f, mo);
+BEGIN
+  SWITCH (mo)
+    CASE 1 RETURN seq_ok(f, 2, 3, 6, 0, 0, 0, 3, 18);
+    CASE 2 RETURN seq_ok(f, 6, 2, 3, 0, 0, 0, 3, 18);
+    CASE 3 RETURN seq_ok(f, 2, 1, 4, 0, 0, 0, 3, 18);
+    CASE 4 RETURN seq_ok(f, 4, 2, 6, 0, 0, 0, 3, 26);
+    CASE 5 RETURN seq_ok(f, 6, 2, 4, 0, 0, 0, 3, 26);
+    CASE 6 RETURN (chb[f] >= 40 OR (chbg[f] > 0 AND chbm[f] >= 40)) AND recent(f, 6, 9, 6);
+    CASE 7 RETURN (chd[f] >= 40 OR (chdg[f] > 0 AND chdm[f] >= 40)) AND recent(f, 8, 9, 6);
+    CASE 8 RETURN seq_ok(f, 2, 3, 6, 2, 3, 6, 6, 40);
+  END
+  RETURN 0;
+END
+
+// Special (or super) the input buffer asks for with button b; 0 = none.
+// The motion finished most recently wins (walking forward into a
+// fireball motion is not a dragon punch); priority breaks ties.
+FUNCTION detect_special(f, b);
+PRIVATE i; sp; best; ba; bp; kick; a;
+BEGIN
+  kick = b >= 3; best = 0; ba = 99; bp = -1;
+  FOR i = 0 TO 3
+    sp = ch_sp[fc[f] * 4 + i];
+    IF (sp_kick[sp] == kick AND (i < 3 OR meter[f] >= 100))
+      a = motion_ok(f, sp_mot[sp]);
+      IF (a > 0 AND (a < ba OR (a == ba AND mo_prio[sp_mot[sp]] > bp)))
+        best = sp; ba = a; bp = mo_prio[sp_mot[sp]];
+      END
+    END
+  END
+  RETURN best;
+END
+
+// ======================================================================
+// Fighters: actions
+// ======================================================================
+
+FUNCTION is_normal(m);
+BEGIN
+  RETURN m >= 11 AND m <= 28;
+END
+
+FUNCTION has_proj(f);
+PRIVATE i;
+BEGIN
+  FOR i = 0 TO 3 IF (pr_on[i] AND pr_own[i] == f AND pr_typ[i] < 6) RETURN 1; END END
+  RETURN 0;
+END
+
+// Moves the fighter horizontally within the stage and the camera span.
+FUNCTION move_x(f, dx);
+PRIVATE o; nx;
+BEGIN
+  IF (f > 1) RETURN 0; END
+  o = 1 - f;
+  nx = clamp(fx[f] + dx, 24, SW - 24);
+  nx = clamp(nx, fx[o] - MAXSEP, fx[o] + MAXSEP);
+  fx[f] = nx;
+  RETURN 0;
+END
+
+// True when f can not be pushed further away from the opponent.
+FUNCTION cornered(f);
+PRIVATE o; away;
+BEGIN
+  o = 1 - f; away = sign(fx[f] - fx[o]);
+  IF (away == 0) away = -fdir[f]; END
+  IF (away < 0 AND (fx[f] < 30 OR fx[f] < fx[o] - MAXSEP + 6)) RETURN 1; END
+  IF (away > 0 AND (fx[f] > SW - 30 OR fx[f] > fx[o] + MAXSEP - 6)) RETURN 1; END
+  RETURN 0;
+END
+
+FUNCTION set_state(f, st, m);
+BEGIN
+  fs[f] = st;
+  IF (m >= 0) start_move(f, m); END
+  RETURN 0;
+END
+
+// Starts special sp with strength str (0 light .. 2 heavy).
+FUNCTION do_special(f, sp, str);
+PRIVATE m;
+BEGIN
+  IF (sp_ptype[sp] >= 0 AND has_proj(f)) RETURN 0; END
+  m = sp_move[sp];
+  IF (sp == 4 OR sp == 7 OR sp == 11 OR sp == 15)
+    IF (meter[f] < 100) RETURN 0; END
+    meter[f] = 0; n_supers++;
+    sfl_t = 36;
+    show_banner(g_lab[17], 40, 120);
+  ELSE
+    meter[f] = min(100, meter[f] + 3);
+  END
+  IF (fs[f] == ST_ATK AND f_conn[f] > 0) n_cancels++; END
+  f_sp[f] = sp; f_str[f] = str;
+  set_state(f, ST_ATK, m);
+  n_sp++; last_sp = sp; sp_used[sp]++;
+  RETURN 1;
+END
+
+// A throw (or command grab) takes the opponent.
+FUNCTION start_throw(f, m);
+PRIVATE o;
+BEGIN
+  o = 1 - f;
+  set_state(f, ST_ATK, m);
+  f_grab[f] = 1;
+  fs[o] = ST_THROWN; start_move(o, M_THROWN);
+  fvx[o] = 0; fvy[o] = 0;
+  IF (pend_b[o] >= 0) pend_t[o] = 0; END
+  n_throws++;
+  popword(g_lab[22], fx[f], GY - 170);
+  RETURN 1;
+END
+
+FUNCTION can_be_thrown(o);
+BEGIN
+  IF (fy[o] > 0 OR inv[o] > 0) RETURN 0; END
+  RETURN fs[o] == ST_FREE OR fs[o] == ST_ATK OR fs[o] == ST_LAND OR fs[o] == ST_PREJ;
+END
+
+// A button press while the fighter is free (or cancelling): special,
+// throw, item, crouching or standing normal.
+FUNCTION try_action(f, cancel);
+PRIVATE b; sp; o; d; i;
+BEGIN
+  b = pend_b[f]; sp = pend_sp[f]; o = 1 - f;
+  d = abs(fx[o] - fx[f]);
+  IF (sp > 0)
+    IF (do_special(f, sp, b % 3)) pend_t[f] = 0; RETURN 1; END
+  END
+  IF (cancel) RETURN 0; END
+  // throw: toward or away + heavy punch / kick up close
+  IF ((b == 2 OR b == 5) AND in_fw[f] != 0 AND d < ch_w[fc[f]] + ch_w[fc[o]] + 26 AND can_be_thrown(o) AND fs[o] != ST_ATK)
+    f_str[f] = in_fw[f];
+    pend_t[f] = 0;
+    RETURN start_throw(f, M_THROW);
+  END
+  // items: crouch + punch picks up; punch throws the one held
+  IF (b < 3)
+    IF (f_hold[f] >= 0 AND in_v[f] <= 0)
+      set_state(f, ST_ATK, M_TOSS); f_sp[f] = 0; pend_t[f] = 0;
+      RETURN 1;
+    END
+    IF (in_v[f] > 0 AND f_hold[f] < 0)
+      FOR i = 0 TO 1
+        IF (it_on[i] == 2 AND abs(it_x[i] - fx[f]) < 36)
+          IF (it_typ[i] == 2)
+            hp[f] = min(hp_max[f], hp[f] + 150); it_on[i] = 0;
+            popword(g_lab[21], fx[f], GY - 160);
+          ELSE
+            it_on[i] = 3; it_h[i] = f; f_hold[f] = i;
+          END
+          n_items++; pend_t[f] = 0;
+          RETURN 1;
+        END
+      END
+    END
+  END
+  IF (in_v[f] > 0) set_state(f, ST_ATK, M_CLP + b); ELSE set_state(f, ST_ATK, M_SLP + b); END
+  f_sp[f] = 0; f_str[f] = 1;
+  pend_t[f] = 0;
+  RETURN 1;
+END
+
+// Is an attack of the opponent (or its projectile) coming close?
+FUNCTION threat(f);
+PRIVATE o; i; d;
+BEGIN
+  o = 1 - f; d = abs(fx[o] - fx[f]);
+  IF ((fs[o] == ST_ATK OR fs[o] == ST_AATK) AND mv_ha[an_m[o]] >= 0 AND an_k[o] <= mv_hb[an_m[o]] AND d < 200) RETURN 1; END
+  FOR i = 0 TO 3
+    IF (pr_on[i] AND pr_own[i] == o AND abs(pr_x[i] - fx[f]) < 190) RETURN 1; END
+  END
+  RETURN 0;
+END
+
+FUNCTION face_opponent(f);
+PRIVATE d;
+BEGIN
+  d = fx[1 - f] - fx[f];
+  IF (abs(d) > 1) fdir[f] = sign(d); END
+  RETURN 0;
+END
+
+// ======================================================================
+// Fighters: the per-frame state machine
+// ======================================================================
+
+FUNCTION update_fighter(f);
+PRIVATE o; m; st; want; c;
+BEGIN
+  o = 1 - f; c = fc[f];
+  IF (inv[f] > 0) inv[f]--; END
+  IF (pend_t[f] > 0) pend_t[f]--; END
+  IF (f_rt[f] > 0) f_rt[f]--; IF (f_rt[f] == 0) f_done[f] = 0; END END
+  anim(f);
+  m = an_m[f]; st = fs[f];
+  SWITCH (st)
+    CASE 0                                   // ST_FREE: walk, crouch, block, act
+      face_opponent(f);
+      jg[f] = 0; cb_n[f] = 0;
+      IF (stun_t[f] > 0) stun_t[f]--; ELSE stun[f] = max(0, stun[f] - 0.25); END
+      IF (pend_t[f] > 0)
+        IF (try_action(f, 0)) RETURN 0; END
+      END
+      IF (in_v[f] < 0)
+        set_state(f, ST_PREJ, M_PREJ); ft[f] = 3; air_used[f] = 0;
+        RETURN 0;
+      END
+      want = M_IDLE;
+      IF (in_v[f] > 0)
+        want = M_CROUCH;
+        IF (in_fw[f] < 0 AND threat(f)) want = M_CBLOCK; END
+      ELSE
+        IF (in_fw[f] > 0) want = M_WALKF; move_x(f, fdir[f] * ch_walk[c]); END
+        IF (in_fw[f] < 0)
+          IF (threat(f)) want = M_BLOCK; ELSE want = M_WALKB; move_x(f, -fdir[f] * ch_walk[c] * 0.8); END
+        END
+      END
+      IF (m != want) start_move(f, want); END
+    CASE 1                                   // ST_PREJ: crouch before the jump
+      ft[f]--;
+      // a special (flash kick: charge down, up + K) replaces the jump
+      IF (pend_t[f] > 0 AND pend_sp[f] > 0) fs[f] = ST_FREE; IF (try_action(f, 1)) RETURN 0; END fs[f] = ST_PREJ; END
+      IF (ft[f] <= 0)
+        fvy[f] = ch_jvy[c]; fvx[f] = in_fw[f] * fdir[f] * ch_jvx[c]; fy[f] = 1;
+        fs[f] = ST_AIR;
+        IF (in_fw[f] > 0) start_move(f, M_JUMPF); END
+        IF (in_fw[f] < 0) start_move(f, M_JUMPB); END
+        IF (in_fw[f] == 0) start_move(f, M_JUMP); END
+      END
+    CASE 2                                   // ST_AIR: one attack per jump
+      IF (pend_t[f] > 0 AND air_used[f] == 0)
+        air_used[f] = 1; pend_t[f] = 0;
+        set_state(f, ST_AATK, M_JLP + pend_b[f]);
+      END
+    CASE 3                                   // ST_LAND
+      ft[f]--;
+      IF (ft[f] <= 0) fs[f] = ST_FREE; face_opponent(f); END
+    CASE 4                                   // ST_ATK: moves and specials
+      special_tick(f);
+      // cancel a connecting normal into a special
+      IF (pend_t[f] > 0 AND pend_sp[f] > 0 AND is_normal(m) AND mv_cancel[m] AND f_conn[f] > 0 AND an_k[f] <= mv_hb[m] + 1)
+        IF (try_action(f, 1)) RETURN 0; END
+      END
+      IF (an_end[f] AND fs[f] == ST_ATK)
+        IF (fy[f] > 0)
+          fs[f] = ST_AIR; air_used[f] = 1; start_move(f, M_JUMP); lag[f] = 10;
+        ELSE
+          fs[f] = ST_FREE; sk_vis[f] = 1;
+        END
+      END
+    CASE 6, 7                                // ST_HIT / ST_BLOCK
+      ft[f]--;
+      IF (st == 7)
+        IF (in_v[f] > 0 AND m != M_CBLOCK) start_move(f, M_CBLOCK); END
+        IF (in_v[f] <= 0 AND m != M_BLOCK) start_move(f, M_BLOCK); END
+      END
+      IF (ft[f] <= 0) recover(f); END
+    CASE 9                                   // ST_DOWN: on the floor
+      ft[f]--;
+      IF (ft[f] <= 0 AND hp[f] > 0) fs[f] = ST_GETUP; start_move(f, M_GETUP); inv[f] = 30; END
+    CASE 10                                  // ST_GETUP
+      inv[f] = max(inv[f], 2);
+      IF (an_end[f]) recover(f); END
+    CASE 12                                  // ST_DIZZY: mash to shake it off
+      ft[f]--;
+      IF (mash[f]) ft[f] -= 3; END
+      IF (ft[f] <= 0) fs[f] = ST_FREE; stun[f] = 0; END
+  END
+  RETURN 0;
+END
+
+// End of hitstun, blockstun or getting up: free, or dizzy.
+FUNCTION recover(f);
+BEGIN
+  cb_n[f] = 0; jg[f] = 0;
+  IF (stun[f] >= ch_stunmax[fc[f]] AND hp[f] > 0)
+    fs[f] = ST_DIZZY; ft[f] = 190; start_move(f, M_DIZZY); stun[f] = 0; n_dizzy++;
+    popword(g_lab[18], fx[f], GY - 190);
+    RETURN 0;
+  END
+  fs[f] = ST_FREE;
+  face_opponent(f);
+  start_move(f, M_IDLE);
+  RETURN 0;
+END
+
+// Per-frame behaviour of specials and throws, triggered on key starts.
+FUNCTION special_tick(f);
+PRIVATE m; k; o; str; d; i; hx; hy;
+BEGIN
+  m = an_m[f]; k = an_k[f]; o = 1 - f; str = f_str[f];
+  // projectile moves release on the key mv_proj
+  IF (mv_proj[m] > 0 AND an_ks[f] AND k == mv_proj[m])
+    IF (m == M_TOSS) toss_item(f); ELSE spawn_proj(f, sp_ptype[f_sp[f]], str); END
+  END
+  SWITCH (m)
+    CASE 41                                  // rising uppercut
+      IF (an_ks[f] AND k == 1) fvy[f] = 8.5 + str * 1.2; fvx[f] = fdir[f] * (1.2 + str * 0.6); fy[f] = 1; END
+    CASE 44                                  // flash kick
+      IF (an_ks[f] AND k == 1) fvy[f] = 9.5 + str * 0.6; fvx[f] = -fdir[f] * 0.6; fy[f] = 1; END
+    CASE 49                                  // teleport
+      IF (an_ks[f] AND k == 1) sk_vis[f] = 0; inv[f] = 30; END
+      IF (an_ks[f] AND k == 2)
+        IF (str == 0) fx[f] = clamp(fx[o] + fdir[f] * 70, 30, SW - 30); ELSE fx[f] = clamp(fx[o] - fdir[f] * 260, 30, SW - 30); END
+        sk_vis[f] = 1; face_opponent(f); inv[f] = 6;
+      END
+    CASE 46, 56                              // command grab: take on the active key
+      IF (k == 1 AND f_grab[f] == 0)
+        d = abs(fx[o] - fx[f]);
+        IF (d < ch_w[fc[f]] + ch_w[fc[o]] + 34 + (m == M_SGRAB) * 40 + str * 6 AND can_be_thrown(o))
+          start_throw(f, M_SLAM); f_str[f] = 3 + (m == M_SGRAB);
+        END
+      END
+    CASE 36, 47                              // throws: hold the victim, then release
+      hx = pt_x[f * 16 + 4]; hy = pt_y[f * 16 + 4];
+      IF (fs[o] == ST_THROWN)
+        fx[o] = hx; fy[o] = max(0, GY - hy - 30);
+        sk_dir[o] = -fdir[f]; fdir[o] = -fdir[f];
+        IF (an_ks[f] AND f_grab[f] AND k == 1 + (m == M_THROW)) release_throw(f); END
+      END
+  END
+  RETURN 0;
+END
+
+// Throw release: damage, knockdown, the direction of the toss.
+FUNCTION release_throw(f);
+PRIVATE o; dmg; dir;
+BEGIN
+  o = 1 - f;
+  dir = fdir[f];
+  IF (an_m[f] == M_THROW AND f_str[f] < 0) dir = -dir; END      // back throw
+  dmg = 120;
+  IF (an_m[f] == M_SLAM) dmg = 200; IF (f_str[f] == 4) dmg = 360; END END
+  dmg = dmg * ch_pow[fc[f]] / 100;
+  hp[o] -= dmg; hype += 25;
+  score_add(f, dmg);
+  meter[f] = min(100, meter[f] + 10);
+  fs[o] = ST_FALL; start_move(o, M_FALL);
+  IF (an_m[f] == M_SLAM)
+    fy[o] = 90; fvy[o] = -7; fvx[o] = dir * 1.0;
+    shake(16, 6); hitstop = 8;
+  ELSE
+    fy[o] = 40; fvy[o] = 5; fvx[o] = dir * 5.5;
+    shake(8, 3);
+  END
+  f_grab[f] = 0;
+  cb_n[o] = 1; stun[o] += 10;
+  IF (hp[o] <= 0) hp[o] = 0; ko_flag = 1; END
+  RETURN 0;
+END
+
+// ======================================================================
+// Hits
+// ======================================================================
+
+// Distance from point (px, py) to segment a-b.
+FUNCTION segd(px, py, ax, ay, bx, by);
+PRIVATE dx; dy; t;
+BEGIN
+  dx = bx - ax; dy = by - ay;
+  t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy + 0.001);
+  t = clamp(t, 0, 1);
+  RETURN fget_distance(px, py, ax + dx * t, ay + dy * t);
+END
+
+// Hurtboxes: how far the point is from the defender's body surface
+// (head, torso, thighs, shins); hz = zone (0 head 1 body 2 legs).
+FUNCTION hurt(d, px, py);
+PRIVATE b; sc; t; r; q;
+BEGIN
+  b = d * 16; sc = sk_sc[d]; t = ch_thk[fc[d]] * 0.01;
+  r = fget_distance(px, py, pt_x[b + 2], pt_y[b + 2]) - 12 * sc; hz = 0;
+  q = segd(px, py, pt_x[b], pt_y[b], pt_x[b + 1], pt_y[b + 1]) - 13 * sc * t;
+  IF (q < r) r = q; hz = 1; END
+  q = min(segd(px, py, pt_x[b], pt_y[b], pt_x[b + 7], pt_y[b + 7]), segd(px, py, pt_x[b], pt_y[b], pt_x[b + 10], pt_y[b + 10])) - 8 * sc * t;
+  IF (q < r) r = q; hz = 1; END
+  q = min(segd(px, py, pt_x[b + 7], pt_y[b + 7], pt_x[b + 8], pt_y[b + 8]), segd(px, py, pt_x[b + 10], pt_y[b + 10], pt_x[b + 11], pt_y[b + 11])) - 6 * sc;
+  IF (q < r) r = q; hz = 2; END
+  RETURN r;
+END
+
+// Can defender d be hit now (by a juggling move when jug)?
+FUNCTION vulnerable(d, jug);
+PRIVATE st;
+BEGIN
+  st = fs[d];
+  IF (inv[d] > 0 OR sk_vis[d] == 0) RETURN 0; END
+  IF (st == ST_DOWN OR st == ST_GETUP OR st == ST_THROWN OR st == ST_KO OR st == ST_POSE) RETURN 0; END
+  IF (st == ST_FALL AND (jug == 0 OR jg[d] >= 3 OR hp[d] <= 0)) RETURN 0; END
+  IF (st == ST_ATK AND an_k[d] <= mv_inv[an_m[d]]) RETURN 0; END
+  RETURN 1;
+END
+
+// Did attacker a's strike land this frame?
+FUNCTION check_hit(a);
+PRIVATE m; k; d; px; py; j; r;
+BEGIN
+  IF (fs[a] != ST_ATK AND fs[a] != ST_AATK) RETURN 0; END
+  m = an_m[a];
+  IF (mv_ha[m] < 0 OR mv_dmg[m] == 0 OR f_done[a]) RETURN 0; END
+  k = an_k[a];
+  IF (k < mv_ha[m] OR k > mv_hb[m]) RETURN 0; END
+  d = 1 - a;
+  IF (vulnerable(d, mv_jug[m]) == 0) RETURN 0; END
+  j = strike_joint(a, mv_pt[m]);
+  px = pt_x[a * 16 + j]; py = pt_y[a * 16 + j];
+  r = hurt(d, px, py);
+  IF (r > mv_rad[m] * sk_sc[a]) RETURN 0; END
+  f_done[a] = 1; f_rt[a] = mv_multi[m];
+  // the last hit of a rush launches
+  h_dmg = mv_dmg[m] * (100 + f_str[a] * 15) / 100;
+  IF (is_normal(m)) h_dmg = mv_dmg[m]; END
+  h_hs = mv_hs[m]; h_bs = mv_bs[m]; h_ht = mv_ht[m]; h_kd = mv_kd[m];
+  h_push = mv_push[m]; h_stun = mv_stun[m]; h_chip = mv_chip[m];
+  IF (m == M_RUSH AND k == 5) h_kd = 1; h_dmg = 80; END
+  IF (m == M_SPIN AND k == 4) h_kd = 1; END
+  hit_land(a, d, px, py, 0);
+  RETURN 1;
+END
+
+// Would defender d block an attack of height ht from a?
+FUNCTION blocks(d, a, ht);
+PRIVATE crouch;
+BEGIN
+  IF (fy[d] > 0) RETURN 0; END
+  IF (fs[d] != ST_FREE AND fs[d] != ST_BLOCK) RETURN 0; END
+  IF (in_fw[d] >= 0) RETURN 0; END
+  crouch = in_v[d] > 0;
+  IF (ht == 2 AND crouch == 0) RETURN 0; END
+  IF (ht == 3 AND crouch) RETURN 0; END
+  RETURN 1;
+END
+
+// A blow (h_* values) from a lands on d at (px, py).
+FUNCTION hit_land(a, d, px, py, proj);
+PRIVATE dmg; away; sc; heavy;
+BEGIN
+  away = sign(fx[d] - fx[a]);
+  IF (away == 0) away = fdir[a]; END
+  IF (proj) away = sign(pr_vx[proj - 1]); END
+  // --- blocked ---
+  IF (blocks(d, a, h_ht))
+    n_blocks++;
+    IF (in_v[d] > 0) n_lows_blocked++; ELSE n_highs_blocked++; END
+    IF (h_chip) dmg = max(1, h_dmg / 4); hp[d] -= dmg; n_chip++; END
+    fs[d] = ST_BLOCK; ft[d] = h_bs;
+    IF (in_v[d] > 0) start_move(d, M_CBLOCK); ELSE start_move(d, M_BLOCK); END
+    fvx[d] = away * h_push * 0.8;
+    IF (cornered(d) AND proj == 0) fvx[a] = -away * h_push * 0.7; END
+    spark(px, py, 1);
+    hitstop = 4;
+    meter[a] = min(100, meter[a] + h_dmg / 25); meter[d] = min(100, meter[d] + 2);
+    IF (a < 2 AND proj == 0) f_conn[a] = 2; END
+    IF (hp[d] <= 0) hp[d] = 0; ko_flag = 1; fs[d] = ST_FALL; start_move(d, M_FALL); fvy[d] = 5; fvx[d] = away * 2; fy[d] = 1; END
+    RETURN 0;
+  END
+  // --- hit ---
+  IF (fs[d] == ST_HIT OR fs[d] == ST_FALL OR fs[d] == ST_DIZZY) cb_n[d]++; ELSE cb_n[d] = 1; END
+  // anti-air statistics: the CPU hit a jumping opponent (with its special)
+  IF (fctrl[a] == 2 AND demo == 0 AND (fs[d] == ST_AIR OR fs[d] == ST_AATK))
+    n_aa++;
+    IF (proj == 0 AND f_sp[a] > 0 AND f_sp[a] == ch_aa[fc[a]]) n_aa_sp++; END
+  END
+  sc = max(35, 100 - (cb_n[d] - 1) * 12);
+  dmg = h_dmg * ch_pow[fc[a]] / 100 * ch_def[fc[d]] / 100 * sc / 100;
+  hp[d] -= dmg; n_hits++;
+  hp_red[d] = max(hp_red[d], hp[d] + dmg);
+  score_add(a, dmg);
+  IF (fs[d] == ST_DIZZY) stun[d] = 0; ELSE stun[d] += h_stun; stun_t[d] = 90; END
+  heavy = h_dmg >= 90;
+  IF (f_hold[d] >= 0) it_on[f_hold[d]] = 2; it_y[f_hold[d]] = 0; f_hold[d] = -1; END
+  IF (pend_b[d] >= 0) pend_t[d] = 0; END
+  IF (hp[d] <= 0)
+    hp[d] = 0; ko_flag = 1;
+    fs[d] = ST_FALL; start_move(d, M_FALL); fvy[d] = 7; fvx[d] = away * 3.5; fy[d] = max(fy[d], 1);
+    hitstop = 30; slowmo = 70; shake(20, 6); hype += 100;
+  ELSE
+    IF (fy[d] > 0 OR h_kd == 1 OR fs[d] == ST_FALL)
+      IF (fs[d] == ST_FALL) jg[d]++; n_juggles++; END
+      fs[d] = ST_FALL; start_move(d, M_FALL);
+      fvy[d] = 5.5 + (h_kd == 1) * 1.5; fvx[d] = away * 2.6; fy[d] = max(fy[d], 1);
+    ELSE
+      fs[d] = ST_HIT; ft[d] = h_hs;
+      IF (in_v[d] > 0 AND fs[d] != ST_DIZZY) start_move(d, M_HITCR);
+      ELSE IF (hz == 0) start_move(d, M_HITHI); ELSE start_move(d, M_HITLO); END END
+      fvx[d] = away * h_push;
+      IF (cornered(d) AND proj == 0) fvx[a] = -away * h_push * 0.8; END
+    END
+    hitstop = 4 + h_dmg / 22;
+    IF (heavy) shake(10, 3); END
+  END
+  IF (heavy) spark(px, py, 2); ELSE spark(px, py, 0); END
+  meter[a] = min(100, meter[a] + h_dmg / 9); meter[d] = min(100, meter[d] + h_dmg / 20);
+  IF (a < 2 AND proj == 0) f_conn[a] = 1; END
+  IF (cb_n[d] >= 2)
+    cb_show[a] = cb_n[d]; cb_t[a] = 90; last_combo = cb_n[d];
+    IF (cb_n[d] > max_combo) max_combo = cb_n[d]; END
+  END
+  hype += h_dmg / 10;
+  RETURN 1;
+END
+
+FUNCTION score_add(f, dmg);
+BEGIN
+  IF (mode == 1 AND f == 0 AND demo == 0) score += dmg * 10; END
+  RETURN 0;
+END
+
+// ======================================================================
+// Projectiles and items
+// ======================================================================
+
+FUNCTION spawn_proj(f, typ, str);
+PRIVATE i; j;
+BEGIN
+  IF (typ < 0) RETURN 0; END
+  FOR i = 0 TO 3
+    IF (pr_on[i] == 0)
+      pr_on[i] = 1; pr_own[i] = f; pr_typ[i] = typ;
+      pr_hits[i] = pt_hits[typ]; pr_t[i] = 0; pr_rt[i] = 0; pr_vy[i] = 0;
+      j = strike_joint(f, 99);
+      pr_x[i] = pt_x[f * 16 + j] + fdir[f] * 14; pr_y[i] = pt_y[f * 16 + j];
+      pr_vx[i] = fdir[f] * pt_spd[typ] * (0.8 + str * 0.25);
+      IF (typ == 3) pr_x[i] = fx[f] + fdir[f] * 80 * sk_sc[f]; pr_vx[i] = fdir[f] * 0.01; END
+      RETURN 1;
+    END
+  END
+  RETURN 0;
+END
+
+FUNCTION toss_item(f);
+PRIVATE i;
+BEGIN
+  i = f_hold[f];
+  IF (i < 0) RETURN 0; END
+  spawn_proj(f, 6 + it_typ[i], 1);
+  FOR i = 0 TO 3 IF (pr_on[i] AND pr_own[i] == f AND pr_typ[i] >= 6 AND pr_t[i] == 0) pr_vy[i] = -2.5; END END
+  it_on[f_hold[f]] = 0; f_hold[f] = -1; n_item_throws++;
+  RETURN 1;
+END
+
+FUNCTION update_projectiles();
+PRIVATE i; j; d; r; t;
+BEGIN
+  FOR i = 0 TO 3
+    IF (pr_on[i])
+      t = pr_typ[i];
+      pr_x[i] += pr_vx[i]; pr_t[i]++;
+      IF (pr_rt[i] > 0) pr_rt[i]--; END
+      IF (t >= 6) pr_y[i] += pr_vy[i]; pr_vy[i] += 0.16; END
+      IF (pr_t[i] > pt_life[t] OR pr_x[i] < cam_x - 60 OR pr_x[i] > cam_x + 700 OR pr_y[i] > GY)
+        pr_on[i] = 0;
+        IF (t >= 6) spark(pr_x[i], min(pr_y[i], GY - 8), 0); END
+      END
+    END
+  END
+  // projectiles of the two fighters cancel each other out
+  FOR i = 0 TO 3
+    FOR j = i + 1 TO 3
+      IF (pr_on[i] AND pr_on[j] AND pr_own[i] != pr_own[j] AND abs(pr_x[i] - pr_x[j]) < 34 AND abs(pr_y[i] - pr_y[j]) < 40)
+        pr_hits[i]--; pr_hits[j]--; n_clash++;
+        spark((pr_x[i] + pr_x[j]) / 2, pr_y[i], 2);
+        IF (pr_hits[i] <= 0) pr_on[i] = 0; END
+        IF (pr_hits[j] <= 0) pr_on[j] = 0; END
+      END
+    END
+  END
+  FOR i = 0 TO 3
+    IF (pr_on[i] AND pr_rt[i] == 0)
+      d = 1 - pr_own[i]; t = pr_typ[i];
+      IF (vulnerable(d, pt_hits[t] > 1))
+        r = hurt(d, pr_x[i], pr_y[i]);
+        IF (r < pt_rad[t])
+          h_dmg = pt_dmg[t]; h_hs = 20; h_bs = 16; h_ht = 1; h_push = 4 - (pt_hits[t] > 1) * 3; h_stun = 12;
+          h_chip = t < 6; h_kd = (t == 7 OR t == 3);
+          IF (pr_hits[i] == 1 AND pt_hits[t] > 1) h_kd = 1; END
+          hit_land(pr_own[i], d, pr_x[i], pr_y[i], i + 1);
+          n_proj_hits++;
+          pr_hits[i]--; pr_rt[i] = 7;
+          IF (pr_hits[i] <= 0) pr_on[i] = 0; END
+        END
+      END
+    END
+  END
+  RETURN 0;
+END
+
+// Items: the crowd throws one in now and then (in the pit); they fall,
+// bounce and wait on the floor; a held item follows the hand.
+FUNCTION update_items();
+PRIVATE i; f;
+BEGIN
+  IF (stage == 3 AND rphase == 1 AND demo == 0)
+    item_t++;
+    IF (item_t > 560)
+      item_t = rand(0, 200);
+      FOR i = 0 TO 1
+        IF (it_on[i] == 0)
+          it_on[i] = 1; it_typ[i] = rand(0, 2); it_x[i] = cam_x + rand(80, 560);
+          it_y[i] = 330; it_vy[i] = 0; it_vx[i] = rand(-10, 10) * 0.1; it_h[i] = -1;
+          hype += 20;
+          BREAK;
+        END
+      END
+    END
+  END
+  FOR i = 0 TO 1
+    SWITCH (it_on[i])
+      CASE 1
+        it_y[i] += it_vy[i]; it_vy[i] -= 0.35; it_x[i] = clamp(it_x[i] + it_vx[i], 30, SW - 30);
+        IF (it_y[i] <= 0)
+          it_y[i] = 0;
+          IF (it_vy[i] < -3) it_vy[i] = -it_vy[i] * 0.3; ELSE it_on[i] = 2; dust(it_x[i], 0); END
+        END
+      CASE 2
+        IF (it_y[i] > 0) it_y[i] = max(0, it_y[i] - 4); END
+      CASE 3
+        f = it_h[i];
+        it_x[i] = pt_x[f * 16 + 4]; it_y[i] = GY - pt_y[f * 16 + 4] - 8;
+    END
+  END
+  RETURN 0;
+END
+
+// ======================================================================
+// CPU opponent
+// ======================================================================
+
+// Plans hold a stick position for n frames (optionally pressing b first).
+FUNCTION plan(f, fw, v, n, b);
+BEGIN
+  ai_pt[f] = n; ai_pfw[f] = fw; ai_pv[f] = v;
+  ci_fw[f] = fw; ci_v[f] = v; ci_b[f] = b;
+  RETURN 0;
+END
+
+FUNCTION cpu_sp(f, sp, str);
+BEGIN
+  IF (sp <= 0) RETURN 0; END
+  IF (sp_ptype[sp] >= 0 AND has_proj(f)) RETURN 0; END
+  ci_sp[f] = sp; ci_b[f] = str + sp_kick[sp] * 3;
+  RETURN 1;
+END
+
+// A normal whose reach suits the distance (random among those that fit).
+FUNCTION cpu_normal(f, d, crouch);
+PRIVATE m; n; pick; c;
+BEGIN
+  c = fc[f]; n = 0; pick = -1;
+  FOR m = 11 + crouch * 6 TO 16 + crouch * 6
+    IF (d <= mv_reach[c * NM + m] + 18 AND d >= mv_reach[c * NM + m] - 40)
+      n++;
+      IF (rand(1, n) == 1) pick = m; END
+    END
+  END
+  IF (pick < 0) RETURN 0; END
+  ci_b[f] = pick - 11 - crouch * 6; ci_v[f] = crouch; ci_fw[f] = 0;
+  ai_pt[f] = 2; ai_pfw[f] = 0; ai_pv[f] = crouch;
+  RETURN 1;
+END
+
+FUNCTION cpu(f);
+PRIVATE o; d; lv; st; ost; om; r; c; kind; ser; i; sp;
+BEGIN
+  o = 1 - f; lv = ai_lv[f]; c = fc[f];
+  ci_b[f] = -1; ci_sp[f] = 0;
+  IF (dbg_ai == 1 AND demo == 0) ci_fw[f] = 0; ci_v[f] = 0; RETURN 0; END
+  IF (dbg_ai == 2 AND demo == 0) ci_fw[f] = -threat(f); ci_v[f] = dbg_low; RETURN 0; END
+  d = abs(fx[o] - fx[f]); st = fs[f]; ost = fs[o]; om = an_m[o];
+  IF (st == ST_DIZZY) IF (rand(0, 2) == 0) ci_b[f] = rand(0, 5); END ci_fw[f] = rand(-1, 1); RETURN 0; END
+  // combo: cancel a connecting normal into a special (decided once per move)
+  IF (st == ST_ATK AND f_conn[f] == 1 AND is_normal(an_m[f]) AND ai_cmb[f] != an_ser[f])
+    ai_cmb[f] = an_ser[f];
+    IF (rand(0, 99) < ai_pcombo[f])
+      sp = ch_combo[c];
+      IF (meter[f] >= 100 AND c != 2) sp = ch_sp[c * 4 + 3]; END
+      cpu_sp(f, sp, rand(0, 2));
+    END
+    RETURN 0;
+  END
+  // jumping: attack on the way down
+  IF (st == ST_AIR)
+    IF (air_used[f] == 0 AND fvy[f] < 2 AND d < 130 AND fy[f] < 100 AND rand(0, 3) == 0) ci_b[f] = 5 - rand(0, 1); END
+    RETURN 0;
+  END
+  IF (st == ST_BLOCK) ci_fw[f] = -1; RETURN 0; END
+  IF (st != ST_FREE) RETURN 0; END
+  // --- threats, answered after the reaction time ---
+  kind = 0; ser = 0;
+  IF (ost == ST_AIR OR ost == ST_AATK) IF ((fx[f] - fx[o]) * fvx[o] > 0 OR d < 150) kind = 1; ser = an_ser[o] + 100000; END END
+  IF (ost == ST_ATK AND mv_ha[om] >= 0 AND an_k[o] <= mv_hb[om]) kind = 2; ser = an_ser[o]; END
+  FOR i = 0 TO 3
+    IF (pr_on[i] AND pr_own[i] == o AND (fx[f] - pr_x[i]) * pr_vx[i] > 0 AND abs(fx[f] - pr_x[i]) < 300) kind = 3; ser = 200000 + i; END
+  END
+  IF (kind > 0 AND ser != ai_seen[f]) ai_seen[f] = ser; ai_rt[f] = ai_react[f] / (1 + (kind == 1)) + 1; ai_kind[f] = kind; END
+  IF (ai_rt[f] > 0)
+    ai_rt[f]--;
+    IF (ai_rt[f] == 0)
+      r = rand(0, 99);
+      SWITCH (ai_kind[f])
+        CASE 1                               // jump-in: arm the anti-air, or block
+          IF (r < ai_paa[f]) ai_aa[f] = 50; ELSE IF (r < ai_paa[f] + ai_pblock[f] / 2) plan(f, -1, 0, 40, -1); END END
+        CASE 2                               // attack coming: block high or low
+          IF (r < ai_pblock[f] AND d < mv_reach[fc[o] * NM + om] + 60)
+            IF (mv_ht[om] == 2) plan(f, -1, 1, 24, -1); ELSE
+              IF (mv_ht[om] == 3 OR rand(0, 1)) plan(f, -1, 0, 24, -1); ELSE plan(f, -1, 1, 24, -1); END
+            END
+          END
+        CASE 3                               // fireball: block, jump it or answer it
+          IF (r < ai_pblock[f])
+            IF (ch_zone[c] > 0 AND rand(0, 2) == 0 AND d > 150) cpu_sp(f, ch_zone[c], 1); RETURN 0; END
+            IF (d > 170 AND rand(0, 2) == 0) plan(f, 1, -1, 4, -1); ELSE plan(f, -1, 1, 30, -1); END
+          END
+      END
+    END
+  END
+  // anti-air: fire when the jumper comes down within reach
+  IF (ai_aa[f] > 0)
+    ai_aa[f]--;
+    IF ((ost == ST_AIR OR ost == ST_AATK) AND fvy[o] < 3 AND d < 70 + ch_sc[c] * 20 AND fy[o] < 125 AND fy[o] > 15)
+      ai_aa[f] = 0; ai_pt[f] = 0;
+      IF (ch_aa[c] > 0) cpu_sp(f, ch_aa[c], 2); ELSE ci_v[f] = 1; ci_b[f] = 2; END
+      RETURN 0;
+    END
+    ci_fw[f] = 0; ci_v[f] = 0;
+    RETURN 0;
+  END
+  // punish a whiffed move while it recovers
+  IF (ost == ST_ATK AND mv_ha[om] >= 0 AND an_k[o] > mv_hb[om] AND f_conn[o] == 0 AND ai_pun[f] != an_ser[o] AND d < 180)
+    ai_pun[f] = an_ser[o];
+    IF (rand(0, 99) < ai_ppun[f])
+      ai_pt[f] = 0; n_punish++;
+      IF (meter[f] >= 100 AND rand(0, 1)) IF (cpu_sp(f, ch_sp[c * 4 + 3], 2)) RETURN 0; END END
+      IF (d < 80 AND cpu_sp(f, ch_pun[c], 2)) RETURN 0; END
+      IF (cpu_normal(f, d, 1)) RETURN 0; END
+      IF (ch_zone[c] > 0 AND cpu_sp(f, ch_zone[c], 2)) RETURN 0; END   // a fireball reaches it
+      plan(f, 1, 0, 8, -1);                                             // or step in
+      RETURN 0;
+    END
+  END
+  IF (ai_pt[f] > 0) ai_pt[f]--; ci_fw[f] = ai_pfw[f]; ci_v[f] = ai_pv[f]; RETURN 0; END
+  // --- neutral game ---
+  ai_nt[f]--;
+  IF (ai_nt[f] > 0) ci_fw[f] = 0; ci_v[f] = 0; RETURN 0; END
+  ai_nt[f] = ai_think[f] + rand(0, ai_think[f]);
+  r = rand(0, 99);
+  // items in the pit: pick one up, throw the one held
+  IF (f_hold[f] >= 0 AND d > 90 AND r < 60) ci_b[f] = 1; RETURN 0; END
+  FOR i = 0 TO 1
+    IF (it_on[i] == 2 AND f_hold[f] < 0)
+      IF (abs(it_x[i] - fx[f]) < 30) ci_v[f] = 1; ci_b[f] = 0; RETURN 0; END
+      IF (abs(it_x[i] - fx[f]) < 160 AND r < 40) plan(f, sign(it_x[i] - fx[f]) * fdir[f], 0, 14, -1); RETURN 0; END
+    END
+  END
+  IF (meter[f] >= 100 AND r < 15 + lv * 3)
+    sp = ch_sp[c * 4 + 3];
+    IF (sp_ptype[sp] >= 0 OR d < 110) IF (cpu_sp(f, sp, 2)) RETURN 0; END END
+  END
+  IF (d > 230)
+    IF (ch_zone[c] > 0 AND r < 30 + lv * 5) IF (cpu_sp(f, ch_zone[c], rand(0, 2))) n_zone++; RETURN 0; END END
+    IF (r > 88) plan(f, 1, -1, 4, -1); RETURN 0; END
+    plan(f, 1, 0, 20 + rand(0, 20), -1);
+    RETURN 0;
+  END
+  IF (d > 120)
+    IF (r < 16) plan(f, 1, -1, 4, -1); RETURN 0; END
+    IF (r < 30 AND ch_zone[c] > 0) IF (cpu_sp(f, ch_zone[c], rand(0, 2))) n_zone++; RETURN 0; END END
+    IF (r < 55) plan(f, 1, 0, 12 + rand(0, 16), -1); RETURN 0; END
+    IF (r < 72) IF (cpu_normal(f, d, rand(0, 1))) RETURN 0; END END
+    IF (r < 84) plan(f, -1, 1, 20, -1); RETURN 0; END
+    plan(f, -1, 0, 12, -1);
+    RETURN 0;
+  END
+  // close range
+  IF (r < 14 AND d < ch_w[c] + ch_w[fc[o]] + 24 AND can_be_thrown(o))
+    ci_fw[f] = 1; ci_b[f] = 2; RETURN 0;
+  END
+  IF (c == 2 AND r < 24 AND d < 80) IF (cpu_sp(f, 8, rand(0, 2))) RETURN 0; END END
+  IF (r < 62)
+    IF (cpu_normal(f, d, rand(0, 1))) RETURN 0; END
+    plan(f, 1, 0, 8, -1); RETURN 0;
+  END
+  IF (r < 76) plan(f, -1, rand(0, 1), 18, -1); RETURN 0; END
+  IF (r < 86) plan(f, -1, 0, 14, -1); RETURN 0; END
+  IF (r < 94) cpu_sp(f, ch_combo[c], rand(0, 2)); RETURN 0; END
+  plan(f, 1, -1, 4, -1);
+  RETURN 0;
+END
+
+// CPU skill from its level (0 .. 12).
+FUNCTION set_ai(f, lv);
+BEGIN
+  ai_lv[f] = lv;
+  ai_react[f] = max(3, 22 - lv * 2);
+  ai_pblock[f] = min(92, 12 + lv * 8);
+  ai_paa[f] = min(95, 8 + lv * 9);
+  ai_pcombo[f] = min(92, 8 + lv * 9);
+  ai_ppun[f] = min(92, 10 + lv * 8);
+  ai_think[f] = max(4, 26 - lv * 2);
+  RETURN 0;
+END
+
+// ======================================================================
+// The fight: one frame
+// ======================================================================
+
+FUNCTION physics(f);
+PRIVATE st; o; gap;
+BEGIN
+  st = fs[f];
+  IF (st == ST_THROWN) RETURN 0; END
+  IF (fy[f] > 0 OR fvy[f] > 0)
+    fy[f] += fvy[f]; fvy[f] -= GRAV;
+    move_x(f, fvx[f]);
+    IF (fy[f] <= 0) fy[f] = 0; fvy[f] = 0; landed(f); END
+  ELSE
+    IF (fvx[f] != 0)
+      move_x(f, fvx[f]); fvx[f] *= 0.8;
+      IF (abs(fvx[f]) < 0.2) fvx[f] = 0; END
+    END
+  END
+  RETURN 0;
+END
+
+FUNCTION landed(f);
+PRIVATE st;
+BEGIN
+  st = fs[f];
+  fvx[f] = 0;
+  IF (st == ST_AIR OR st == ST_AATK)
+    fs[f] = ST_LAND; ft[f] = 4 + lag[f]; lag[f] = 0; start_move(f, M_LAND);
+    dust(fx[f] - 10, -1); dust(fx[f] + 10, 1);
+  END
+  IF (st == ST_FALL)
+    fs[f] = ST_DOWN; ft[f] = 42; start_move(f, M_FLOOR);
+    shake(8, 3); dust(fx[f] - 20, -1); dust(fx[f] + 20, 1); jg[f] = 0;
+    IF (hp[f] <= 0) fs[f] = ST_KO; END
+  END
+  IF (st == ST_ATK) lag[f] = 0; END
+  RETURN 0;
+END
+
+// Fighters can not overlap on the ground; the one in the air slides off.
+FUNCTION push_apart();
+PRIVATE dx; gap; p;
+BEGIN
+  IF (fs[0] == ST_THROWN OR fs[1] == ST_THROWN) RETURN 0; END
+  IF (abs(fy[0] - fy[1]) > 70) RETURN 0; END
+  dx = fx[1] - fx[0];
+  gap = ch_w[fc[0]] + ch_w[fc[1]];
+  IF (abs(dx) >= gap) RETURN 0; END
+  p = (gap - abs(dx)) / 2;
+  IF (dx == 0) dx = fdir[0]; END
+  IF (fy[0] > 0 AND fy[1] == 0) move_x(0, -sign(dx) * p * 2); RETURN 0; END
+  IF (fy[1] > 0 AND fy[0] == 0) move_x(1, sign(dx) * p * 2); RETURN 0; END
+  move_x(0, -sign(dx) * p); move_x(1, sign(dx) * p);
+  // against a wall the other one gives way
+  dx = fx[1] - fx[0];
+  IF (abs(dx) < gap) IF (fx[0] < 40 OR fx[0] > SW - 40) move_x(1, sign(dx) * (gap - abs(dx))); ELSE move_x(0, -sign(dx) * (gap - abs(dx))); END END
+  RETURN 0;
+END
+
+FUNCTION fight_frame();
+PRIVATE f;
+BEGIN
+  FOR f = 0 TO 1 read_input(f); END
+  IF (sfl_t > 0)
+    sfl_t--;                                  // super flash: everything waits
+  ELSE
+    IF (hitstop > 0)
+      hitstop--;
+    ELSE
+      IF (slowmo > 0) slowmo--; END
+      IF (slowmo % 2 == 0)
+        FOR f = 0 TO 1 update_fighter(f); END
+        FOR f = 0 TO 1 physics(f); END
+        push_apart();
+        check_hit(0); check_hit(1);
+        update_projectiles();
+        update_items();
+      END
+    END
+  END
+  // camera follows the middle of the two fighters
+  cam_x = clamp((fx[0] + fx[1]) / 2 - 320, 0, SW - 640);
+  IF (shake_t > 0) shake_t--; shx = rand(-shake_a, shake_a); shy = rand(-shake_a, shake_a) / 2; ELSE shx = 0; shy = 0; END
+  hype = max(0, hype * 0.992 - 0.02);
+  FOR f = 0 TO 1
+    IF (hp_red[f] > hp[f]) hp_red[f] -= 3; ELSE hp_red[f] = hp[f]; END
+    sk_x[f] = fx[f]; sk_gy[f] = GY - fy[f]; sk_dir[f] = fdir[f];
+    sk_air[f] = fy[f] > 0.5 AND fs[f] != ST_THROWN;
+    fk(f);
+  END
+  // the attacker is drawn in front
+  IF (fs[0] == ST_ATK OR fs[0] == ST_AATK) sk_z[0] = -20; sk_z[1] = 0; END
+  IF (fs[1] == ST_ATK OR fs[1] == ST_AATK) sk_z[1] = -20; sk_z[0] = 0; END
+  RETURN 0;
+END
+
+// ======================================================================
+// HUD
+// ======================================================================
+
+FUNCTION bar(x0, y0, w, h, v, vmax, red, right, colour);
+PRIVATE fw; rw;
+BEGIN
+  draw_rect(x0 - 2, y0 - 2, w + 4, h + 4, '#101010');
+  draw_rect(x0, y0, w, h, '#3a1010');
+  fw = w * max(0, v) / vmax; rw = w * max(0, red) / vmax;
+  IF (right)
+    draw_rect(x0 + w - rw, y0, rw, h, '#d02020');
+    draw_rect(x0 + w - fw, y0, fw, h, colour);
+  ELSE
+    draw_rect(x0, y0, rw, h, '#d02020');
+    draw_rect(x0, y0, fw, h, colour);
+  END
+  RETURN 0;
+END
+
+FUNCTION hud();
+PRIVATE f; x0; c; i; t;
+BEGIN
+  t = timer;
+  IF (demo) RETURN 0; END
+  FOR f = 0 TO 1
+    IF (f == 0) x0 = 24; ELSE x0 = 356; END
+    c = '#f0d030';
+    IF (hp[f] < hp_max[f] / 4 AND (rt / 8) % 2) c = '#ff8040'; END
+    bar(x0, 12, 260, 14, hp[f], hp_max[f], hp_red[f], f == 0, c);
+    // stun meter under the health bar
+    draw_rect(x0, 29, 260 * min(stun[f], ch_stunmax[fc[f]]) / ch_stunmax[fc[f]], 3, '#60c0ff');
+    set_color('#ffffff');
+    IF (f == 0) text(x0, 36, ch_name[fc[0]]); ELSE text(x0 + 260 - 6 * ch_nlen[fc[1]], 36, ch_name[fc[1]]); END
+    IF (fctrl[f] == 2) set_color('#a0a0a0'); IF (f == 0) text(x0 + 60, 36, "CPU"); ELSE text(x0 + 170, 36, "CPU"); END END
+    // round wins
+    FOR i = 0 TO 1
+      IF (rw[f] > i) set_color('#ffd040'); ELSE set_color('#303030'); END
+      IF (f == 0) circle(270 - i * 14, 40, 5); ELSE circle(370 + i * 14, 40, 5); END
+    END
+    // super meter
+    IF (f == 0) x0 = 24; ELSE x0 = 466; END
+    bar(x0, 382, 150, 8, meter[f], 100, 0, 0, '#40a0ff');
+    IF (meter[f] >= 100)
+      IF ((rt / 6) % 2) set_color('#ffffff'); ELSE set_color('#40c0ff'); END
+      text(x0 + 52, 372, "SUPER");
+    END
+  END
+  // KO badge
+  draw_rect(296, 10, 48, 18, '#101010');
+  draw_rect(298, 12, 44, 14, '#b02020');
+  set_color('#ffffff'); text(312, 15, "K.O.");
+  IF (mode == 1)
+    set_color('#ffe0a0'); text(24, 50, "SCORE " + score);
+    text(500, 50, "STAGE " + (lad_i + 1) + "/4");
+  END
+  IF (sfl_t > 0) draw_rect(0, 60, 640, 310, 'rgba(0,0,40,0.35)'); END
+  IF (show_boxes) draw_boxes(); END
+  // dizzy stars
+  FOR f = 0 TO 1
+    IF (fs[f] == ST_DIZZY)
+      set_color('#ffe040');
+      FOR i = 0 TO 2
+        circle(pt_x[f * 16 + 2] - cam_x + cos(rt * 9000 + i * 120000) * 20, pt_y[f * 16 + 2] - 18 + sin(rt * 9000 + i * 120000) * 5, 3);
+      END
+    END
+  END
+  RETURN 0;
+END
+
+// Debug view (key H): hurt points and the active strike point.
+FUNCTION draw_boxes();
+PRIVATE f; b; j; m;
+BEGIN
+  FOR f = 0 TO 1
+    b = f * 16;
+    set_color('rgba(80,255,80,0.6)');
+    circle(pt_x[b + 2] - cam_x, pt_y[b + 2], 12 * sk_sc[f]);
+    circle((pt_x[b] + pt_x[b + 1]) / 2 - cam_x, (pt_y[b] + pt_y[b + 1]) / 2, 13 * sk_sc[f] * ch_thk[fc[f]] / 100);
+    circle(pt_x[b + 8] - cam_x, pt_y[b + 8], 6); circle(pt_x[b + 11] - cam_x, pt_y[b + 11], 6);
+    m = an_m[f];
+    IF ((fs[f] == ST_ATK OR fs[f] == ST_AATK) AND mv_ha[m] >= 0 AND an_k[f] >= mv_ha[m] AND an_k[f] <= mv_hb[m])
+      j = strike_joint(f, mv_pt[m]);
+      set_color('rgba(255,40,40,0.8)');
+      circle(pt_x[b + j] - cam_x, pt_y[b + j], mv_rad[m] * sk_sc[f]);
+    END
+  END
+  RETURN 0;
+END
+
+// ======================================================================
+// Rounds and matches
+// ======================================================================
+
+FUNCTION place_fighter(f, c, pal, x0, dir);
+BEGIN
+  fc[f] = c; fpal[f] = pal; sk_ch[f] = c; sk_gi[f] = c * 2 + pal; sk_sc[f] = ch_sc[c];
+  fx[f] = x0; fy[f] = 0; fvx[f] = 0; fvy[f] = 0; fdir[f] = dir; sk_dir[f] = dir;
+  hp_max[f] = ch_hp[c]; hp[f] = hp_max[f]; hp_red[f] = hp[f];
+  stun[f] = 0; jg[f] = 0; inv[f] = 0; f_hold[f] = -1; f_grab[f] = 0; pend_t[f] = 0; cb_n[f] = 0; cb_t[f] = 0;
+  chb[f] = 0; chd[f] = 0; lag[f] = 0; air_used[f] = 0; sk_vis[f] = 1;
+  ai_pt[f] = 0; ai_rt[f] = 0; ai_aa[f] = 0; ai_nt[f] = 30;
+  fs[f] = ST_POSE; set_pose(f, 29); start_move(f, M_INTRO);
+  RETURN 0;
+END
+
+FUNCTION setup_round();
+PRIVATE i;
+BEGIN
+  place_fighter(0, fc[0], fpal[0], SW / 2 - 110, 1);
+  place_fighter(1, fc[1], fpal[1], SW / 2 + 110, -1);
+  FOR i = 0 TO 3 pr_on[i] = 0; END
+  it_on[0] = 0; it_on[1] = 0; item_t = 300;
+  timer = 99 * 60; ko_flag = 0; hitstop = 0; slowmo = 0; sfl_t = 0; hype = 10;
+  rphase = 0; rt = 0;
+  cam_x = SW / 2 - 320;
+  RETURN 0;
+END
+
+// One round; returns the winner (0/1), -1 for a draw, -2 when aborted.
+FUNCTION play_round();
+PRIVATE w; f; lbl;
+BEGIN
+  setup_round();
+  scene = 4; ctl_on = 0; w = -1;
+  LOOP
+    rt++;
+    SWITCH (rphase)
+      CASE 0                                 // ROUND n ... FIGHT!
+        IF (rt == 20)
+          lbl = min(rnum - 1, 2);
+          IF (rw[0] == 1 AND rw[1] == 1) lbl = 2; END
+          show_banner(g_lab[lbl], 70, 160);
+        END
+        IF (rt == 95) show_banner(g_lab[3], 45, 160); END
+        IF (rt >= 110) rphase = 1; ctl_on = 1; FOR f = 0 TO 1 fs[f] = ST_FREE; start_move(f, M_IDLE); END END
+      CASE 1                                 // fighting
+        IF (timer > 0 AND hitstop == 0 AND sfl_t == 0) timer--; END
+        IF (ko_flag)
+          rphase = 2; rt = 0; ctl_on = 0; n_ko++;
+          IF (hp[0] <= 0 AND hp[1] <= 0) w = -1; show_banner(g_lab[7], 100, 160); ELSE
+            IF (hp[0] <= 0) w = 1; ELSE w = 0; END
+            show_banner(g_lab[4], 100, 160);
+          END
+        ELSE
+          IF (timer <= 0)
+            rphase = 3; rt = 0; ctl_on = 0; n_timeouts++;
+            show_banner(g_lab[6], 100, 160);
+            IF (hp[0] * 1000 / hp_max[0] > hp[1] * 1000 / hp_max[1]) w = 0; END
+            IF (hp[0] * 1000 / hp_max[0] < hp[1] * 1000 / hp_max[1]) w = 1; END
+          END
+        END
+      CASE 2, 3                              // K.O. or time over: the winner poses
+        IF (rt == 110 OR (rphase == 3 AND rt == 60))
+          IF (w >= 0)
+            IF (hp[w] >= hp_max[w] AND rphase == 2) show_banner(g_lab[5], 90, 160); n_perfect++;
+            ELSE
+              IF (mode == 1 AND fctrl[1] == 2)
+                IF (w == 0) show_banner(g_lab[9], 90, 160); ELSE show_banner(g_lab[10], 90, 160); END
+              ELSE
+                show_banner(g_win[fc[w]], 90, 160);
+              END
+            END
+          ELSE
+            show_banner(g_lab[8], 90, 160);
+          END
+        END
+        IF (rt >= 110 AND w >= 0 AND (fs[w] == ST_FREE OR fs[w] == ST_LAND)) fs[w] = ST_POSE; start_move(w, M_WIN); END
+        IF (rphase == 3 AND rt == 60)
+          FOR f = 0 TO 1 IF (f != w AND (fs[f] == ST_FREE OR fs[f] == ST_BLOCK OR fs[f] == ST_HIT)) fs[f] = ST_POSE; start_move(f, M_LOSE); END END
+        END
+        IF (rt >= 250)
+          IF (mode == 1 AND w == 0) score += timer / 60 * 100 + hp[0]; END
+          n_rounds++; round_win = w;
+          RETURN w;
+        END
+    END
+    fight_frame();
+    hud();
+    IF (key_pressed(_h)) show_boxes = 1 - show_boxes; END
+    IF (key_pressed(_esc)) RETURN -2; END
+    FRAME;
+  END
+END
+
+// Best of three; returns the winner or -2.
+FUNCTION play_match();
+PRIVATE w;
+BEGIN
+  rw[0] = 0; rw[1] = 0; rnum = 1; demo = 0;
+  meter[0] = 0; meter[1] = 0;
+  WHILE (rw[0] < 2 AND rw[1] < 2)
+    w = play_round();
+    IF (w == -2) RETURN -2; END
+    IF (w >= 0) rw[w]++; END
+    rnum++;
+    IF (rnum > 5 AND rw[0] < 2 AND rw[1] < 2)
+      IF (rw[0] > rw[1]) RETURN 0; END
+      RETURN 1;
+    END
+  END
+  IF (rw[0] >= 2) RETURN 0; END
+  RETURN 1;
+END
+
+// ======================================================================
+// Screens
+// ======================================================================
+
+// Title: two CPU fighters spar on a random stage behind the menu.
+FUNCTION title();
+PRIVATE sel; t; f;
+BEGIN
+  scene = 1; demo = 1; clear_ui();
+  put_screen(0, 0);
+  fc[0] = rand(0, 3); fc[1] = (fc[0] + rand(1, 3)) % 4; fpal[0] = 0; fpal[1] = 0;
+  IF (fc[0] == fc[1]) fpal[1] = 1; END
+  stage = rand(0, 3);
+  fctrl[0] = 2; fctrl[1] = 2; set_ai(0, 6); set_ai(1, 6);
+  setup_round(); rphase = 1; ctl_on = 1;
+  FOR f = 0 TO 1 fs[f] = ST_FREE; start_move(f, M_IDLE); END
+  put_ui(0, g_logo, 320, 110, 100, 0);
+  sel = 0; t = 0;
+  LOOP
+    t++; rt++;
+    fight_frame();
+    FOR f = 0 TO 1
+      IF (hp[f] < hp_max[f] / 3 OR fs[f] == ST_KO) hp[f] = hp_max[f]; hp_red[f] = hp[f]; IF (fs[f] == ST_KO) fs[f] = ST_DOWN; ft[f] = 20; END END
+    END
+    ko_flag = 0;
+    ui_y[0] = 100 + sin(t * 3000) * 4;
+    draw_rect(170, 180, 300, 100, 'rgba(0,0,0,0.75)');
+    set_color('#ffe0a0');
+    text(208, 12, "A TRIBUTE TO THE ARCADE VERSUS FIGHTERS OF 1991");
+    text(270, 26, "HI-SCORE " + hiscore);
+    IF (sel == 0) set_color('#ffffff'); ELSE set_color('#908070'); END
+    text(230, 192, "1 PLAYER  -  ARCADE LADDER");
+    IF (sel == 1) set_color('#ffffff'); ELSE set_color('#908070'); END
+    text(230, 210, "2 PLAYERS -  VERSUS");
+    IF (sel == 2) set_color('#ffffff'); ELSE set_color('#908070'); END
+    IF (diff == 0) text(230, 228, "DIFFICULTY:  EASY"); END
+    IF (diff == 1) text(230, 228, "DIFFICULTY:  NORMAL"); END
+    IF (diff == 2) text(230, 228, "DIFFICULTY:  HARD"); END
+    set_color('#ffd040');
+    IF ((t / 20) % 2) text(206, 192 + sel * 18, ">"); END
+    set_color('#c0b8a8');
+    text(186, 256, "UP/DOWN CHOOSE   ENTER START");
+    draw_rect(0, 340, 640, 60, 'rgba(0,0,0,0.65)');
+    set_color('#ffe0a0');
+    text(12, 346, "P1: ARROWS  A S D = LIGHT/MEDIUM/HEAVY PUNCH   Z X C = LIGHT/MEDIUM/HEAVY KICK");
+    text(12, 358, "P2: I J K L  1 2 3 = PUNCHES  4 5 6 = KICKS     HOLD BACK TO BLOCK (DOWN-BACK FOR LOWS)");
+    text(12, 370, "THROW: TOWARD + HEAVY PUNCH CLOSE.  SPECIALS: SEE THE SELECT SCREEN.  H = HITBOXES  ESC = TITLE");
+    IF (key_pressed(_up)) sel = (sel + 2) % 3; END
+    IF (key_pressed(_down)) sel = (sel + 1) % 3; END
+    IF (sel == 2 AND (key_pressed(_left) OR key_pressed(_right) OR key_pressed(_enter) OR key_pressed(_space)))
+      IF (key_pressed(_left)) diff = (diff + 2) % 3; ELSE diff = (diff + 1) % 3; END
+    ELSE
+      IF (key_pressed(_enter) OR key_pressed(_space))
+        mode = sel + 1; demo = 0; clear_ui(); ctl_on = 0;
+        RETURN 0;
+      END
+    END
+    FRAME;
+  END
+END
+
+// One stat bar on the select screen.
+FUNCTION stat(x0, y0, name, v);
+BEGIN
+  set_color('#e0d8c0'); text(x0, y0, name);
+  draw_rect(x0 + 56, y0, 100, 7, '#302830');
+  draw_rect(x0 + 56, y0, v, 7, '#f0b030');
+  RETURN 0;
+END
+
+// Stats and specials of character c at x0.
+FUNCTION panel(x0, c);
+PRIVATE i; sp;
+BEGIN
+  draw_rect(x0 - 6, 206, 212, 180, 'rgba(0,0,0,0.55)');
+  set_color('#ffe0a0'); text(x0, 212, ch_name[c]);
+  set_color('#c0b8a8'); text(x0, 224, ch_style[c]);
+  stat(x0, 240, "POWER", ch_pow[c] - 30);
+  stat(x0, 252, "SPEED", 190 - ch_tempo[c] - (c == 2) * 10);
+  stat(x0, 264, "REACH", ch_ua[c] + ch_fa[c] + ch_th[c] + ch_sh[c] - 25);
+  stat(x0, 276, "HEALTH", ch_hp[c] / 12);
+  FOR i = 0 TO 3
+    sp = ch_sp[c * 4 + i];
+    IF (i == 3) set_color('#80d0ff'); ELSE set_color('#ffffff'); END
+    text(x0, 294 + i * 22, sp_name[sp]);
+    set_color('#a0a090'); text(x0 + 8, 304 + i * 22, sp_keys[sp]);
+  END
+  RETURN 0;
+END
+
+// Character select; the preview fighters show their stance.
+FUNCTION select_screen();
+PRIVATE cur0; cur1; ok0; ok1; t; i; f; px;
+BEGIN
+  scene = 2; clear_ui(); put_screen(0, g_selbg);
+  cur0 = 0; cur1 = 1; ok0 = 0; ok1 = 0; t = 0;
+  IF (mode == 1) ok1 = 1; END
+  put_ui(11, g_lab[12], 320, 26, 100, 0);
+  FOR i = 0 TO 3 put_ui(i, g_por[i], 140 + i * 120, 104, 90, 0); END
+  cam_x = 0; shx = 0; shy = 0;
+  FOR f = 0 TO 1 sk_vis[f] = 0; END
+  FRAME;                                     // the key that opened this screen is still down
+  LOOP
+    t++;
+    IF (ok0 == 0)
+      IF (key_pressed(_left)) cur0 = (cur0 + 3) % 4; END
+      IF (key_pressed(_right)) cur0 = (cur0 + 1) % 4; END
+      IF (key_pressed(_a) OR key_pressed(_s) OR key_pressed(_d) OR key_pressed(_z) OR key_pressed(_enter)) ok0 = 1; start_move(0, M_WIN); END
+    END
+    IF (mode == 2 AND ok1 == 0)
+      IF (key_pressed(_j)) cur1 = (cur1 + 3) % 4; END
+      IF (key_pressed(_l)) cur1 = (cur1 + 1) % 4; END
+      IF (key_pressed(_1) OR key_pressed(_2) OR key_pressed(_4)) ok1 = 1; start_move(1, M_WIN); END
+    END
+    IF (key_pressed(_esc)) clear_ui(); RETURN -1; END
+    // preview fighters
+    FOR f = 0 TO 1
+      IF (f == 0 OR mode == 2)
+        IF (f == 0) i = cur0; ELSE i = cur1; END
+        IF (sk_ch[f] != i OR sk_vis[f] == 0)
+          sk_ch[f] = i; fc[f] = i; sk_gi[f] = i * 2 + (f == 1 AND cur0 == cur1); sk_sc[f] = ch_sc[i];
+          set_pose(f, 0); start_move(f, M_IDLE); sk_vis[f] = 1;
+        END
+        IF (f == 0) px = 70; ELSE px = 570; END
+        sk_x[f] = px; sk_gy[f] = 384; sk_dir[f] = 1 - f * 2; sk_air[f] = 0; fy[f] = 0; sk_z[f] = -30;
+        anim(f); fk(f);
+      END
+    END
+    // cursors
+    FOR f = 0 TO 1
+      IF (f == 0 OR mode == 2)
+        IF (f == 0) i = cur0; set_color('#ff4040'); ELSE i = cur1; set_color('#40a0ff'); END
+        px = 140 + i * 120 - 52;
+        IF ((t / 8) % 2 OR (f == 0 AND ok0) OR (f == 1 AND ok1))
+          draw_rect(px - 2 + f * 2, 48 + f * 2, 108 - f * 4, 3); draw_rect(px - 2 + f * 2, 157 - f * 2, 108 - f * 4, 3);
+          draw_rect(px - 2 + f * 2, 48 + f * 2, 3, 112 - f * 4); draw_rect(px + 103 - f * 2, 48 + f * 2, 3, 112 - f * 4);
+        END
+        IF (f == 0) text(px + 2, 164, "P1"); ELSE text(px + 88, 164, "P2"); END
+      END
+    END
+    IF (mode == 1)
+      panel(150, cur0);
+      set_color('#c0b8a8'); text(380, 212, "ARCADE LADDER: BEAT THE OTHER THREE,");
+      text(380, 224, "THEN THE MASTER OF THE PIT.");
+      text(380, 248, "LEFT/RIGHT CHOOSE   A/Z/ENTER CONFIRM");
+    ELSE
+      panel(130, cur0); panel(345, cur1);
+      set_color('#c0b8a8'); text(150, 190, "P1: ARROWS + A    P2: J/L + 1");
+    END
+    IF (ok0 AND ok1 AND t > 1)
+      FOR i = 0 TO 40
+        FOR f = 0 TO 1 IF (f == 0 OR mode == 2) anim(f); fk(f); END END
+        FRAME;
+      END
+      fc[0] = cur0; fpal[0] = 0;
+      IF (mode == 2) fc[1] = cur1; fpal[1] = (cur0 == cur1); END
+      clear_ui(); sk_vis[0] = 0; sk_vis[1] = 0;
+      RETURN 0;
+    END
+    FRAME;
+  END
+END
+
+// Ladder / versus screen before a match.
+FUNCTION vs_screen();
+PRIVATE t; i; x;
+BEGIN
+  scene = 3; clear_ui(); put_screen(0, g_vsbg);
+  sk_vis[0] = 0; sk_vis[1] = 0;
+  put_ui(0, g_por[fc[0]], 150, 150, 170, 0);
+  put_ui(1, g_por[fc[1]], 490, 150, 170, 1);
+  put_ui(2, g_lab[11], 320, 150, 100, 0);
+  put_ui(3, g_nm[fc[0]], 150, 270, 130, 0);
+  put_ui(4, g_nm[fc[1]], 490, 270, 130, 0);
+  IF (mode == 1)
+    FOR i = 0 TO 3
+      put_ui(5 + i, g_por[lad[i]], 215 + i * 70, 350, 50, 0);
+      IF (i > lad_i) ui_a[5 + i] = 45; END
+    END
+    IF (lad_i == 3) put_ui(10, g_lab[20], 320, 60, 100, 0); END
+  END
+  FOR t = 0 TO 170
+    set_color('#ffe0a0');
+    text(250, 296, "STAGE: " + stage_name[stage]);
+    IF (mode == 1)
+      set_color('#c0b8a8'); text(270, 312, "ARCADE LADDER");
+      FOR i = 0 TO 3
+        x = 215 + i * 70;
+        IF (i < lad_i) draw_rect(x - 25, 364, 50, 12, '#000000'); set_color('#ff4040'); text(x - 11, 366, "K.O."); END
+        IF (i == lad_i AND (t / 8) % 2) set_color('#ffd040'); draw_rect(x - 29, 318, 58, 3); draw_rect(x - 29, 381, 58, 3); END
+      END
+    END
+    IF (t > 30 AND (key_pressed(_enter) OR key_pressed(_a))) BREAK; END
+    FRAME;
+  END
+  clear_ui(); put_screen(0, 0);
+  RETURN 0;
+END
+
+// Win screen: the winner's portrait and quote.
+FUNCTION win_screen(w);
+PRIVATE t;
+BEGIN
+  scene = 5; clear_ui(); put_screen(0, g_vsbg);
+  put_ui(0, g_por[fc[w]], 170, 190, 220, 0);
+  put_ui(1, g_por[fc[1 - w]], 520, 250, 70, 0); ui_a[1] = 40;
+  put_ui(2, g_lab[16], 450, 70, 100, 0);
+  put_ui(3, g_nm[fc[w]], 170, 340, 150, 0);
+  FOR t = 0 TO 240
+    draw_rect(300, 120, 320, 60, 'rgba(0,0,0,0.5)');
+    set_color('#ffffff'); text(312, 140, "\"" + ch_quote[fc[w]] + "\"");
+    IF (mode == 1)
+      set_color('#ffe0a0'); text(312, 196, "SCORE " + score);
+    END
+    IF (t > 40 AND (key_pressed(_enter) OR key_pressed(_a))) BREAK; END
+    FRAME;
+  END
+  clear_ui(); put_screen(0, 0);
+  RETURN 0;
+END
+
+// Continue countdown after a loss in the arcade: 1 = continue.
+FUNCTION continue_screen();
+PRIVATE t; n;
+BEGIN
+  scene = 6; clear_ui(); put_screen(0, g_vsbg);
+  put_ui(0, g_lab[13], 320, 120, 100, 0);
+  put_ui(2, g_por[fc[0]], 320, 260, 90, 0);
+  FOR t = 0 TO 599
+    n = 9 - t / 60;
+    put_ui(1, g_dig[n], 320, 180, 200, 0);
+    set_color('#c0b8a8'); text(250, 330, "PRESS ENTER TO CONTINUE");
+    IF (t > 20 AND (key_pressed(_enter) OR key_pressed(_a))) clear_ui(); RETURN 1; END
+    IF (t > 20 AND key_pressed(_esc)) BREAK; END
+    FRAME;
+  END
+  put_ui(0, g_lab[14], 320, 150, 100, 0); ui_g[1] = 0;
+  IF (score > hiscore) hiscore = score; END
+  FOR t = 0 TO 150 FRAME; END
+  clear_ui(); put_screen(0, 0);
+  RETURN 0;
+END
+
+FUNCTION ending();
+PRIVATE t;
+BEGIN
+  scene = 7; clear_ui(); put_screen(0, g_vsbg);
+  put_ui(0, g_lab[15], 320, 70, 100, 0);
+  put_ui(1, g_por[fc[0]], 320, 190, 150, 0);
+  IF (score > hiscore) hiscore = score; END
+  FOR t = 0 TO 600
+    set_color('#ffffff'); text(120, 300, ch_end[fc[0]]);
+    set_color('#ffe0a0'); text(250, 320, "FINAL SCORE " + score);
+    IF (t > 60 AND (key_pressed(_enter) OR key_pressed(_a))) BREAK; END
+    FRAME;
+  END
+  clear_ui(); put_screen(0, 0);
+  RETURN 0;
+END
+
+// The arcade ladder: the other three fighters, then the boss.
+FUNCTION arcade();
+PRIVATE i; j; k; w;
+BEGIN
+  k = 0;
+  FOR i = 0 TO 3 IF (i != fc[0]) lad[k] = i; k++; END END
+  FOR i = 0 TO 2 j = rand(0, 2); k = lad[i]; lad[i] = lad[j]; lad[j] = k; END
+  lad[3] = 4;
+  lad_i = 0; score = 0;
+  fctrl[0] = 0; fctrl[1] = 2;
+  WHILE (lad_i < 4)
+    fc[1] = lad[lad_i]; fpal[1] = 0;
+    stage = ch_home[fc[1]];
+    set_ai(1, diff * 2 + lad_i * 2 + (lad_i == 3) * 2);
+    vs_screen();
+    w = play_match();
+    IF (w == -2) RETURN 0; END
+    win_screen(w);
+    IF (w == 0)
+      lad_i++;
+    ELSE
+      IF (continue_screen() == 0) RETURN 0; END
+    END
+  END
+  ending();
+  RETURN 0;
+END
+
+FUNCTION versus();
+PRIVATE w;
+BEGIN
+  fctrl[0] = 0; fctrl[1] = 1;
+  LOOP
+    IF (select_screen() < 0) RETURN 0; END
+    stage = ch_home[fc[1]];
+    vs_screen();
+    w = play_match();
+    IF (w == -2) RETURN 0; END
+    win_screen(w);
+  END
+END
+
+// Loading: every graphic is generated in code, a little per frame.
+FUNCTION loading(i, n);
+BEGIN
+  draw_rect(170, 196, 300, 12, '#303030');
+  draw_rect(172, 198, 296 * i / n, 8, '#f0b030');
+  set_color('#ffffff'); text(262, 180, "GENERATING GRAPHICS");
+  FRAME;
+  RETURN 0;
+END
+
+FUNCTION make_screens();
+PRIVATE i; g;
+BEGIN
+  g_selbg = new_graphic(640, 400); g = g_selbg;
+  grad(g, 0, 640, 0, 400, 20, 14, 40, 70, 20, 30);
+  FOR i = 0 TO 20 gfx_line(g, i * 40 - 200, 400, i * 40, 0, 50, 30, 60); END
+  g_vsbg = new_graphic(640, 400); g = g_vsbg;
+  grad(g, 0, 640, 0, 400, 10, 10, 30, 90, 20, 20);
+  FOR i = 0 TO 30 gfx_line(g, 320, 150, i * 22, 400, 70, 30, 40); gfx_line(g, 320, 150, i * 22, 0, 40, 20, 50); END
+  RETURN 0;
+END
+
+// ======================================================================
+// Main
+// ======================================================================
+
+PRIVATE i; s; n;
+BEGIN
+  set_mode(640, 400);
+  set_fps(60, 0);
+  screen_color('#000000');
+  rand_seed(19910206);
+  FOR i = 0 TO 20 rand(0, 99); END
+  n = 44;
+  init_moves(); loading(1, n);
+  FOR i = 0 TO 4 compute_reach(i); loading(1, n); END
+  FOR i = 0 TO 9 make_fighter(i / 2, i % 2); loading(2 + i, n); END
+  FOR i = 0 TO 4 g_por[i] = portrait(i); loading(12 + i, n); END
+  make_effects(); loading(17, n);
+  FOR i = 0 TO 2 make_labels(i); loading(18 + i, n); END
+  make_screens(); loading(21, n);
+  FOR s = 0 TO 3
+    stage_far(s); loading(22 + s * 5, n);
+    stage_mid(s); loading(23 + s * 5, n);
+    stage_crowd(s, 0, 0); stage_crowd(s, 0, 1); loading(24 + s * 5, n);
+    stage_crowd(s, 1, 0); stage_crowd(s, 1, 1); loading(25 + s * 5, n);
+    stage_floor(s); loading(26 + s * 5, n);
+  END
+  rand_seed();
+  FOR s = 0 TO 1
+    FOR i = 0 TO 11 limb(s, i); END
+    shadow(s); combo_view(s);
+  END
+  FOR i = 0 TO 4 layer(i); END
+  FOR i = 0 TO 3 proj_view(i); END
+  item_view(0); item_view(1);
+  FOR i = 0 TO 11 ui(i); END
+  banner(); digit(0); digit(1);
+  LOOP
+    title();
+    IF (mode == 1)
+      IF (select_screen() == 0) arcade(); END
+    ELSE
+      versus();
+    END
+  END
+END
