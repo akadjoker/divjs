@@ -129,8 +129,7 @@ table entry the same shape.
 ## 3. ~~`frame(n)` for `n > 100` is clamped to "run every tick"~~ - FIXED
 
 `FRAME(n)` with n > 100 now skips frames like DIV: `FRAME(200)` runs every
-other frame, `FRAME(300)` every third - MAIN included (see
-docs/review-2026-09.md, P3.10). The remaining limitation is n < 100 ("run
+other frame, `FRAME(300)` every third - MAIN included. The remaining limitation is n < 100 ("run
 more than once per frame"), which behaves as `FRAME(100)`: the scheduler
 runs each process at most once per `vm.tick()`.
 

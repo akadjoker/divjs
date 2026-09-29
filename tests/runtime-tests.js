@@ -1,5 +1,4 @@
-// Regression tests for the runtime items of docs/review-2026-09.md
-// (P3.17-P3.24, P4.4, P4.5, P5, T5). Run from tests/test.html through
+// Runtime regression tests. Run from tests/test.html through
 // runAllTests() in browser-tests.js.
 
 import { Lexer } from '../compiler/tokenizer.js';
@@ -196,8 +195,6 @@ function makeMap(width, height, cpoints, withGamma)
   return out.buffer;
 }
 
-// ── P3.17 ────────────────────────────────────────────────────────────────
-
 async function testNewGraphicIsDrawnAtItsRealSize()
 {
   const source = `PROGRAM t;
@@ -259,8 +256,6 @@ END`;
   assert(w === 60 && h === 20, `load_graphic de 60x20 devia desenhar 60x20, desenhou ${w}x${h}`);
 }
 
-// ── P3.18 ────────────────────────────────────────────────────────────────
-
 async function testLooseGraphicCodesDoNotCollideWithFpgCodes()
 {
   const fpgUrl = toDataUrl(makeFpg([
@@ -286,8 +281,6 @@ END`;
   assert(runtime.getGraphAsset(0, 3) === null, 'codigo inexistente na FPG nao devia devolver outro grafico');
   assert(runtime.getGraphAsset(5, g) === null, 'um grafico solto so pertence ao ficheiro 0');
 }
-
-// ── P3.19 / P3.20 / P4.5 ─────────────────────────────────────────────────
 
 async function testKeyReturnsOneOrZero()
 {
@@ -360,8 +353,6 @@ async function testKeyLookupDoesNotScanEveryKnownKey()
   assert(hits === 20000, `key('right') devia ser 1 em todas as chamadas, somou ${hits}`);
   assert(elapsed < 100, `20000 chamadas a key() com 5000 teclas conhecidas demoraram ${elapsed.toFixed(1)} ms`);
 }
-
-// ── P3.21 ────────────────────────────────────────────────────────────────
 
 async function testGetRealPointWritesIntoOffsetVariables()
 {
@@ -466,8 +457,6 @@ END`;
   assert(g(4) === 7, `get_point(file, graph, point, 0) devia continuar a devolver x=7, obtido ${g(4)}`);
 }
 
-// ── P3.22 ────────────────────────────────────────────────────────────────
-
 async function testTintColoursOnlyOpaquePixels()
 {
   const source = `PROGRAM t;
@@ -504,8 +493,6 @@ async function testTintFollowsChangesToAProceduralGraphic()
   runtime.drawGraphSprite(0, g, 10, 10, 0, 100, 100, 0, undefined, undefined, { r: 0, g: 255, b: 0 });
   assert(pixelAt(runtime, 10, 10)[3] === 0, 'depois de limpar o grafico a copia tingida devia ser refeita');
 }
-
-// ── P3.23 ────────────────────────────────────────────────────────────────
 
 async function testWriteUsesTheNineCentringCodes()
 {
@@ -606,8 +593,6 @@ ENDFONT`;
     `codigo 4 com fonte bitmap devia centrar 16x8 em 160,100, ficou em [${b.minX},${b.minY}]-[${b.maxX},${b.maxY}]`);
 }
 
-// ── P3.24 ────────────────────────────────────────────────────────────────
-
 async function testXputStaysOnScreen()
 {
   const source = `PROGRAM t;
@@ -629,8 +614,6 @@ END`;
   const count = runtime.drawCommands.filter((c) => c.type === 'xput').length;
   assert(count === 0, `xput nao devia acumular comandos por frame, ${count} encontrados`);
 }
-
-// ── P4.4 ─────────────────────────────────────────────────────────────────
 
 async function testBdfTextIsNotDrawnPixelByPixel()
 {
@@ -670,8 +653,6 @@ ENDFONT`;
   const after = pixelAt(runtime, 10, 10);
   assert(before[3] > 0 && after[3] > 0, 'glifo BDF devia continuar a ser desenhado');
 }
-
-// ── P5 ───────────────────────────────────────────────────────────────────
 
 async function testColliderCboxCodeZeroIsKept()
 {
@@ -754,8 +735,6 @@ async function testMapWithGammaBlockLoads()
     assert(map.raw.every((v) => v === 1), `MAP (gamma=${withGamma}) devia ler os pixels certos`);
   }
 }
-
-// ── T5 ───────────────────────────────────────────────────────────────────
 
 async function testTypoAliasesAreGone()
 {
@@ -925,31 +904,31 @@ async function testDefaultFpsIsDivsEighteenAndSetFpsIsClamped()
 }
 
 export const runtimeTests = [
-  ['P3.17 new_graphic is drawn at its real size', testNewGraphicIsDrawnAtItsRealSize],
-  ['P3.17 load_graphic is drawn at its real size', testLoadGraphicIsDrawnAtItsRealSize],
-  ['P3.18 loose graphic codes do not collide with FPG codes', testLooseGraphicCodesDoNotCollideWithFpgCodes],
-  ['P3.19 key() returns 1/0', testKeyReturnsOneOrZero],
-  ['P3.20 Shift between press and release does not stick a key', testShiftBetweenPressAndReleaseDoesNotStickAKey],
-  ['P4.5 key() lookup does not scan every known key', testKeyLookupDoesNotScanEveryKnownKey],
-  ['P3.21 get_real_point writes into OFFSET variables', testGetRealPointWritesIntoOffsetVariables],
+  ['new_graphic is drawn at its real size', testNewGraphicIsDrawnAtItsRealSize],
+  ['load_graphic is drawn at its real size', testLoadGraphicIsDrawnAtItsRealSize],
+  ['loose graphic codes do not collide with FPG codes', testLooseGraphicCodesDoNotCollideWithFpgCodes],
+  ['key() returns 1/0', testKeyReturnsOneOrZero],
+  ['Shift between press and release does not stick a key', testShiftBetweenPressAndReleaseDoesNotStickAKey],
+  ['key() lookup does not scan every known key', testKeyLookupDoesNotScanEveryKnownKey],
+  ['get_real_point writes into OFFSET variables', testGetRealPointWritesIntoOffsetVariables],
   ['OFFSET of PRIVATE, process fields and FUNCTION variables', testOffsetOfLocalVariables],
   ['get_point writes into OFFSET variables (DIV form)', testGetPointWritesIntoOffsetVariables],
-  ['P3.22 tint colours only opaque pixels', testTintColoursOnlyOpaquePixels],
-  ['P3.22 tint follows changes to a procedural graphic', testTintFollowsChangesToAProceduralGraphic],
-  ['P3.23 write uses the nine centring codes (system font)', testWriteUsesTheNineCentringCodes],
-  ['P3.23 write uses the nine centring codes (bitmap font)', testBitmapFontWriteUsesTheNineCentringCodes],
+  ['tint colours only opaque pixels', testTintColoursOnlyOpaquePixels],
+  ['tint follows changes to a procedural graphic', testTintFollowsChangesToAProceduralGraphic],
+  ['write uses the nine centring codes (system font)', testWriteUsesTheNineCentringCodes],
+  ['write uses the nine centring codes (bitmap font)', testBitmapFontWriteUsesTheNineCentringCodes],
   ['system font: accents, cedilla, descenders, fallback', testSystemFontAccentsAndFallback],
-  ['P3.24 xput stays on screen', testXputStaysOnScreen],
-  ['P4.4 BDF text is not drawn pixel by pixel', testBdfTextIsNotDrawnPixelByPixel],
-  ['P5 collider_cbox keeps code 0', testColliderCboxCodeZeroIsKept],
-  ['P5 out_region of a missing process is not about the caller', testOutRegionOfAMissingProcessIsNotAboutTheCaller],
-  ['P5 define_region keeps an explicit zero size', testDefineRegionKeepsAnExplicitZeroSize],
-  ['P5 delete_text(0) keeps text() drawings', testDeleteAllTextsKeepsTextDrawings],
-  ['P5 clear() keeps WRITE texts', testClearKeepsWriteTexts],
-  ['P5 6-bit palette maps to the full 0-255 range', testSixBitPaletteMapsToFullRange],
+  ['xput stays on screen', testXputStaysOnScreen],
+  ['BDF text is not drawn pixel by pixel', testBdfTextIsNotDrawnPixelByPixel],
+  ['collider_cbox keeps code 0', testColliderCboxCodeZeroIsKept],
+  ['out_region of a missing process is not about the caller', testOutRegionOfAMissingProcessIsNotAboutTheCaller],
+  ['define_region keeps an explicit zero size', testDefineRegionKeepsAnExplicitZeroSize],
+  ['delete_text(0) keeps text() drawings', testDeleteAllTextsKeepsTextDrawings],
+  ['clear() keeps WRITE texts', testClearKeepsWriteTexts],
+  ['6-bit palette maps to the full 0-255 range', testSixBitPaletteMapsToFullRange],
   ['MAP with a gamma block loads', testMapWithGammaBlockLoads],
-  ['T5 typo aliases srt/set_colro are gone', testTypoAliasesAreGone],
-  ['T5 every registered native is documented', testEveryNativeIsDocumented],
+  ['typo aliases srt/set_colro are gone', testTypoAliasesAreGone],
+  ['every registered native is documented', testEveryNativeIsDocumented],
   ['key_pressed is only 1 in the frame of the press', testKeyPressedIsOnlyTrueInTheFrameOfThePress],
   ['an exception in a native halts the VM', testExceptionInANativeHaltsTheVm],
   ['FNT missing glyphs advance by the average width (decision)', testFntMissingGlyphsAdvanceByTheAverageWidth],

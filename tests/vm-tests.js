@@ -1,6 +1,4 @@
-// VM / process-manager regression tests for the 2026-09 review items
-// (docs/review-2026-09.md: P3.8-P3.16, P4.1-P4.3, P5 and the VM entries
-// under "Precisa de mais investigacao"). DIV semantics are taken from
+// VM / process-manager regression tests. DIV semantics are taken from
 // the DIV Games Studio 2 manual; the line numbers cited are from its OCR
 // text (dgs2.txt).
 
@@ -92,7 +90,7 @@ function drawnIds(runtime)
   return ids;
 }
 
-// P3.8 - a MAIN that falls off its end (HALT) ends its Process too.
+// A MAIN that falls off its end (HALT) ends its Process too.
 async function testMainHaltEndsMainProcess()
 {
   const { vm, runtime } = setup(`PROGRAM t;
@@ -108,7 +106,7 @@ END`);
   assert(!drawnIds(runtime).includes(main.id), 'o MAIN terminado nao devia ser desenhado');
 }
 
-// P3.9 - signals reach MAIN like any other process (MAIN is the initial
+// Signals reach MAIN like any other process (MAIN is the initial
 // process, dgs2 8872-8874).
 async function testSignalsToMain()
 {
@@ -140,7 +138,7 @@ END`);
   }
 }
 
-// P3.10 - FRAME(n) throttles MAIN like it throttles processes.
+// FRAME(n) throttles MAIN like it throttles processes.
 async function testFrameNInMain()
 {
   const { vm } = setup(`PROGRAM t;
@@ -156,7 +154,7 @@ END`);
   assert(n === 3, `MAIN com FRAME(300) devia correr 3 vezes em 9 ticks, obtido ${n}`);
 }
 
-// P3.11 - asleep: not executed, not drawn, not collidable; frozen: not
+// Asleep: not executed, not drawn, not collidable; frozen: not
 // executed but still drawn and collidable (dgs2 8919-8930, 10683-10692).
 async function testSleepVersusFreeze()
 {
@@ -195,7 +193,7 @@ END`);
   assert(drawnIds(runtime).includes(s), 'depois de s_wakeup o adormecido devia voltar a ser desenhado');
 }
 
-// P3.12 - a TYPE value is never a live process id, so signal(TYPE a, ...)
+// A TYPE value is never a live process id, so signal(TYPE a, ...)
 // cannot hit the process whose id equals the old hash (97 for 'a').
 async function testSignalTypeNeverMisroutedToId()
 {
@@ -219,7 +217,7 @@ END`);
   assert(all.filter((p) => p.name === 'filler').length === 120, 'signal(TYPE a, s_kill) nao devia matar nenhum filler');
 }
 
-// P3.13 - SON is the last process created (dgs2 12860-12867), BIGBRO the
+// SON is the last process created (dgs2 12860-12867), BIGBRO the
 // one the father created just before, SMALLBRO the one just after
 // (dgs2 12396-12411, 12841-12853); links stay right when one dies.
 async function testSonBigbroSmallbro()
@@ -258,7 +256,7 @@ BEGIN parent(); LOOP FRAME; END END`);
   assert(pm.getRelative(k1, 'smallbro') === k2 && pm.getRelative(k2, 'bigbro') === k1, 'getRelative devia seguir os irmaos');
 }
 
-// P3.14 - box vs circle MTV pushes A (the caller) away from B.
+// Box vs circle MTV pushes A (the caller) away from B.
 async function testBoxCircleMtvSign()
 {
   const pm = new ProcessManager();
@@ -278,7 +276,7 @@ async function testBoxCircleMtvSign()
     `circulo A vs caixa B: MTV esperado [-5,0], obtido [${pm.lastPenetrationX},${pm.lastPenetrationY}]`);
 }
 
-// P3.15 - a box inside another gets an MTV that really separates them.
+// A box inside another gets an MTV that really separates them.
 async function testContainedBoxMtv()
 {
   const pm = new ProcessManager();
@@ -294,7 +292,7 @@ async function testContainedBoxMtv()
   assert(pm.collision(a, pm.getTypeCode('B')) === 0, 'depois de aplicar o MTV as caixas nao deviam colidir');
 }
 
-// P3.16 - the collision shape is the sprite as drawGraphSprite() paints
+// The collision shape is the sprite as drawGraphSprite() paints
 // it: scaled by SIZE, mirrored by FLAGS, rotated about the pivot.
 async function testCollisionShapeFollowsRenderer()
 {
@@ -324,7 +322,7 @@ async function testCollisionShapeFollowsRenderer()
     `espelhado em X a volta do pivot (0,0): esperado x 80..100, y 100..120, obtido ${JSON.stringify(mirrored)}`);
 }
 
-// P5 - collision_point uses the same shapes (RESOLUTION, pivot, SIZE,
+// Collision_point uses the same shapes (RESOLUTION, pivot, SIZE,
 // ANGLE) and skips processes collision() skips.
 async function testCollisionPointUsesShapes()
 {
@@ -353,7 +351,7 @@ async function testCollisionPointUsesShapes()
   assert(pm.collisionPoint(100, 100, type) === p.id, 'o teste de obstaculos do path_find continua a aceitar processos sem GRAPH');
 }
 
-// P4.1 - sweep() removes the dead in one pass, keeping order and indexes.
+// Sweep() removes the dead in one pass, keeping order and indexes.
 async function testSweepSinglePass()
 {
   const pm = new ProcessManager();
@@ -370,7 +368,7 @@ async function testSweepSinglePass()
   assert(ms < 200, `sweep de ${N / 2} mortos em ${N} demorou ${ms.toFixed(1)} ms`);
 }
 
-// P4.2 - tree signals by TYPE walk each subtree, not every process.
+// Tree signals by TYPE walk each subtree, not every process.
 async function testTreeSignalByTypeIsLinear()
 {
   const pm = new ProcessManager();
@@ -392,7 +390,7 @@ async function testTreeSignalByTypeIsLinear()
   assert(mid.sleeping && leaf.sleeping && !other.sleeping, 's_sleep_tree so devia afetar a arvore');
 }
 
-// P4.3 - reading `son` is O(1).
+// Reading `son` is O(1).
 async function testSonReadIsConstantTime()
 {
   const N = 8000;
@@ -409,7 +407,7 @@ BEGIN spawner(); LOOP FRAME; END END`);
   assert(ms < 100, `${N} processos a ler son: ${ms.toFixed(1)} ms/tick`);
 }
 
-// P5 - a very deep spawn chain neither overflows the JS stack nor leaves
+// A very deep spawn chain neither overflows the JS stack nor leaves
 // MAIN half-run.
 async function testDeepSpawnChain()
 {
@@ -425,7 +423,7 @@ BEGIN chain(4000); LOOP n = n + 1; FRAME; END END`);
   assert(globalsInOrder(vm)[0] === 2, `o MAIN devia continuar a correr (n = 2), obtido ${globalsInOrder(vm)[0]}`);
 }
 
-// P5 - path followers of dead processes are dropped.
+// Path followers of dead processes are dropped.
 async function testPathFollowersPruned()
 {
   const { vm, runtime } = setup(`PROGRAM t;
@@ -587,21 +585,21 @@ begin follow(); fixed(); param(50); loop frame; end end`);
 }
 
 export const vmTests = [
-  ['vm: MAIN ending via HALT ends its Process (P3.8)', testMainHaltEndsMainProcess],
-  ['vm: s_kill/s_sleep/s_freeze reach MAIN (P3.9)', testSignalsToMain],
-  ['vm: FRAME(n) throttles MAIN (P3.10)', testFrameNInMain],
-  ['vm: s_sleep hides, s_freeze stays visible and collidable (P3.11)', testSleepVersusFreeze],
-  ['vm: signal(TYPE x) never misrouted to a process id (P3.12)', testSignalTypeNeverMisroutedToId],
-  ['vm: son/bigbro/smallbro links (P3.13)', testSonBigbroSmallbro],
-  ['vm: box vs circle MTV sign (P3.14)', testBoxCircleMtvSign],
-  ['vm: contained box MTV separates (P3.15)', testContainedBoxMtv],
-  ['vm: collision shape follows SIZE, mirror and pivot rotation (P3.16)', testCollisionShapeFollowsRenderer],
-  ['vm: collision_point uses the collision shapes (P5)', testCollisionPointUsesShapes],
-  ['vm: sweep in one pass (P4.1)', testSweepSinglePass],
-  ['vm: tree signal by TYPE is linear (P4.2)', testTreeSignalByTypeIsLinear],
-  ['vm: reading son is O(1) (P4.3)', testSonReadIsConstantTime],
-  ['vm: deep spawn chain runs without stack overflow (P5)', testDeepSpawnChain],
-  ['vm: path followers of dead processes are pruned (P5)', testPathFollowersPruned],
+  ['vm: MAIN ending via HALT ends its Process', testMainHaltEndsMainProcess],
+  ['vm: s_kill/s_sleep/s_freeze reach MAIN', testSignalsToMain],
+  ['vm: FRAME(n) throttles MAIN', testFrameNInMain],
+  ['vm: s_sleep hides, s_freeze stays visible and collidable', testSleepVersusFreeze],
+  ['vm: signal(TYPE x) never misrouted to a process id', testSignalTypeNeverMisroutedToId],
+  ['vm: son/bigbro/smallbro links', testSonBigbroSmallbro],
+  ['vm: box vs circle MTV sign', testBoxCircleMtvSign],
+  ['vm: contained box MTV separates', testContainedBoxMtv],
+  ['vm: collision shape follows SIZE, mirror and pivot rotation', testCollisionShapeFollowsRenderer],
+  ['vm: collision_point uses the collision shapes', testCollisionPointUsesShapes],
+  ['vm: sweep in one pass', testSweepSinglePass],
+  ['vm: tree signal by TYPE is linear', testTreeSignalByTypeIsLinear],
+  ['vm: reading son is O(1)', testSonReadIsConstantTime],
+  ['vm: deep spawn chain runs without stack overflow', testDeepSpawnChain],
+  ['vm: path followers of dead processes are pruned', testPathFollowersPruned],
   ['vm: let_me_alone from a child kills MAIN', testLetMeAloneFromChildKillsMain],
   ['vm: self-kill and orphan tree signals follow the manual', testSelfKillAndOrphansFollowManual],
   ['vm: reset() and reload drop the previous program', testResetAndReloadDropProcesses],

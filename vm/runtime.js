@@ -2019,9 +2019,8 @@ export class CanvasEngineRuntime {
     return { down, pressed, mx: Math.round(m.x), my: Math.round(m.y), mb };
   }
 
-  // DIV scales volume and frequency with 256 as "normal" (see
-  // docs/natives.md: to be confirmed against the DIV manual); play_sound
-  // uses percentages.
+  // DIV scales volume and frequency with 256 as "normal"; play_sound uses
+  // percentages.
   registerAudioNatives()
   {
     const audio = this.audio;
