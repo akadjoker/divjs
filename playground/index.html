@@ -2,74 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DivJS Playground</title>
-  <meta name="description" content="Write and run DIV Games Studio programs in the browser.">
-  <link rel="stylesheet" href="style.css">
+  <!-- The playground moved to its own site; keep old links (and the game
+       they point at, in the #p=... part) working. -->
+  <script>
+    location.replace('https://akadjoker.github.io/divjs-playground/playground/' + location.hash);
+  </script>
 </head>
 <body>
-  <div class="app">
-    <header class="topbar">
-      <div class="brand">
-        <h1>DivJS Playground</h1>
-        <span>DIV Games Studio in the browser</span>
-      </div>
-      <div class="actions">
-        <button id="runBtn" class="primary" title="Run (Ctrl+Enter)">▶ Run</button>
-        <button id="stopBtn" title="Stop">■ Stop</button>
-        <button id="resetBtn" title="Discard your edits and restore this program">Reset</button>
-        <button id="shareBtn" title="Copy a link to this code">Share</button>
-        <button id="exportBtn" title="Download this game as one .html file that runs anywhere, offline">Export</button>
-      </div>
-    </header>
-
-    <nav class="sidebar" aria-label="Programs">
-      <button id="newBtn" class="new">+ New program</button>
-      <div id="programList" class="program-list"></div>
-    </nav>
-
-    <main class="editor-pane">
-      <div class="program-info">
-        <h2 id="programTitle">Loading…</h2>
-        <p id="programDescription"></p>
-        <p id="programControls" class="controls"></p>
-      </div>
-      <div id="editor" class="editor"></div>
-    </main>
-
-    <section class="run-pane" aria-label="Output">
-      <div id="screen" class="screen">
-        <canvas id="game" tabindex="0" width="640" height="480" aria-label="Program output"></canvas>
-      </div>
-      <div class="statusbar">
-        <span id="status">Stopped</span>
-        <span id="stats"></span>
-        <button id="fullscreenBtn" class="small" title="Show the game on the whole screen (Esc leaves)">⛶ Full screen</button>
-      </div>
-      <div class="tabs" role="tablist">
-        <button id="consoleTab" class="tab active" role="tab" aria-selected="true">Console</button>
-        <button id="inspectorTab" class="tab" role="tab" aria-selected="false">Inspector</button>
-        <button id="filesTab" class="tab" role="tab" aria-selected="false">Files <span id="filesCount" class="count" hidden></span></button>
-      </div>
-      <div id="console" class="console" role="log" aria-live="polite"></div>
-      <div id="inspector" class="inspector" hidden>
-        <h3>Processes</h3>
-        <div id="inspectProcesses" class="table-wrap"></div>
-        <h3>Globals</h3>
-        <div id="inspectGlobals" class="table-wrap"></div>
-      </div>
-      <div id="files" class="files" hidden>
-        <div id="dropZone" class="drop-zone">
-          <p>Drop .fpg, .map, .fnt, .png… files here or
-            <label class="file-pick">choose files<input id="fileInput" type="file" multiple hidden></label></p>
-          <p class="hint">Load them by name, e.g. <code>load_fpg("ship.fpg")</code>. <span id="filesWhere"></span></p>
-        </div>
-        <ul id="fileList" class="file-list"></ul>
-      </div>
-    </section>
-  </div>
-  <div id="toast" class="toast" role="status" hidden></div>
-
-  <script type="module" src="app.js"></script>
+  <p>The playground has moved to <a href="https://akadjoker.github.io/divjs-playground/playground/">akadjoker.github.io/divjs-playground</a>.</p>
 </body>
 </html>

@@ -5,28 +5,30 @@ processes, `FRAME`, `TYPE`, signals, all of it - and run them at 60 fps in
 any modern browser, with physics, sound, music and online multiplayer on
 top.
 
-**[▶ Open the playground and play](https://akadjoker.github.io/divjs/)** - no install, nothing to download.
+This repository is the engine. **[▶ The playground](https://akadjoker.github.io/divjs-playground/)** - the online
+editor with over 30 games to play and change - lives in
+[divjs-playground](https://github.com/akadjoker/divjs-playground).
 
 <table>
   <tr>
-    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs/playground/#p=fighter"><img src="docs/media/fighter.gif" width="400" alt="Street Duel"></a><br><b>Street Duel</b><br>one-on-one fighter, specials and supers</td>
-    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs/playground/#p=bomber"><img src="docs/media/bomber.gif" width="400" alt="Bomber Arena"></a><br><b>Bomber Arena</b><br>bombs, chain reactions, CPU rivals</td>
+    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs-playground/playground/#p=fighter"><img src="https://raw.githubusercontent.com/akadjoker/divjs-playground/main/docs/media/fighter.gif" width="400" alt="Street Duel"></a><br><b>Street Duel</b><br>one-on-one fighter, specials and supers</td>
+    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs-playground/playground/#p=bomber"><img src="https://raw.githubusercontent.com/akadjoker/divjs-playground/main/docs/media/bomber.gif" width="400" alt="Bomber Arena"></a><br><b>Bomber Arena</b><br>bombs, chain reactions, CPU rivals</td>
   </tr>
   <tr>
-    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs/playground/#p=strike"><img src="docs/media/strike.gif" width="400" alt="Dune Strike"></a><br><b>Dune Strike</b><br>helicopter campaign in a generated desert</td>
-    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs/playground/#p=bad-cat"><img src="docs/media/bad-cat.gif" width="400" alt="Bad Cat"></a><br><b>Bad Cat</b><br>knock it all off the shelves, don't get caught</td>
+    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs-playground/playground/#p=strike"><img src="https://raw.githubusercontent.com/akadjoker/divjs-playground/main/docs/media/strike.gif" width="400" alt="Dune Strike"></a><br><b>Dune Strike</b><br>helicopter campaign in a generated desert</td>
+    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs-playground/playground/#p=bad-cat"><img src="https://raw.githubusercontent.com/akadjoker/divjs-playground/main/docs/media/bad-cat.gif" width="400" alt="Bad Cat"></a><br><b>Bad Cat</b><br>knock it all off the shelves, don't get caught</td>
   </tr>
   <tr>
-    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs/playground/#p=chicken-cannon"><img src="docs/media/chicken-cannon.gif" width="400" alt="Chicken Cannon"></a><br><b>Chicken Cannon</b><br>physics artillery, with chickens</td>
-    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs/playground/#p=ghost-squad"><img src="docs/media/ghost-squad.gif" width="400" alt="Ghost Squad"></a><br><b>Ghost Squad</b><br>Pac-Man, but you are the ghosts</td>
+    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs-playground/playground/#p=chicken-cannon"><img src="https://raw.githubusercontent.com/akadjoker/divjs-playground/main/docs/media/chicken-cannon.gif" width="400" alt="Chicken Cannon"></a><br><b>Chicken Cannon</b><br>physics artillery, with chickens</td>
+    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs-playground/playground/#p=ghost-squad"><img src="https://raw.githubusercontent.com/akadjoker/divjs-playground/main/docs/media/ghost-squad.gif" width="400" alt="Ghost Squad"></a><br><b>Ghost Squad</b><br>Pac-Man, but you are the ghosts</td>
   </tr>
   <tr>
-    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs/playground/#p=wobbly-walker"><img src="docs/media/wobbly-walker.gif" width="400" alt="Wobbly Walker"></a><br><b>Wobbly Walker</b><br>QWOP-style ragdoll running</td>
-    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs/playground/#p=net-tanks"><img src="docs/media/net-tanks.gif" width="400" alt="Net Tanks"></a><br><b>Net Tanks</b><br>two players, online, no server</td>
+    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs-playground/playground/#p=wobbly-walker"><img src="https://raw.githubusercontent.com/akadjoker/divjs-playground/main/docs/media/wobbly-walker.gif" width="400" alt="Wobbly Walker"></a><br><b>Wobbly Walker</b><br>QWOP-style ragdoll running</td>
+    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs-playground/playground/#p=net-tanks"><img src="https://raw.githubusercontent.com/akadjoker/divjs-playground/main/docs/media/net-tanks.gif" width="400" alt="Net Tanks"></a><br><b>Net Tanks</b><br>two players, online, no server</td>
   </tr>
   <tr>
-    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs/playground/#p=racer"><img src="docs/media/racer.gif" width="400" alt="Racer"></a><br><b>Micro racer</b><br>top-down racing on generated tracks</td>
-    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs/playground/#p=vector-asteroids"><img src="docs/media/vector-asteroids.gif" width="400" alt="Vector Asteroids"></a><br><b>Vector Asteroids</b><br>every rock drawn in code</td>
+    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs-playground/playground/#p=racer"><img src="https://raw.githubusercontent.com/akadjoker/divjs-playground/main/docs/media/racer.gif" width="400" alt="Racer"></a><br><b>Micro racer</b><br>top-down racing on generated tracks</td>
+    <td align="center" width="50%"><a href="https://akadjoker.github.io/divjs-playground/playground/#p=vector-asteroids"><img src="https://raw.githubusercontent.com/akadjoker/divjs-playground/main/docs/media/vector-asteroids.gif" width="400" alt="Vector Asteroids"></a><br><b>Vector Asteroids</b><br>every rock drawn in code</td>
   </tr>
 </table>
 
@@ -110,40 +112,10 @@ from this to a 3000-line fighting game.
 - **Pathfinding, paths, maths helpers**, a debug overlay, and more - every
   function is in [docs/natives.md](docs/natives.md).
 
-## The playground
+## Using the engine
 
-**https://akadjoker.github.io/divjs/** - an editor with DIV highlighting,
-completion and errors marked as you type, next to the running game.
-Ctrl+Enter runs. It comes with the DIV tutorials, examples and over 30 games
-to read and change.
-
-- **Files** - drop your own `.fpg`, `.map`, `.fnt` or `.png` files in and
-  load them by name.
-- **Share** - copies a link that carries your code (and small files).
-- **Export** - downloads the game as one `.html` file: engine, code and
-  files inside, works offline, opens with a double click, and can go
-  straight onto itch.io or any web host.
-- **Full screen** - just the game, scaled up.
-
-## Running it locally
-
-The pages use ES modules, so serve the folder over HTTP:
-
-```bash
-npx serve .            # or: python3 -m http.server
-# open http://localhost:3000/playground/  (port 8000 with python)
-```
-
-Tests:
-
-```bash
-npm install
-npm run test:pipeline              # compiles every program, checks the list
-npx playwright install chromium    # once
-npm run test:browser               # engine suite, every page, the playground
-```
-
-## Embedding a game in your own page
+The whole engine is one ES module, `dist/divjs.js` (or `dist/divjs.min.js`),
+with no dependencies:
 
 ```js
 import { runDivDemo } from './divjs.js';
@@ -152,6 +124,14 @@ const game = runDivDemo({
   canvas: 'gameCanvas',
   source: `program demo; begin loop frame; end end`
 });
+```
+
+Get it from this repository's `dist/` folder, or install a version with npm
+(pinned to a tag):
+
+```bash
+npm install github:akadjoker/divjs#v1.0.0
+# node_modules/divjs/dist/divjs.js
 ```
 
 `runDivDemo` compiles the program and runs it with input, sound and the
@@ -167,7 +147,13 @@ the same canvas (an editor's Run button). Useful options:
   with `line`, `col` and `reason`.
 - `netIceServers`, `netInviteLink` - online play settings.
 
-To ship a game as a single file from the command line:
+The module also exports the pieces underneath - `compile(source)`, `VM`,
+`CanvasEngineRuntime`, `Lexer`, `Parser`, `Compiler`, the DIV file readers
+and the packer - for tools and editors. Every function a DIV program can
+call is in [docs/natives.md](docs/natives.md).
+
+To ship a game as a single `.html` file (engine, code and files inside,
+works offline):
 
 ```bash
 npm run pack -- mygame.div -o mygame.html
@@ -181,16 +167,24 @@ only tells each browser its public address - no game data goes through it.
 Behind some routers (symmetric NAT, common on mobile networks) a TURN relay
 is needed. Two players for now.
 
-## Project layout
+## Working on the engine
+
+```bash
+npm install
+npm run build                      # dist/divjs.js from the sources
+npm run test:pipeline              # compiles the test programs, checks the packer
+npx playwright install chromium    # once
+npm run test:browser               # the engine suite, the bundle, a packed game
+```
 
 ```text
 compiler/      bytecode, compiler, disassembler
 parser/        parser
 vm/            virtual machine, processes, runtime, physics, sound, net
-playground/    the online editor; programs/ holds every DIV program
-tools/         packer (single-file export), GIF capture
-docs/          function reference, media
-tests/         engine tests, pipeline and browser checks
+index.js       the public entry point; dist/ is its build
+tools/         packer (single-file games)
+docs/          function reference
+tests/         engine tests
 ```
 
 ## Credits
@@ -208,7 +202,6 @@ work, you can [buy me a coffee](https://buymeacoffee.com/akadjoker) - thank you!
 
 ## License
 
-MIT - see [LICENSE](LICENSE). Third-party code (CodeMirror, Planck.js) and
-the files whose terms aren't confirmed yet (the DIV tutorial assets and
-some example PNGs) are listed in
+MIT - see [LICENSE](LICENSE). Planck.js (MIT) is bundled in; it and the test
+files whose terms aren't confirmed yet are listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

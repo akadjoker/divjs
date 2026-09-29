@@ -5512,6 +5512,39 @@ async function loadDivFpgFromUrl(url) {
 async function loadDivFntFromUrl(url) {
   return parseDivFntBuffer(await fetchBuffer(url));
 }
+function renderDivFontText(ctx, font, x2, y, text, align = 0) {
+  if (!ctx || !font) {
+    return 0;
+  }
+  const lines = String(text).split("\n");
+  const widths = lines.map((line) => {
+    let w = 0;
+    for (let i = 0; i < line.length; i++) {
+      const glyph = font.glyphs[line.charCodeAt(i) & 255];
+      w += glyph ? glyph.xadvance || glyph.width || font.fallbackAdvance : font.fallbackAdvance;
+    }
+    return w;
+  });
+  let drawn = 0;
+  for (let li2 = 0; li2 < lines.length; li2++) {
+    const line = lines[li2];
+    let penX = Number(x2) || 0;
+    const penY = (Number(y) || 0) + li2 * font.lineHeight;
+    if (align === 1) penX -= Math.round(widths[li2] * 0.5);
+    else if (align === 2) penX -= widths[li2];
+    for (let i = 0; i < line.length; i++) {
+      const glyph = font.glyphs[line.charCodeAt(i) & 255];
+      if (!glyph || !glyph.canvas) {
+        penX += font.fallbackAdvance;
+        continue;
+      }
+      ctx.drawImage(glyph.canvas, penX + (glyph.xoffset || 0), penY + (glyph.yoffset || 0));
+      penX += glyph.xadvance || glyph.width || font.fallbackAdvance;
+      drawn += 1;
+    }
+  }
+  return drawn;
+}
 
 // vm/font_6x8.js
 var FONT_6X8_WIDTH = 6;
@@ -16686,12 +16719,16 @@ export {
   encodeCode,
   findAssetReferences,
   hashState,
+  loadDivFntFromUrl,
+  loadDivFpgFromUrl,
+  loadDivMapFromUrl,
   noteFrequency,
   parseDivFntBuffer,
   parseDivFpgBuffer,
   parseDivMapBuffer,
   parseNotes,
   programResolution,
+  renderDivFontText,
   runDivDemo,
   sfxRecipe,
   synthesize

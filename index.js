@@ -27,7 +27,10 @@ export { disassemble } from './compiler/disasm.js';
 export { OpCodes, OpCodeNames } from './compiler/bytecode.js';
 
 // DIV files
-export { parseDivFpgBuffer, parseDivMapBuffer, parseDivFntBuffer } from './vm/div_formats.js';
+export {
+  parseDivFpgBuffer, parseDivMapBuffer, parseDivFntBuffer,
+  loadDivFpgFromUrl, loadDivMapFromUrl, loadDivFntFromUrl, renderDivFontText
+} from './vm/div_formats.js';
 
 // Online play and sound, for tools and tests
 export { encodeCode, decodeCode, hashState } from './vm/net.js';

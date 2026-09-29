@@ -109,61 +109,8 @@ for (const filePath of htmlFiles) {
 	}
 }
 
-// Resolution a program runs at: its first set_mode(mWxH) or
-// set_mode(width, height), else DIV's default 320x200. null when set_mode
-// is called with something this can't read statically.
-
-// The playground's program list: every entry must name an existing .div
-// with the fields the page reads, and every .div in the folder must be
-// listed (an unlisted program would silently never appear online).
-const programsDir = join(rootDir, 'playground', 'programs');
-const manifest = JSON.parse(readFileSync(join(programsDir, 'manifest.json'), 'utf-8'));
-const categories = new Set((manifest.categories || []).map((c) => c.id));
-const listed = new Set();
-for (const entry of manifest.programs || []) {
-	const problems = [];
-	for (const field of ['id', 'title', 'category', 'file', 'width', 'height']) {
-		if (entry[field] === undefined || entry[field] === '') {
-			problems.push(`missing "${field}"`);
-		}
-	}
-	if (!categories.has(entry.category)) {
-		problems.push(`unknown category "${entry.category}"`);
-	}
-	if (listed.has(entry.file)) {
-		problems.push(`"${entry.file}" listed twice`);
-	}
-	listed.add(entry.file);
-	try {
-		statSync(join(programsDir, entry.file));
-	} catch {
-		problems.push(`file "${entry.file}" not found`);
-	}
-	// The screen size must be the one the program runs in: its first
-	// set_mode, or DIV's default 320x200 without one (manual: "By default,
-	// all the programs start with the 320 by 200 pixel activated mode").
-	try {
-		const expected = programResolution(readFileSync(join(programsDir, entry.file), 'utf-8'));
-		if (expected && (expected[0] !== entry.width || expected[1] !== entry.height)) {
-			problems.push(`size ${entry.width}x${entry.height}, but the program runs at ${expected[0]}x${expected[1]}`);
-		}
-	} catch {
-		// Missing file: reported above.
-	}
-	const label = `manifest: ${entry.id}`;
-	if (problems.length > 0) {
-		console.log(`FAIL  ${label.padEnd(35)} ${problems.join(', ')}`);
-		fail += 1;
-	} else {
-		ok += 1;
-	}
-}
-for (const name of readdirSync(programsDir)) {
-	if (extname(name) === '.div' && !listed.has(name)) {
-		console.log(`FAIL  ${('manifest: ' + name).padEnd(35)} not listed in manifest.json`);
-		fail += 1;
-	}
-}
+// DIV programs checked here: tests/programs/ (the playground and its games
+// have their own checks in github.com/akadjoker/divjs-playground).
 
 // The packer (tools/packer.js), used by the playground's Export button and
 // tools/pack.mjs. Opening a packed page is checked in tests/browser.mjs.

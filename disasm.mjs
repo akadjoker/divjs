@@ -7,10 +7,8 @@
 // LOAD_GLOBAL operands annotated with the actual value or variable name
 // instead of a bare index, and jump targets marked "-> addr".
 //
-// With no argument, disassembles the small demo program embedded in
-// examples/index.html (one of the pages `npm run test:pipeline` compiles),
-// so there's always something to run this against without hunting for a
-// sample file.
+// With no argument, disassembles tests/programs/sound-lab.div, so there's
+// always something to run this against without hunting for a sample file.
 
 import fs from 'fs';
 import { Lexer } from './compiler/tokenizer.js';
@@ -22,12 +20,7 @@ function loadSource(path) {
   if (path) {
     return fs.readFileSync(path, 'utf8');
   }
-  const html = fs.readFileSync(new URL('./examples/index.html', import.meta.url), 'utf8');
-  const match = html.match(/= `([\s\S]*?)`;/);
-  if (!match) {
-    throw new Error('Could not find the inline DIV source in examples/index.html; pass a .div file path instead.');
-  }
-  return match[1];
+  return fs.readFileSync(new URL('./tests/programs/sound-lab.div', import.meta.url), 'utf8');
 }
 
 const path = process.argv[2];
