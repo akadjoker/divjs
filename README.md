@@ -5,6 +5,8 @@ processes, `FRAME`, `TYPE`, signals, all of it - and run them at 60 fps in
 any modern browser, with physics, sound, music and online multiplayer on
 top.
 
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/akadjoker)
+
 This repository is the engine. **[▶ The playground](https://akadjoker.github.io/divjs-playground/)** - the online
 editor with over 30 games to play and change - lives in
 [divjs-playground](https://github.com/akadjoker/divjs-playground).
