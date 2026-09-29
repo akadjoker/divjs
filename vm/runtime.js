@@ -198,6 +198,9 @@ export class CanvasEngineRuntime {
       frameButtons: [false, false, false]
     };
     this._mouseListeners = [];
+    // The on-screen controls (vm/controls.js) the touch_* natives change:
+    // runDivDemo passes them in; without them those natives do nothing.
+    this.touchHost = options.touchHost || null;
     // Rigid-body physics (vm/physics.js): empty, and free, until a
     // process calls phys_box / phys_circle / phys_edge.
     this.physics = new PhysicsWorld();
@@ -261,10 +264,24 @@ export class CanvasEngineRuntime {
     // holding and dragging on a touch screen move mouse.x/y and hold
     // mouse.left, which the browser's made-up mouse events don't do (they
     // only come as one burst when the finger lifts). Only the first finger
-    // is the mouse; more fingers are left to the page. The held buttons are
-    // read from e.buttons (1 left, 2 right, 4 middle) on every event, which
-    // also catches a second mouse button pressed while one is held - the
-    // browser sends that as a pointermove, not a pointerdown.
+    // on the canvas is the mouse (even when another finger is already on
+    // the on-screen controls); more fingers are left to the page. The held
+    // buttons are read from e.buttons (1 left, 2 right, 4 middle) on every
+    // event, which also catches a second mouse button pressed while one is
+    // held - the browser sends that as a pointermove, not a pointerdown.
+    let finger = null;
+    const owns = (e, down) =>
+    {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen')
+      {
+        return true;
+      }
+      if (finger === null && down)
+      {
+        finger = e.pointerId;
+      }
+      return finger === e.pointerId;
+    };
     const syncButtons = (e) =>
     {
       const held = [(e.buttons & 1) !== 0, (e.buttons & 4) !== 0, (e.buttons & 2) !== 0];
@@ -280,7 +297,7 @@ export class CanvasEngineRuntime {
     const handlers = {
       pointermove: (e) =>
       {
-        if (!e.isPrimary)
+        if (!owns(e, false))
         {
           return;
         }
@@ -289,7 +306,7 @@ export class CanvasEngineRuntime {
       },
       pointerdown: (e) =>
       {
-        if (!e.isPrimary)
+        if (!owns(e, true))
         {
           return;
         }
@@ -308,17 +325,23 @@ export class CanvasEngineRuntime {
       },
       pointerup: (e) =>
       {
-        if (!e.isPrimary)
+        if (!owns(e, false))
         {
           return;
         }
+        finger = null;
         toScreen(e);
         syncButtons(e);
       },
       // The browser took the pointer over (a system gesture) or it left
       // without a release: nothing stays held.
-      pointercancel: () =>
+      pointercancel: (e) =>
       {
+        if (!owns(e, false))
+        {
+          return;
+        }
+        finger = null;
         m.buttons = [false, false, false];
       },
       // The right button is game input (mouse.right): the browser menu
@@ -2079,6 +2102,53 @@ export class CanvasEngineRuntime {
     return { down, pressed, mx: Math.round(m.x), my: Math.round(m.y), mb };
   }
 
+  // The on-screen controls (vm/controls.js, docs/natives.md "Touch and
+  // gamepads"). Each run starts from the page's layout; these change it
+  // for this program.
+  registerTouchNatives()
+  {
+    const host = () => this.touchHost;
+    const text = (value) => (value === undefined || value === null || value === 0 ? '' : String(value));
+    this.vm.registerNative('touch_controls', (state = 1) =>
+    {
+      host()?.setEnabled(Number(state) || 0);
+      return 0;
+    });
+    this.vm.registerNative('touch_pad', (kind = 1, keys) =>
+    {
+      const pad = ['none', 'dpad', 'stick'][Number(kind)] || 'dpad';
+      host()?.patchLayout(keys === undefined ? { pad } : { pad, padKeys: text(keys) });
+      return 0;
+    });
+    this.vm.registerNative('touch_buttons', (list) =>
+    {
+      host()?.patchLayout({ buttons: text(list) });
+      return 0;
+    });
+    this.vm.registerNative('touch_menu', (list) =>
+    {
+      host()?.patchLayout({ menu: text(list) });
+      return 0;
+    });
+    // 1 on a phone or tablet (the main pointer is a finger), or once the
+    // screen has been touched.
+    this.vm.registerNative('is_touch', () =>
+    {
+      if (this.touchHost)
+      {
+        return this.touchHost.isTouch() ? 1 : 0;
+      }
+      try
+      {
+        return typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches ? 1 : 0;
+      }
+      catch
+      {
+        return 0;
+      }
+    });
+  }
+
   // DIV scales volume and frequency with 256 as "normal"; play_sound uses
   // percentages.
   registerAudioNatives()
@@ -3482,6 +3552,7 @@ export class CanvasEngineRuntime {
     this.vm.registerNative('key_down', this.keyDownNative.bind(this));
     this.vm.registerNative('key_pressed', this.keyPressedNative.bind(this));
     this.vm.registerNative('key', this.keyNative.bind(this));
+    this.registerTouchNatives();
     this.vm.registerNative('get_time', () => this.totalTime);
     this.vm.registerNative('get_delta', () => this.vm.dt);
     this.vm.registerNative('set_title', this.setTitleNative.bind(this));

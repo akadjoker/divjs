@@ -38,6 +38,49 @@ Conventions used below:
 | `__get_mouse_field` | `field` | value | Compiler-internal: reads `mouse.<field>` (graph, file, size…). |
 | `__set_mouse_field` | `field, value` | value | Compiler-internal: writes `mouse.<field>`. |
 
+## Touch and gamepads
+
+On a phone or tablet, `runDivDemo` lays on-screen controls over the game:
+a pad on the left (8 directions, the arrow keys) and up to 6 buttons on the
+right, plus up to 2 small menu buttons (Start/Back). They press keys, the
+same way a keyboard does, so `key()`, `key_pressed()` and online play need
+nothing else. Each finger works on its own: one on the pad and another on a
+button at the same time, a finger can slide from one button to the next,
+and a finger anywhere else on the game is still the mouse. They appear with
+the first touch and hide when a key is typed on a keyboard or a gamepad is
+used. The default layout is a d-pad, `A` (`z`), `B` (`x`) and `Start`
+(`Enter`).
+
+Gamepads (Xbox, PlayStation and other standard-mapping pads) press the same
+keys: the d-pad and left stick the pad's keys, A, B, X, Y, LB, RB the
+buttons in order (`z`, `x`, `c`, `space` when the layout has fewer), Start
+the first menu key (`Enter`) and Back/Select the second (`Esc`).
+
+A key list is a string of `key:Label` pairs separated by commas, such as
+`"z:A,x:B"` or `"space:Jump,esc:Pause"`. Keys are the key constants'
+names without the `_`: `a`…`z`, `0`…`9`, `left`, `space`, `enter`, `esc`,
+`ctrl`, `alt`, `shift`, `tab`… A key alone (`"space"`) shows its name.
+
+Each run starts from the page's layout (`runDivDemo({ touchLayout })`,
+below); these functions change it for the running program.
+
+| Name | Arguments | Returns | Description |
+|------|-----------|---------|-------------|
+| `touch_pad` | `kind[, keys]` | — | The pad: `0` none, `1` d-pad, `2` stick (drawn as a thumb stick; still 8 directions). `keys` is `"up,down,left,right"`, e.g. `"w,s,a,d"`; default the arrow keys. |
+| `touch_buttons` | `keys` | — | The buttons on the right, a key list of up to 6 (`""` none). With 4 or more they sit in two rows, in reading order. |
+| `touch_menu` | `keys` | — | The small buttons at the bottom, a key list of up to 2 (`""` none), e.g. `"enter:Start,esc:Back"`. |
+| `touch_controls` | `[state]` | — | `0` hides the controls (a mouse-only screen), `1` (default) shows them on a touch screen, `2` shows them even without a touch. |
+| `is_touch` | — | 1/0 | 1 on a phone or tablet (the main pointer is a finger), or once the screen has been touched. |
+
+The page chooses with `runDivDemo` options: `touchControls` (`'auto'`, the
+default, as above; `true` always shown; `false` never), `touchLayout`
+(`{ pad: 'dpad' | 'stick' | 'none', padKeys: 'up,down,left,right',
+buttons: 'z:A,x:B', menu: 'enter:Start' }`, missing fields take the
+default's; `false` for no controls, as in a mouse-only game), `touchArea`
+(the element whose bottom corners the controls sit in; default the canvas)
+and `gamepad` (default `true`). `runner.setTouchLayout(layout)` changes the
+layout for the next runs.
+
 ## Program, screen and timing
 
 | Name | Arguments | Returns | Description |

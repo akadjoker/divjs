@@ -273,6 +273,9 @@ try
     source: game.source,
     files,
     clearColor: game.clearColor,
+    // On a phone the controls sit in the window's corners, around the game.
+    touchLayout: game.touch,
+    touchArea: document.body,
     onFrame: () =>
     {
       if (fitted !== canvas.width + 'x' + canvas.height)
@@ -310,8 +313,10 @@ catch (err)
  *    program's set_mode, else 320x200)
  *  - credit: a small "made with DivJS" link in a corner, shown with the
  *    full screen button while the mouse moves (default on)
+ *  - touch: the on-screen controls' layout (runDivDemo's touchLayout;
+ *    false for none; default the standard one)
  */
-export function buildPackedHtml({ modules, source, files = {}, title = 'DivJS game', width, height, clearColor = '#000000', credit = true })
+export function buildPackedHtml({ modules, source, files = {}, title = 'DivJS game', width, height, clearColor = '#000000', credit = true, touch })
 {
   const [autoW, autoH] = programResolution(source) || [320, 200];
   // Only a plain colour reaches the page's CSS.
@@ -326,7 +331,7 @@ export function buildPackedHtml({ modules, source, files = {}, title = 'DivJS ga
   {
     encoded[name] = bytesToBase64(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
   }
-  const game = { source: String(source), files: encoded, clearColor };
+  const game = { source: String(source), files: encoded, clearColor, touch: touch === undefined ? null : touch };
   return `<!DOCTYPE html>
 <!--
 ${ENGINE_NOTICE}

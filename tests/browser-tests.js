@@ -12,6 +12,7 @@ import { vmTests } from './vm-tests.js';
 import { runtimeTests } from './runtime-tests.js';
 import { encodeCode, decodeCode, hashState, NET_CONNECTED, NET_DESYNC } from '../vm/net.js';
 import { synthesize, sfxRecipe, noteFrequency, parseNotes, SAMPLE_RATE } from '../vm/audio.js';
+import { padDirections, parseKeyList, normalizeTouchLayout, GamepadInput, VirtualKeys } from '../vm/controls.js';
 
 const tinyPngDataUrl =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7WvYQAAAAASUVORK5CYII=';
@@ -3593,6 +3594,353 @@ end`);
   }
 }
 
+// ── On-screen touch controls and gamepads (vm/controls.js) ─────────────────
+
+// A canvas pinned to the top-left of the window, so the overlay laid over
+// its bottom corners is on screen whatever the test page has scrolled to.
+function makeTouchCanvas()
+{
+  const canvas = makeTestCanvas(320, 200);
+  canvas.style.cssText = 'position:fixed;left:0;top:0;width:640px;height:400px;z-index:1000';
+  return canvas;
+}
+
+// A finger: down on whatever is at (x, y), then moves and lifts on that
+// same element, as the browser's implicit capture of a touch does.
+function makeFinger(pointerId)
+{
+  let target = null;
+  const send = (type, x, y) =>
+  {
+    target.dispatchEvent(new PointerEvent(type, {
+      pointerId, pointerType: 'touch', isPrimary: pointerId === 1, clientX: x, clientY: y,
+      buttons: type === 'pointerup' || type === 'pointercancel' ? 0 : 1, bubbles: true, cancelable: true
+    }));
+  };
+  return {
+    down(x, y)
+    {
+      target = document.elementFromPoint(x, y);
+      send('pointerdown', x, y);
+      return target;
+    },
+    move: (x, y) => send('pointermove', x, y),
+    up: (x, y) => send('pointerup', x, y),
+    cancel: () => send('pointercancel', 0, 0)
+  };
+}
+
+function centreOf(selector)
+{
+  const node = document.querySelector(selector);
+  assert(node, `falta o elemento ${selector}`);
+  const r = node.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2, r: r.width / 2 };
+}
+
+function touchOverlayShown()
+{
+  const root = document.querySelector('[data-divjs-touch]');
+  return !!root && root.style.display !== 'none';
+}
+
+async function testTouchLayoutParsingAndPadDirections()
+{
+  const dirs = (dx, dy) => padDirections(dx, dy, 100).map((on, i) => (on ? 'udlr'[i] : '')).join('');
+  const cases = [[0, 0, ''], [10, 5, ''], [90, 0, 'r'], [-90, 10, 'l'], [0, -90, 'u'], [5, 90, 'd'],
+    [60, -60, 'ur'], [-60, 60, 'dl'], [70, -20, 'r'], [60, -40, 'ur']];
+  for (const [dx, dy, want] of cases)
+  {
+    assert(dirs(dx, dy) === want, `pad (${dx},${dy}): esperado "${want}", obtido "${dirs(dx, dy)}"`);
+  }
+  const list = parseKeyList('z:A, x:B ,space,_enter:Go,,a:1,s:2,d:3,f:4', 6);
+  assert(JSON.stringify(list.map((b) => `${b.key}=${b.label}`)) === '["z=A","x=B","space=SPACE","enter=Go","a=1","s=2"]',
+    `parseKeyList: ${JSON.stringify(list)}`);
+  const def = normalizeTouchLayout(undefined);
+  assert(def.pad === 'dpad' && def.buttons.map((b) => b.key).join() === 'z,x' && def.menu.map((b) => b.key).join() === 'enter',
+    `layout por omissao: ${JSON.stringify(def)}`);
+  const custom = normalizeTouchLayout({ pad: 'stick', buttons: 'space:Jump', menu: '', padKeys: 'w,s,a,d' });
+  assert(custom.pad === 'stick' && custom.buttons.length === 1 && custom.menu.length === 0 && custom.padKeys.join() === 'w,s,a,d',
+    `layout proprio: ${JSON.stringify(custom)}`);
+  assert(normalizeTouchLayout(false) === null && normalizeTouchLayout('none') === null, 'false/none deviam ser "sem controlos"');
+}
+
+async function testTouchPadAndButtonsPressKeys()
+{
+  const canvas = makeTouchCanvas();
+  const runner = runDivDemo({ canvas, source: LOOPING_PROGRAM, touchControls: true });
+  const fingers = [];
+  try
+  {
+    const runtime = () => runner.getState().runtime;
+    const held = (key) => runtime().keyDownNative(key) === 1;
+    assert(touchOverlayShown(), 'com touchControls: true os controlos deviam aparecer logo');
+    const pad = centreOf('[data-touch-pad]');
+    const a = centreOf('[data-touch-key="z"]');
+    const b = centreOf('[data-touch-key="x"]');
+    const start = centreOf('[data-touch-key="enter"]');
+    const canvasRect = canvas.getBoundingClientRect();
+    assert(pad.x < canvasRect.left + canvasRect.width / 3 && a.x > canvasRect.left + canvasRect.width * 2 / 3,
+      `pad a esquerda e botoes a direita: pad x=${pad.x}, A x=${a.x}`);
+    assert(pad.r * 2 >= 100, `o pad devia ter tamanho de polegar, tem ${pad.r * 2} px`);
+
+    // The pad: 8 directions, nothing in the dead zone.
+    const thumb = makeFinger(1);
+    fingers.push(thumb);
+    const target = thumb.down(pad.x + pad.r * 0.8, pad.y);
+    assert(target.closest('[data-touch-pad]'), 'o dedo devia cair no pad');
+    assert(held('right') && !held('left') && !held('up') && !held('down'), 'pad para a direita devia carregar so a seta direita');
+    thumb.move(pad.x + pad.r * 0.6, pad.y - pad.r * 0.6);
+    assert(held('right') && held('up') && !held('down'), 'pad na diagonal devia carregar cima + direita');
+    thumb.move(pad.x + 3, pad.y + 2);
+    assert(!held('right') && !held('up') && !held('left') && !held('down'), 'no centro (zona morta) nenhuma seta devia ficar carregada');
+    thumb.move(pad.x - pad.r * 0.9, pad.y + pad.r * 0.1);
+    assert(held('left') && !held('right'), 'pad para a esquerda devia carregar a seta esquerda');
+
+    // A second finger on a button while the first holds the pad.
+    const index = makeFinger(2);
+    fingers.push(index);
+    index.down(a.x, a.y);
+    assert(held('left') && held('z'), 'dois dedos: esquerda e z deviam estar carregados ao mesmo tempo');
+    // Same path as the keyboard: key_pressed and online lockstep see it.
+    assert(runtime().keysPressedSinceFrame.has('z') || runtime().keysPressedThisFrame.has('z'), 'z devia contar para key_pressed');
+    const netInput = runtime().captureNetInput();
+    assert(netInput.down.has('arrowleft') && netInput.down.has('z') && netInput.pressed.has('z'),
+      `o lockstep devia ver as teclas: ${JSON.stringify([...netInput.down])}`);
+
+    // Sliding from A to B moves the press; off every button, nothing.
+    index.move((a.x + b.x) / 2 + (b.x - a.x) * 0.2, (a.y + b.y) / 2 + (b.y - a.y) * 0.2);
+    index.move(b.x, b.y);
+    assert(held('x') && !held('z'), 'deslizar de A para B devia soltar z e carregar x');
+    index.move(canvasRect.left + canvasRect.width / 2, canvasRect.top + 20);
+    assert(!held('x') && !held('z'), 'fora dos botoes nenhum botao devia ficar carregado');
+    index.move(b.x, b.y);
+    assert(held('x'), 'voltar a B devia carregar x outra vez');
+    index.up(b.x, b.y);
+    assert(!held('x') && held('left'), 'levantar o dedo do botao solta x mas o pad continua');
+
+    // Start.
+    const third = makeFinger(3);
+    fingers.push(third);
+    third.down(start.x, start.y);
+    assert(held('enter'), 'Start devia carregar Enter');
+
+    // Cancel releases a finger's keys; losing the window releases them all.
+    thumb.cancel();
+    assert(!held('left') && held('enter'), 'pointercancel devia soltar as teclas desse dedo');
+    const again = makeFinger(4);
+    fingers.push(again);
+    again.down(a.x, a.y);
+    window.dispatchEvent(new Event('blur'));
+    assert(!held('enter') && !held('z'), 'perder o foco da janela devia soltar tudo');
+    const btn = document.querySelector('[data-touch-key="z"]');
+    assert(btn.style.background === document.querySelector('[data-touch-key="x"]').style.background, 'o botao nao devia ficar com ar de carregado');
+  }
+  finally
+  {
+    runner.destroy();
+    canvas.remove();
+  }
+  assert(!document.querySelector('[data-divjs-touch]'), 'destroy devia tirar os controlos da pagina');
+}
+
+async function testTouchControlsAreNotTheMouse()
+{
+  const canvas = makeTouchCanvas();
+  const runner = runDivDemo({ canvas, source: LOOPING_PROGRAM, touchControls: true });
+  try
+  {
+    const m = runner.getState().runtime._mouse;
+    const pad = centreOf('[data-touch-pad]');
+    const a = centreOf('[data-touch-key="z"]');
+    const thumb = makeFinger(1);
+    thumb.down(pad.x + pad.r * 0.7, pad.y);
+    thumb.move(pad.x, pad.y - pad.r * 0.7);
+    const index = makeFinger(2);
+    index.down(a.x, a.y);
+    assert(m.x === 0 && m.y === 0 && !m.buttons[0] && !m.downSinceFrame[0],
+      `tocar nos controlos nao devia mexer o rato: (${m.x},${m.y}) left=${m.buttons[0]}`);
+    // Another finger on the game itself is the mouse, although the first
+    // finger (the primary pointer) is on the pad.
+    const rect = canvas.getBoundingClientRect();
+    const game = makeFinger(3);
+    const hit = game.down(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    assert(hit === canvas, 'o meio do ecra devia ser o canvas, nao os controlos');
+    assert(m.buttons[0] && m.x === 160 && m.y === 100, `um dedo no jogo devia ser o rato: (${m.x},${m.y}) left=${m.buttons[0]}`);
+    game.move(rect.left + rect.width / 4, rect.top + rect.height / 4);
+    assert(m.x === 80 && m.y === 50, `arrastar esse dedo devia mexer o rato: (${m.x},${m.y})`);
+    // A fourth finger on the canvas is not the mouse while the third is.
+    const other = makeFinger(4);
+    other.down(rect.left + 50, rect.top + 50);
+    assert(m.x === 80 && m.y === 50, `um segundo dedo no jogo nao devia mexer o rato: (${m.x},${m.y})`);
+    other.up(rect.left + 50, rect.top + 50);
+    game.up(rect.left + rect.width / 4, rect.top + rect.height / 4);
+    assert(!m.buttons[0], 'levantar o dedo do jogo devia soltar o botao');
+    index.up(a.x, a.y);
+    thumb.up(pad.x, pad.y);
+  }
+  finally
+  {
+    runner.destroy();
+    canvas.remove();
+  }
+}
+
+async function testTouchControlsAutoShowAndHide()
+{
+  const canvas = makeTouchCanvas();
+  const runner = runDivDemo({ canvas, source: LOOPING_PROGRAM });
+  const noOverlay = makeTouchCanvas();
+  const mouseOnly = runDivDemo({ canvas: noOverlay, source: LOOPING_PROGRAM, touchLayout: false });
+  try
+  {
+    const point = (type) => new PointerEvent('pointerdown', { pointerType: type, pointerId: 9, bubbles: true, clientX: 5, clientY: 5 });
+    assert(!touchOverlayShown(), 'em modo auto nada devia aparecer antes de um toque');
+    document.body.dispatchEvent(point('mouse'));
+    assert(!touchOverlayShown(), 'um clique de rato nao devia mostrar os controlos');
+    document.body.dispatchEvent(point('touch'));
+    assert(touchOverlayShown(), 'o primeiro toque devia mostrar os controlos');
+    assert(document.querySelectorAll('[data-divjs-touch]').length === 1, 'o jogo com touchLayout: false nao devia ter controlos');
+    const a = centreOf('[data-touch-key="z"]');
+    const finger = makeFinger(1);
+    finger.down(a.x, a.y);
+    assert(runner.getState().runtime.keys.z, 'z devia estar carregado');
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', code: 'ArrowLeft', bubbles: true, cancelable: true }));
+    assert(!touchOverlayShown(), 'uma tecla fisica devia esconder os controlos');
+    assert(!runner.getState().runtime.keys.z, 'esconder os controlos devia soltar as teclas deles');
+    document.body.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowLeft', code: 'ArrowLeft', bubbles: true }));
+    document.body.dispatchEvent(point('touch'));
+    assert(touchOverlayShown(), 'um toque depois devia mostrar outra vez');
+    runner.stop();
+    assert(!touchOverlayShown(), 'com o programa parado os controlos deviam sair');
+    runner.start();
+    assert(touchOverlayShown(), 'ao correr outra vez voltam');
+  }
+  finally
+  {
+    runner.destroy();
+    mouseOnly.destroy();
+    canvas.remove();
+    noOverlay.remove();
+  }
+}
+
+async function testTouchNativesChangeTheLayout()
+{
+  const canvas = makeTouchCanvas();
+  const source = `program touch_natives;
+global t; phase;
+begin
+  set_fps(60, 0);
+  t = is_touch();
+  touch_pad(2);
+  touch_buttons("space:Jump,x:B,c:C");
+  touch_menu("");
+  loop
+    t = is_touch();
+    if (phase == 1) touch_controls(0); phase = 2; end
+    if (phase == 3) touch_controls(1); touch_pad(1, "w,s,a,d"); touch_buttons(""); phase = 4; end
+    frame;
+  end
+end`;
+  const runner = runDivDemo({ canvas, source, touchControls: true, touchLayout: { buttons: 'z:A', menu: 'enter:Start,esc:Back' } });
+  try
+  {
+    const state = runner.getState();
+    const g = (name) => Number(state.vm.globals.get(state.bytecode.globals[name]));
+    const set = (name, value) => state.vm.globals.set(state.bytecode.globals[name], value);
+    await nextAnimationFrames(3);
+    const keysShown = () => [...document.querySelectorAll('[data-touch-key]')].map((n) => `${n.getAttribute('data-touch-key')}=${n.textContent}`).join(',');
+    assert(document.querySelector('[data-touch-pad="stick"]'), 'touch_pad(2) devia mostrar um stick');
+    assert(keysShown() === 'space=Jump,x=B,c=C', `touch_buttons/touch_menu: ${keysShown()}`);
+    const jump = centreOf('[data-touch-key="space"]');
+    const finger = makeFinger(1);
+    finger.down(jump.x, jump.y);
+    assert(state.runtime.keyDownNative(' ') === 1, 'o botao Jump devia carregar espaco');
+    finger.up(jump.x, jump.y);
+    // Headless desktop Chromium has a fine pointer: 0 until a touch.
+    const coarse = matchMedia('(pointer: coarse)').matches;
+    assert(coarse || g('t') === 0, `is_touch() sem toques num desktop devia ser 0, deu ${g('t')}`);
+    set('phase', 1);
+    await nextAnimationFrames(3);
+    assert(!touchOverlayShown(), 'touch_controls(0) devia esconder os controlos');
+    assert(g('t') === 1, `depois de um toque is_touch() devia ser 1, deu ${g('t')}`);
+    set('phase', 3);
+    await nextAnimationFrames(3);
+    assert(touchOverlayShown() && document.querySelector('[data-touch-pad="dpad"]') && keysShown() === '',
+      `touch_controls(1) + touch_pad(1) + touch_buttons(""): ${keysShown()}`);
+    const pad = centreOf('[data-touch-pad]');
+    const thumb = makeFinger(2);
+    thumb.down(pad.x, pad.y - pad.r * 0.8);
+    assert(state.runtime.keyDownNative('w') === 1 && state.runtime.keyDownNative('up') === 0, 'touch_pad com teclas proprias devia carregar w');
+    thumb.up(pad.x, pad.y);
+    // A new run starts again from the page's layout.
+    runner.start();
+    await nextAnimationFrames(2);
+    runner.stop();
+    runner.setTouchLayout({ pad: 'none', buttons: 'q:Q', menu: '' });
+    runner.start(LOOPING_PROGRAM);
+    assert(!document.querySelector('[data-touch-pad]') && keysShown() === 'q=Q', `setTouchLayout: ${keysShown()}`);
+  }
+  finally
+  {
+    runner.destroy();
+    canvas.remove();
+  }
+}
+
+async function testGamepadPressesTheSameKeys()
+{
+  const pad = {
+    index: 0, connected: true, mapping: 'standard', axes: [0, 0, 0, 0],
+    buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 }))
+  };
+  let pads = [];
+  Object.defineProperty(navigator, 'getGamepads', { value: () => pads, configurable: true });
+  const canvas = makeTouchCanvas();
+  const runner = runDivDemo({ canvas, source: LOOPING_PROGRAM, touchLayout: { buttons: 'space:Jump,x:B', menu: 'enter:Start' } });
+  try
+  {
+    const held = (key) => runner.getState().runtime.keyDownNative(key) === 1;
+    const press = (i, on) =>
+    {
+      pad.buttons[i] = { pressed: on, value: on ? 1 : 0 };
+    };
+    pads = [pad];
+    press(15, true);
+    press(0, true);
+    press(9, true);
+    await nextAnimationFrames(3);
+    assert(held('right') && held(' ') && held('enter'), 'd-pad direita, A e Start deviam dar direita, espaco (1.o botao) e Enter');
+    press(15, false);
+    press(0, false);
+    press(9, false);
+    press(2, true);
+    press(8, true);
+    pad.axes[0] = -0.9;
+    pad.axes[1] = 0.8;
+    await nextAnimationFrames(3);
+    assert(!held('right') && !held(' ') && held('left') && held('down') && !held('up'), 'o stick esquerdo devia dar esquerda + baixo');
+    assert(held('c') && held('escape'), 'X sem botao no layout devia dar c, Select devia dar Esc');
+    // Unplugged: nothing stays held.
+    pads = [];
+    await nextAnimationFrames(3);
+    assert(!held('left') && !held('down') && !held('c') && !held('escape'), 'desligar o comando devia soltar as teclas');
+    // A gamepad API that throws is no gamepad.
+    Object.defineProperty(navigator, 'getGamepads', { value: () => { throw new Error('blocked'); }, configurable: true });
+    await nextAnimationFrames(3);
+    assert(runner.getState().running, 'um getGamepads que falha nao devia parar o jogo');
+    const none = new GamepadInput({ keys: new VirtualKeys(() => null), getLayout: () => null, nav: {} });
+    none.poll();
+  }
+  finally
+  {
+    delete navigator.getGamepads;
+    runner.destroy();
+    canvas.remove();
+  }
+}
+
 async function testMouseButtonsAndShortClicks()
 {
   const bytecode = compileSource(`program mouse_buttons;
@@ -4626,6 +4974,12 @@ export async function runAllTests() {
     ['mouse maps onto the virtual screen', testMouseMapsOntoVirtualScreen],
     ['mouse.left/middle/right, short clicks and no context menu', testMouseButtonsAndShortClicks],
     ['a finger is the mouse: hold, drag, one finger only, cancel', testTouchIsTheMouse],
+    ['touch controls: layouts, key lists, pad directions', testTouchLayoutParsingAndPadDirections],
+    ['touch controls: pad and buttons press keys, two fingers, sliding, cancel', testTouchPadAndButtonsPressKeys],
+    ['touch controls are not the mouse; a finger on the game still is', testTouchControlsAreNotTheMouse],
+    ['touch controls: auto shows on a touch, hides on a key, none for mouse games', testTouchControlsAutoShowAndHide],
+    ['touch natives: touch_pad, touch_buttons, touch_menu, touch_controls, is_touch', testTouchNativesChangeTheLayout],
+    ['gamepad: d-pad, stick, buttons, start/select, unplug, no API', testGamepadPressesTheSameKeys],
     ['project files are loaded before URLs (by path or name, any case)', testProjectFilesAreLoadedBeforeUrls],
     ['physics: fall, stack, contact, impact, units, teleport, pin, removal', testPhysicsBodiesFallStackAndCollide],
     ['physics: anchors, add_box, pending material, ids, type, weld, rope length, slack, limits, motor, queries, sleep, min/max', testPhysicsSecondRound],

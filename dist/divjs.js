@@ -12118,6 +12118,7 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       frameButtons: [false, false, false]
     };
     this._mouseListeners = [];
+    this.touchHost = options.touchHost || null;
     this.physics = new PhysicsWorld();
     this.net = new NetSession({
       iceServers: options.netIceServers,
@@ -12153,6 +12154,16 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       m.x = Math.round((e.clientX - r.left) * (this.width / r.width));
       m.y = Math.round((e.clientY - r.top) * (this.height / r.height));
     };
+    let finger = null;
+    const owns = (e, down) => {
+      if (e.pointerType !== "touch" && e.pointerType !== "pen") {
+        return true;
+      }
+      if (finger === null && down) {
+        finger = e.pointerId;
+      }
+      return finger === e.pointerId;
+    };
     const syncButtons = (e) => {
       const held = [(e.buttons & 1) !== 0, (e.buttons & 4) !== 0, (e.buttons & 2) !== 0];
       for (let b = 0; b < 3; b++) {
@@ -12164,14 +12175,14 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     };
     const handlers = {
       pointermove: (e) => {
-        if (!e.isPrimary) {
+        if (!owns(e, false)) {
           return;
         }
         toScreen(e);
         syncButtons(e);
       },
       pointerdown: (e) => {
-        if (!e.isPrimary) {
+        if (!owns(e, true)) {
           return;
         }
         toScreen(e);
@@ -12182,15 +12193,20 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
         }
       },
       pointerup: (e) => {
-        if (!e.isPrimary) {
+        if (!owns(e, false)) {
           return;
         }
+        finger = null;
         toScreen(e);
         syncButtons(e);
       },
       // The browser took the pointer over (a system gesture) or it left
       // without a release: nothing stays held.
-      pointercancel: () => {
+      pointercancel: (e) => {
+        if (!owns(e, false)) {
+          return;
+        }
+        finger = null;
         m.buttons = [false, false, false];
       },
       // The right button is game input (mouse.right): the browser menu
@@ -13555,6 +13571,40 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     }
     return { down, pressed, mx: Math.round(m.x), my: Math.round(m.y), mb };
   }
+  // The on-screen controls (vm/controls.js, docs/natives.md "Touch and
+  // gamepads"). Each run starts from the page's layout; these change it
+  // for this program.
+  registerTouchNatives() {
+    const host = () => this.touchHost;
+    const text = (value) => value === void 0 || value === null || value === 0 ? "" : String(value);
+    this.vm.registerNative("touch_controls", (state = 1) => {
+      host()?.setEnabled(Number(state) || 0);
+      return 0;
+    });
+    this.vm.registerNative("touch_pad", (kind = 1, keys) => {
+      const pad = ["none", "dpad", "stick"][Number(kind)] || "dpad";
+      host()?.patchLayout(keys === void 0 ? { pad } : { pad, padKeys: text(keys) });
+      return 0;
+    });
+    this.vm.registerNative("touch_buttons", (list) => {
+      host()?.patchLayout({ buttons: text(list) });
+      return 0;
+    });
+    this.vm.registerNative("touch_menu", (list) => {
+      host()?.patchLayout({ menu: text(list) });
+      return 0;
+    });
+    this.vm.registerNative("is_touch", () => {
+      if (this.touchHost) {
+        return this.touchHost.isTouch() ? 1 : 0;
+      }
+      try {
+        return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches ? 1 : 0;
+      } catch {
+        return 0;
+      }
+    });
+  }
   // DIV scales volume and frequency with 256 as "normal"; play_sound uses
   // percentages.
   registerAudioNatives() {
@@ -14722,6 +14772,7 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     this.vm.registerNative("key_down", this.keyDownNative.bind(this));
     this.vm.registerNative("key_pressed", this.keyPressedNative.bind(this));
     this.vm.registerNative("key", this.keyNative.bind(this));
+    this.registerTouchNatives();
     this.vm.registerNative("get_time", () => this.totalTime);
     this.vm.registerNative("get_delta", () => this.vm.dt);
     this.vm.registerNative("set_title", this.setTitleNative.bind(this));
@@ -15594,6 +15645,695 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
   }
 };
 
+// vm/controls.js
+var MAX_TOUCH_BUTTONS = 6;
+var MAX_TOUCH_MENU = 2;
+var DEFAULT_TOUCH_LAYOUT = Object.freeze({
+  pad: "dpad",
+  padKeys: ["up", "down", "left", "right"],
+  buttons: [{ key: "z", label: "A" }, { key: "x", label: "B" }],
+  menu: [{ key: "enter", label: "Start" }]
+});
+var DEFAULT_GAMEPAD_KEYS = ["z", "x", "c", "space"];
+function parseKeyList(list, max) {
+  let items = [];
+  if (Array.isArray(list)) {
+    items = list.map((item) => typeof item === "string" ? { key: item } : { key: item?.key, label: item?.label });
+  } else if (list !== null && list !== void 0 && list !== false) {
+    items = String(list).split(",").map((part) => {
+      const colon = part.indexOf(":");
+      return colon < 0 ? { key: part } : { key: part.slice(0, colon), label: part.slice(colon + 1) };
+    });
+  }
+  const out = [];
+  for (const item of items) {
+    const key = String(item.key ?? "").trim().toLowerCase().replace(/^_/, "");
+    if (!key) {
+      continue;
+    }
+    const label = String(item.label ?? "").trim() || key.toUpperCase();
+    out.push({ key, label });
+    if (out.length >= max) {
+      break;
+    }
+  }
+  return out;
+}
+function parsePadKeys(keys) {
+  const list = Array.isArray(keys) ? keys : String(keys ?? "").split(",");
+  const clean = list.map((k) => String(k ?? "").trim().toLowerCase().replace(/^_/, ""));
+  return clean.length === 4 && clean.every(Boolean) ? clean : [...DEFAULT_TOUCH_LAYOUT.padKeys];
+}
+function parsePad(pad) {
+  const kind = String(pad ?? "dpad").toLowerCase();
+  if (kind === "stick" || kind === "2") {
+    return "stick";
+  }
+  if (kind === "none" || kind === "0" || kind === "false") {
+    return "none";
+  }
+  return "dpad";
+}
+function normalizeTouchLayout(layout) {
+  if (layout === false || layout === "none" || layout === 0) {
+    return null;
+  }
+  const src = layout && typeof layout === "object" ? layout : {};
+  const has = (name) => Object.prototype.hasOwnProperty.call(src, name);
+  return {
+    pad: parsePad(has("pad") ? src.pad : DEFAULT_TOUCH_LAYOUT.pad),
+    padKeys: parsePadKeys(has("padKeys") ? src.padKeys : DEFAULT_TOUCH_LAYOUT.padKeys),
+    buttons: parseKeyList(has("buttons") ? src.buttons : DEFAULT_TOUCH_LAYOUT.buttons, MAX_TOUCH_BUTTONS),
+    menu: parseKeyList(has("menu") ? src.menu : DEFAULT_TOUCH_LAYOUT.menu, MAX_TOUCH_MENU)
+  };
+}
+function padDirections(dx, dy, radius, deadZone = 0.28) {
+  const len = Math.hypot(dx, dy);
+  if (!(radius > 0) || len < radius * deadZone) {
+    return [false, false, false, false];
+  }
+  const t = Math.sin(Math.PI / 8) * len;
+  return [dy < -t, dy > t, dx < -t, dx > t];
+}
+var VirtualKeys = class {
+  constructor(getRuntime) {
+    this.getRuntime = getRuntime;
+    this.counts = /* @__PURE__ */ new Map();
+  }
+  press(name) {
+    const key = CanvasEngineRuntime.canonicalKeyName(name);
+    const count = this.counts.get(key) || 0;
+    this.counts.set(key, count + 1);
+    if (count === 0) {
+      this.getRuntime()?.setKeyState(key, true);
+    }
+  }
+  release(name) {
+    const key = CanvasEngineRuntime.canonicalKeyName(name);
+    const count = this.counts.get(key) || 0;
+    if (count <= 1) {
+      this.counts.delete(key);
+      this.getRuntime()?.setKeyState(key, false);
+    } else {
+      this.counts.set(key, count - 1);
+    }
+  }
+  reapply() {
+    const runtime = this.getRuntime();
+    for (const key of this.counts.keys()) {
+      runtime?.setKeyState(key, true);
+    }
+  }
+};
+function holdKeys(keys, held, next) {
+  for (const key of held) {
+    if (!next.has(key)) {
+      keys.release(key);
+    }
+  }
+  for (const key of next) {
+    if (!held.has(key)) {
+      keys.press(key);
+    }
+  }
+  return next;
+}
+function isEditable(target) {
+  if (!target || !target.tagName) {
+    return false;
+  }
+  const tag = String(target.tagName).toUpperCase();
+  return target.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+function coarsePointer(win = typeof window !== "undefined" ? window : null) {
+  try {
+    return !!win?.matchMedia?.("(pointer: coarse)").matches;
+  } catch {
+    return false;
+  }
+}
+var FACE = "rgba(255,255,255,0.13)";
+var FACE_DOWN = "rgba(255,255,255,0.42)";
+var EDGE = "2px solid rgba(255,255,255,0.38)";
+var INK = "rgba(255,255,255,0.85)";
+var TouchControls = class {
+  constructor({ canvas, area = null, keys, mode = "auto", layout, doc = document }) {
+    this.doc = doc;
+    this.win = doc.defaultView;
+    this.canvas = canvas;
+    this.area = area || canvas;
+    this.keys = keys;
+    this.mode = mode === true ? "on" : "auto";
+    this.baseLayout = normalizeTouchLayout(layout);
+    this.layout = this.baseLayout;
+    this.layoutKey = "";
+    this.enabled = true;
+    this.running = false;
+    this.touchSeen = false;
+    this.active = this.mode === "on";
+    this.fingers = /* @__PURE__ */ new Map();
+    this.placedFor = "";
+    this.root = null;
+    this.pad = null;
+    this.knob = null;
+    this.arms = [];
+    this.buttonEls = [];
+    this.listeners = [];
+    this.listen(this.win, "pointerdown", (e) => {
+      if (e.pointerType === "touch") {
+        this.touched();
+      }
+    }, true);
+    this.listen(this.win, "touchstart", () => this.touched(), { capture: true, passive: true });
+    this.listen(this.win, "keydown", (e) => {
+      if (!isEditable(e.target)) {
+        this.otherInput();
+      }
+    }, true);
+    this.listen(this.win, "resize", () => this.update());
+    this.listen(this.win, "orientationchange", () => this.update());
+    this.listen(doc, "fullscreenchange", () => {
+      this.placedFor = "";
+      this.update();
+    });
+  }
+  listen(target, type, handler, options) {
+    if (target && typeof target.addEventListener === "function") {
+      target.addEventListener(type, handler, options);
+      this.listeners.push({ target, type, handler, options });
+    }
+  }
+  touched() {
+    this.touchSeen = true;
+    if (this.mode === "auto" && !this.active) {
+      this.active = true;
+      this.update();
+    }
+  }
+  // A keyboard key or a gamepad: the player has something better than
+  // thumbs on glass.
+  otherInput() {
+    if (this.mode === "auto" && this.active) {
+      this.active = false;
+      this.update();
+    }
+  }
+  isTouch() {
+    return this.touchSeen || coarsePointer(this.win);
+  }
+  isShown() {
+    return !!(this.root && this.root.style.display !== "none");
+  }
+  // The runDivDemo-level layout (options.touchLayout / runner.setTouchLayout):
+  // what every run starts from.
+  setBaseLayout(layout) {
+    this.baseLayout = normalizeTouchLayout(layout);
+    this.setLayout(this.baseLayout);
+  }
+  setLayout(layout) {
+    const key = JSON.stringify(layout);
+    if (key === this.layoutKey && (this.root || !layout)) {
+      return;
+    }
+    this.releaseAll();
+    this.layout = layout;
+    this.layoutKey = key;
+    this.build();
+    this.update();
+  }
+  // A program's touch_* call: changes one part of the current layout.
+  patchLayout(patch) {
+    const base = this.layout || normalizeTouchLayout({ pad: "none", buttons: [], menu: [] });
+    this.setLayout(normalizeTouchLayout({ ...base, ...patch }));
+  }
+  // touch_controls(): 0 hides the overlay, 1 is the 'auto' behaviour, 2
+  // shows it even without a touch.
+  setEnabled(state) {
+    const n = Number(state) || 0;
+    this.enabled = n > 0;
+    if (n >= 2) {
+      this.active = true;
+    }
+    this.update();
+  }
+  // Each run starts from the base layout, enabled.
+  reset() {
+    this.enabled = true;
+    this.setLayout(this.baseLayout);
+  }
+  setRunning(running) {
+    this.running = running;
+    this.update();
+  }
+  wanted() {
+    return !!(this.layout && this.enabled && this.active && this.running);
+  }
+  build() {
+    if (this.root) {
+      this.root.remove();
+      this.root = null;
+    }
+    this.pad = null;
+    this.knob = null;
+    this.arms = [];
+    this.buttonEls = [];
+    this.placedFor = "";
+    if (!this.layout) {
+      return;
+    }
+    const doc = this.doc;
+    const el = (css, parent) => {
+      const node = doc.createElement("div");
+      node.style.cssText = css;
+      parent?.appendChild(node);
+      return node;
+    };
+    const root = el("position:fixed;left:0;top:0;width:0;height:0;z-index:2147482000;pointer-events:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:none;display:none;font:600 16px system-ui,sans-serif;-webkit-tap-highlight-color:transparent");
+    root.setAttribute("data-divjs-touch", "");
+    const touchable = "position:absolute;pointer-events:auto;touch-action:none;box-sizing:border-box;";
+    if (this.layout.pad !== "none") {
+      this.pad = el(`${touchable}border-radius:50%;background:${FACE};border:${EDGE}`, root);
+      this.pad.setAttribute("data-touch-pad", this.layout.pad);
+      if (this.layout.pad === "stick") {
+        this.knob = el(`position:absolute;border-radius:50%;background:${FACE_DOWN};border:${EDGE};box-sizing:border-box`, this.pad);
+      } else {
+        for (let i = 0; i < 4; i++) {
+          this.arms.push(el(`position:absolute;border-radius:6px;background:${FACE}`, this.pad));
+        }
+      }
+    }
+    const addButton = (item, kind) => {
+      const node = el(`${touchable}display:flex;align-items:center;justify-content:center;color:${INK};background:${FACE};border:${EDGE};white-space:nowrap;overflow:hidden`, root);
+      node.textContent = item.label;
+      node.setAttribute("data-touch-key", item.key);
+      node.setAttribute("data-touch-kind", kind);
+      this.buttonEls.push({ node, key: item.key, kind });
+    };
+    this.layout.buttons.forEach((item) => addButton(item, "button"));
+    this.layout.menu.forEach((item) => addButton(item, "menu"));
+    const stop = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    root.addEventListener("pointerdown", (e) => {
+      stop(e);
+      this.fingerDown(e);
+    });
+    root.addEventListener("pointermove", (e) => {
+      if (this.fingers.has(e.pointerId)) {
+        stop(e);
+        this.fingerMove(e);
+      }
+    });
+    const up = (e) => {
+      if (this.fingers.has(e.pointerId)) {
+        this.fingerUp(e.pointerId);
+      }
+    };
+    root.addEventListener("pointerup", up);
+    root.addEventListener("pointercancel", up);
+    root.addEventListener("lostpointercapture", up);
+    root.addEventListener("contextmenu", stop);
+    this.root = root;
+  }
+  // Where to put the overlay: inside the full-screen element when the game
+  // is in it (nothing else is drawn then), else in the page's body.
+  host() {
+    const fs2 = this.doc.fullscreenElement;
+    if (fs2 && fs2 !== this.doc.documentElement && fs2.contains(this.canvas)) {
+      return fs2;
+    }
+    return this.doc.body;
+  }
+  // Shows, hides and places the overlay. Called on every frame (cheap when
+  // nothing moved) and on resizes.
+  update() {
+    if (!this.root) {
+      return;
+    }
+    if (!this.wanted()) {
+      if (this.root.style.display !== "none") {
+        this.root.style.display = "none";
+        this.releaseAll();
+      }
+      return;
+    }
+    const host = this.host();
+    if (host && this.root.parentNode !== host) {
+      host.appendChild(this.root);
+    }
+    const r = this.area.getBoundingClientRect();
+    const vw = this.win.innerWidth;
+    const vh = this.win.innerHeight;
+    const left = Math.max(0, r.left);
+    const top = Math.max(0, r.top);
+    const w = Math.min(vw, r.right) - left;
+    const h = Math.min(vh, r.bottom) - top;
+    if (w < 40 || h < 40) {
+      this.root.style.display = "none";
+      this.releaseAll();
+      return;
+    }
+    this.root.style.display = "block";
+    const c = this.canvas.getBoundingClientRect();
+    const at2 = `${left},${top},${w},${h},${vw},${vh},${c.left},${c.top},${c.width},${c.height}`;
+    if (at2 !== this.placedFor) {
+      this.placedFor = at2;
+      this.place(left, top, w, h, vw, vh);
+    }
+  }
+  // The notch and the home bar, from CSS env(): only where the area
+  // reaches the screen's edges.
+  safeInsets() {
+    const probe = this.doc.createElement("div");
+    probe.style.cssText = "position:fixed;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)";
+    this.doc.body.appendChild(probe);
+    const cs = this.win.getComputedStyle(probe);
+    const insets = {
+      top: parseFloat(cs.paddingTop) || 0,
+      right: parseFloat(cs.paddingRight) || 0,
+      bottom: parseFloat(cs.paddingBottom) || 0,
+      left: parseFloat(cs.paddingLeft) || 0
+    };
+    probe.remove();
+    return insets;
+  }
+  place(left, top, w, h, vw, vh) {
+    const root = this.root;
+    root.style.left = `${left}px`;
+    root.style.top = `${top}px`;
+    root.style.width = `${w}px`;
+    root.style.height = `${h}px`;
+    const safe = this.safeInsets();
+    const insL = Math.max(0, safe.left - left);
+    const insR = Math.max(0, safe.right - (vw - left - w));
+    const insT = Math.max(0, safe.top - top);
+    const insB = Math.max(0, safe.bottom - (vh - top - h));
+    const margin = 12;
+    const gap = 12;
+    const c = this.canvas.getBoundingClientRect();
+    const bandL = Math.max(0, Math.min(w, c.left - left));
+    const bandR = Math.max(0, Math.min(w, left + w - c.right));
+    const bandB = Math.max(0, Math.min(h, top + h - c.bottom));
+    const bottom = margin + insB;
+    const buttons = this.buttonEls.filter((b) => b.kind === "button");
+    const menu = this.buttonEls.filter((b) => b.kind === "menu");
+    const n = buttons.length;
+    let pad = 0;
+    if (this.pad) {
+      pad = Math.max(100, Math.min(170, 0.4 * Math.min(w, h)));
+      if (bandB < pad + 2 * margin && bandL > 0) {
+        pad = Math.max(120, Math.min(pad, bandL - 2 * margin - insL));
+      }
+    }
+    const regionW = bandB < 120 && bandR >= 2 * margin + 44 ? bandR - 2 * margin - insR : w - pad - 3 * margin - insL - insR;
+    const menuRoom = menu.length ? 38 : 0;
+    const regionH = bandB >= 44 + 2 * margin ? bandB - 2 * margin - insB - menuRoom : h - 2 * margin - insT - insB;
+    let btn = 0;
+    let cols = 1;
+    for (let k = Math.min(n, 3); k >= 1; k--) {
+      const r = Math.ceil(n / k);
+      const lifted = k === 2 && r === 1 ? 0.45 : 0;
+      const size = Math.min(76, (regionW - (k - 1) * gap) / k, (regionH - (r - 1) * gap) / (r + lifted));
+      if (size > btn * 1.1) {
+        btn = size;
+        cols = k;
+      }
+    }
+    btn = Math.max(44, btn);
+    const rows2 = n ? Math.ceil(n / cols) : 0;
+    const lift = cols === 2 && rows2 === 1 ? btn * 0.45 : 0;
+    const clusterW = n ? cols * btn + (cols - 1) * gap : 0;
+    const clusterH = n ? rows2 * btn + (rows2 - 1) * gap + lift : 0;
+    if (this.pad) {
+      Object.assign(this.pad.style, {
+        width: `${pad}px`,
+        height: `${pad}px`,
+        left: `${margin + insL}px`,
+        top: `${h - bottom - pad}px`
+      });
+      if (this.knob) {
+        const k = pad * 0.44;
+        Object.assign(this.knob.style, { width: `${k}px`, height: `${k}px`, left: `${(pad - k) / 2 - 2}px`, top: `${(pad - k) / 2 - 2}px` });
+      }
+      const arm = pad * 0.3;
+      const len = pad * 0.36;
+      const mid = (pad - arm) / 2 - 2;
+      const edge = pad * 0.07;
+      const spots2 = [[mid, edge, arm, len], [mid, pad - edge - len - 4, arm, len], [edge, mid, len, arm], [pad - edge - len - 4, mid, len, arm]];
+      this.arms.forEach((node, i) => {
+        const [x2, y, aw, ah] = spots2[i];
+        Object.assign(node.style, { left: `${x2}px`, top: `${y}px`, width: `${aw}px`, height: `${ah}px` });
+      });
+    }
+    const gridLeft = w - margin - insR - clusterW;
+    const gridTop = h - bottom - clusterH;
+    buttons.forEach((b, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const y = gridTop + lift + row * (btn + gap) - (lift && col === 1 ? lift : 0);
+      Object.assign(b.node.style, {
+        width: `${btn}px`,
+        height: `${btn}px`,
+        borderRadius: "50%",
+        left: `${gridLeft + col * (btn + gap)}px`,
+        top: `${y}px`,
+        fontSize: `${Math.round(Math.max(10, Math.min(btn * 0.36, btn * 1.25 / Math.max(1, b.node.textContent.length))))}px`
+      });
+    });
+    const mw = 70;
+    const mh = 30;
+    const count = menu.length;
+    const rowW = count * mw + (count - 1) * 10;
+    const controlsTop = h - bottom - Math.max(pad, clusterH);
+    const gameBottom = c.bottom - top;
+    const spots = [];
+    if (count && controlsTop - gameBottom >= mh + 8 && gameBottom > 0) {
+      const y = gameBottom + (controlsTop - gameBottom - mh) / 2;
+      menu.forEach((b, i) => spots.push([(w - rowW) / 2 + i * (mw + 10), y]));
+    } else if (count && bandR >= mw + 2 * margin + insR && gridTop - margin - insT >= count * (mh + 8)) {
+      menu.forEach((b, i) => spots.push([w - margin - insR - mw - (bandR - mw - 2 * margin - insR) / 2, margin + insT + i * (mh + 8)]));
+    } else {
+      const freeLeft = this.pad ? margin + insL + pad + 8 : 8;
+      const freeRight = n ? gridLeft - 8 : w - 8;
+      const y = freeRight - freeLeft >= rowW ? h - bottom - mh : controlsTop - mh - 12;
+      menu.forEach((b, i) => spots.push([(w - rowW) / 2 + i * (mw + 10), Math.max(0, y)]));
+    }
+    menu.forEach((b, i) => {
+      Object.assign(b.node.style, {
+        width: `${mw}px`,
+        height: `${mh}px`,
+        borderRadius: `${mh / 2}px`,
+        left: `${spots[i][0]}px`,
+        top: `${spots[i][1]}px`,
+        fontSize: "13px"
+      });
+    });
+    this.paint();
+  }
+  // The button under a point, or null: the nearest whose (slightly
+  // enlarged) shape holds it, so a finger sliding across passes from one
+  // to the next.
+  buttonAt(x2, y) {
+    let best = null;
+    let bestDist = Infinity;
+    for (const b of this.buttonEls) {
+      const r = b.node.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      const d = b.kind === "button" ? Math.hypot(x2 - cx, y - cy) - r.width * 0.6 : Math.max(Math.abs(x2 - cx) - r.width / 2, Math.abs(y - cy) - r.height / 2) - 6;
+      if (d <= 0 && d < bestDist) {
+        best = b;
+        bestDist = d;
+      }
+    }
+    return best;
+  }
+  fingerDown(e) {
+    if (e.pointerType === "touch") {
+      this.touchSeen = true;
+    }
+    try {
+      e.target.setPointerCapture(e.pointerId);
+    } catch {
+    }
+    if (this.pad && this.pad.contains(e.target)) {
+      for (const [id, finger] of this.fingers) {
+        if (finger.kind === "pad") {
+          this.fingerUp(id);
+        }
+      }
+      this.fingers.set(e.pointerId, { kind: "pad", held: /* @__PURE__ */ new Set() });
+    } else {
+      this.fingers.set(e.pointerId, { kind: "button", held: /* @__PURE__ */ new Set() });
+    }
+    this.fingerMove(e);
+  }
+  fingerMove(e) {
+    const finger = this.fingers.get(e.pointerId);
+    const next = /* @__PURE__ */ new Set();
+    if (finger.kind === "pad") {
+      const r = this.pad.getBoundingClientRect();
+      const radius = r.width / 2;
+      const dx = e.clientX - (r.left + radius);
+      const dy = e.clientY - (r.top + radius);
+      padDirections(dx, dy, radius).forEach((on2, i) => {
+        if (on2) {
+          next.add(this.layout.padKeys[i]);
+        }
+      });
+      finger.dx = dx;
+      finger.dy = dy;
+    } else {
+      const b = this.buttonAt(e.clientX, e.clientY);
+      if (b) {
+        next.add(b.key);
+      }
+    }
+    finger.held = holdKeys(this.keys, finger.held, next);
+    this.paint();
+  }
+  fingerUp(id) {
+    const finger = this.fingers.get(id);
+    this.fingers.delete(id);
+    holdKeys(this.keys, finger.held, /* @__PURE__ */ new Set());
+    this.paint();
+  }
+  releaseAll() {
+    for (const id of [...this.fingers.keys()]) {
+      this.fingerUp(id);
+    }
+  }
+  // Pressed looks pressed.
+  paint() {
+    const held = /* @__PURE__ */ new Set();
+    let padFinger = null;
+    for (const finger of this.fingers.values()) {
+      finger.held.forEach((k) => held.add(k));
+      if (finger.kind === "pad") {
+        padFinger = finger;
+      }
+    }
+    for (const b of this.buttonEls) {
+      b.node.style.background = held.has(b.key) ? FACE_DOWN : FACE;
+    }
+    if (this.layout && this.arms.length) {
+      this.arms.forEach((node, i) => {
+        node.style.background = padFinger && padFinger.held.has(this.layout.padKeys[i]) ? FACE_DOWN : FACE;
+      });
+    }
+    if (this.knob) {
+      let x2 = 0;
+      let y = 0;
+      if (padFinger) {
+        const max = this.pad.getBoundingClientRect().width * 0.3;
+        const len = Math.hypot(padFinger.dx, padFinger.dy) || 1;
+        const k = Math.min(1, max / len);
+        x2 = padFinger.dx * k;
+        y = padFinger.dy * k;
+      }
+      this.knob.style.transform = `translate(${x2}px,${y}px)`;
+    }
+  }
+  dispose() {
+    this.releaseAll();
+    for (const { target, type, handler, options } of this.listeners) {
+      target.removeEventListener(type, handler, options);
+    }
+    this.listeners = [];
+    if (this.root) {
+      this.root.remove();
+      this.root = null;
+    }
+  }
+};
+var GamepadInput = class {
+  constructor({ keys, getLayout, onUse = null, nav = typeof navigator !== "undefined" ? navigator : null }) {
+    this.keys = keys;
+    this.getLayout = getLayout;
+    this.onUse = onUse;
+    this.nav = nav;
+    this.held = /* @__PURE__ */ new Map();
+  }
+  keysFor(pad) {
+    const layout = this.getLayout() || DEFAULT_TOUCH_LAYOUT;
+    const [up, down, left, right] = layout.padKeys || DEFAULT_TOUCH_LAYOUT.padKeys;
+    const actions = (layout.buttons || []).map((b) => b.key);
+    const menu = (layout.menu || []).map((b) => b.key);
+    const next = /* @__PURE__ */ new Set();
+    const pressed = (i) => {
+      const b = pad.buttons?.[i];
+      return !!b && (b.pressed || b.value > 0.5);
+    };
+    const standard = pad.mapping === "standard";
+    const ax = Number(pad.axes?.[0]) || 0;
+    const ay = Number(pad.axes?.[1]) || 0;
+    const [su, sd, sl, sr2] = padDirections(ax, ay, 1, 0.4);
+    if (standard && pressed(12) || su) {
+      next.add(up);
+    }
+    if (standard && pressed(13) || sd) {
+      next.add(down);
+    }
+    if (standard && pressed(14) || sl) {
+      next.add(left);
+    }
+    if (standard && pressed(15) || sr2) {
+      next.add(right);
+    }
+    for (let i = 0; i < 6; i++) {
+      const key = actions[i] || DEFAULT_GAMEPAD_KEYS[i];
+      if (key && pressed(i)) {
+        next.add(key);
+      }
+    }
+    if (pressed(9)) {
+      next.add(menu[0] || "enter");
+    }
+    if (pressed(8)) {
+      next.add(menu[1] || "escape");
+    }
+    return next;
+  }
+  poll() {
+    let pads = [];
+    try {
+      pads = typeof this.nav?.getGamepads === "function" ? Array.from(this.nav.getGamepads() || []) : [];
+    } catch {
+      pads = [];
+    }
+    const seen = /* @__PURE__ */ new Set();
+    let used = false;
+    for (const pad of pads) {
+      if (!pad || pad.connected === false) {
+        continue;
+      }
+      seen.add(pad.index);
+      const before = this.held.get(pad.index) || /* @__PURE__ */ new Set();
+      const next = this.keysFor(pad);
+      if (next.size > 0 && [...next].some((k) => !before.has(k))) {
+        used = true;
+      }
+      this.held.set(pad.index, holdKeys(this.keys, before, next));
+    }
+    for (const [index, keys] of this.held) {
+      if (!seen.has(index)) {
+        holdKeys(this.keys, keys, /* @__PURE__ */ new Set());
+        this.held.delete(index);
+      }
+    }
+    if (used && typeof this.onUse === "function") {
+      this.onUse();
+    }
+  }
+  releaseAll() {
+    for (const keys of this.held.values()) {
+      holdKeys(this.keys, keys, /* @__PURE__ */ new Set());
+    }
+    this.held.clear();
+  }
+};
+
 // divjs.js
 function compileSource(source) {
   const lexer = new Lexer(source);
@@ -15839,7 +16579,18 @@ function runDivDemo(options) {
     // setNetInvite().
     netIceServers,
     netUi,
-    netInviteLink
+    netInviteLink,
+    // On-screen controls for phones and tablets (vm/controls.js): 'auto'
+    // shows them from the first touch until a key is typed on a keyboard,
+    // true always, false never. touchLayout: which pad and buttons (see
+    // vm/controls.js; false = none, for mouse-only games); a program can
+    // change it with touch_pad / touch_buttons / touch_menu. touchArea: the
+    // element whose bottom corners they sit in (default: the canvas).
+    touchControls = "auto",
+    touchLayout,
+    touchArea,
+    // Gamepads press the same keys as the on-screen controls.
+    gamepad = true
   } = options || {};
   const canvasEl = resolveCanvas(canvas);
   const screenCtx = canvasEl.getContext("2d", { willReadFrequently: true });
@@ -15860,6 +16611,20 @@ function runDivDemo(options) {
   const initialRuntimeWidth = runtimeCanvas.width;
   const initialRuntimeHeight = runtimeCanvas.height;
   const netPanel = netUi || (typeof document !== "undefined" ? createNetPanel(document, { inviteLink: netInviteLink }) : null);
+  const virtualKeys = new VirtualKeys(() => runtime);
+  let currentTouchLayout = touchLayout;
+  const touch = touchControls !== false && typeof document !== "undefined" ? new TouchControls({
+    canvas: canvasEl,
+    area: typeof touchArea === "string" ? document.getElementById(touchArea) : touchArea,
+    keys: virtualKeys,
+    mode: touchControls,
+    layout: touchLayout
+  }) : null;
+  const pads = gamepad ? new GamepadInput({
+    keys: virtualKeys,
+    getLayout: () => touch ? touch.layout : normalizeTouchLayout(currentTouchLayout),
+    onUse: () => touch?.otherInput()
+  }) : null;
   let vm = null;
   let bytecode = null;
   let runtime = null;
@@ -15909,6 +16674,8 @@ function runDivDemo(options) {
     if (runtime) {
       runtime.clearKeyState();
     }
+    touch?.releaseAll();
+    pads?.releaseAll();
   };
   window.addEventListener("keydown", handleKeyDown, { passive: false });
   window.addEventListener("keyup", handleKeyUp);
@@ -15946,6 +16713,8 @@ function runDivDemo(options) {
     if (!running || runId !== generation) {
       return;
     }
+    pads?.poll();
+    touch?.update();
     const targetFps = runtime.targetFps || 0;
     if (targetFps > 0) {
       const frameInterval = 1e3 / targetFps;
@@ -16045,6 +16814,7 @@ function runDivDemo(options) {
       ticker.stop();
       ticker = null;
     }
+    touch?.setRunning(false);
   };
   const start = (nextSource) => {
     if (nextSource !== void 0) {
@@ -16072,6 +16842,7 @@ function runDivDemo(options) {
         files: currentFiles,
         netIceServers,
         netUi: netPanel,
+        touchHost: touch,
         width: runtimeCanvas.width,
         height: runtimeCanvas.height,
         clearColor,
@@ -16089,6 +16860,9 @@ function runDivDemo(options) {
         }
       });
       runtime.registerNatives();
+      virtualKeys.reapply();
+      touch?.reset();
+      touch?.setRunning(true);
       running = true;
       lastTs = 0;
       nextFrameTs = 0;
@@ -16109,6 +16883,8 @@ function runDivDemo(options) {
     window.removeEventListener("keydown", handleKeyDown);
     window.removeEventListener("keyup", handleKeyUp);
     window.removeEventListener("blur", handleBlur);
+    touch?.dispose();
+    pads?.releaseAll();
     if (netPanel) {
       netPanel.close();
     }
@@ -16127,6 +16903,10 @@ function runDivDemo(options) {
       netPanel.invite = code ? String(code) : null;
     }
   };
+  const setTouchLayout = (layout) => {
+    currentTouchLayout = layout;
+    touch?.setBaseLayout(layout);
+  };
   const getState = () => ({
     running,
     vm,
@@ -16144,6 +16924,7 @@ function runDivDemo(options) {
     setSource,
     setFiles,
     setNetInvite,
+    setTouchLayout,
     getState
   };
 }
@@ -16665,6 +17446,9 @@ try
     source: game.source,
     files,
     clearColor: game.clearColor,
+    // On a phone the controls sit in the window's corners, around the game.
+    touchLayout: game.touch,
+    touchArea: document.body,
     onFrame: () =>
     {
       if (fitted !== canvas.width + 'x' + canvas.height)
@@ -16692,7 +17476,7 @@ catch (err)
   showError(err);
 }
 `;
-function buildPackedHtml({ modules, source, files = {}, title = "DivJS game", width, height, clearColor = "#000000", credit = true }) {
+function buildPackedHtml({ modules, source, files = {}, title = "DivJS game", width, height, clearColor = "#000000", credit = true, touch }) {
   const [autoW, autoH] = programResolution(source) || [320, 200];
   if (!/^(#[0-9a-f]{3,8}|[a-z]+)$/i.test(String(clearColor))) {
     clearColor = "#000000";
@@ -16703,7 +17487,7 @@ function buildPackedHtml({ modules, source, files = {}, title = "DivJS game", wi
   for (const [name, bytes] of Object.entries(files)) {
     encoded[name] = bytesToBase64(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
   }
-  const game = { source: String(source), files: encoded, clearColor };
+  const game = { source: String(source), files: encoded, clearColor, touch: touch === void 0 ? null : touch };
   return `<!DOCTYPE html>
 <!--
 ${ENGINE_NOTICE}

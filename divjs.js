@@ -3,6 +3,7 @@ import { Parser } from './parser/parser.js';
 import { Compiler } from './compiler/compiler.js';
 import { VM } from './vm/vm.js';
 import { CanvasEngineRuntime } from './vm/runtime.js';
+import { TouchControls, GamepadInput, VirtualKeys, normalizeTouchLayout } from './vm/controls.js';
 
 function compileSource(source) {
   const lexer = new Lexer(source);
@@ -329,7 +330,18 @@ export function runDivDemo(options) {
     // setNetInvite().
     netIceServers,
     netUi,
-    netInviteLink
+    netInviteLink,
+    // On-screen controls for phones and tablets (vm/controls.js): 'auto'
+    // shows them from the first touch until a key is typed on a keyboard,
+    // true always, false never. touchLayout: which pad and buttons (see
+    // vm/controls.js; false = none, for mouse-only games); a program can
+    // change it with touch_pad / touch_buttons / touch_menu. touchArea: the
+    // element whose bottom corners they sit in (default: the canvas).
+    touchControls = 'auto',
+    touchLayout,
+    touchArea,
+    // Gamepads press the same keys as the on-screen controls.
+    gamepad = true
   } = options || {};
 
   const canvasEl = resolveCanvas(canvas);
@@ -362,6 +374,25 @@ export function runDivDemo(options) {
   const initialRuntimeWidth = runtimeCanvas.width;
   const initialRuntimeHeight = runtimeCanvas.height;
   const netPanel = netUi || (typeof document !== 'undefined' ? createNetPanel(document, { inviteLink: netInviteLink }) : null);
+
+  const virtualKeys = new VirtualKeys(() => runtime);
+  let currentTouchLayout = touchLayout;
+  const touch = touchControls !== false && typeof document !== 'undefined'
+    ? new TouchControls({
+      canvas: canvasEl,
+      area: typeof touchArea === 'string' ? document.getElementById(touchArea) : touchArea,
+      keys: virtualKeys,
+      mode: touchControls,
+      layout: touchLayout
+    })
+    : null;
+  const pads = gamepad
+    ? new GamepadInput({
+      keys: virtualKeys,
+      getLayout: () => (touch ? touch.layout : normalizeTouchLayout(currentTouchLayout)),
+      onUse: () => touch?.otherInput()
+    })
+    : null;
 
   let vm = null;
   let bytecode = null; // the running program's, for tools (global names, disassembly)
@@ -442,6 +473,8 @@ export function runDivDemo(options) {
     if (runtime) {
       runtime.clearKeyState();
     }
+    touch?.releaseAll();
+    pads?.releaseAll();
   };
 
   window.addEventListener('keydown', handleKeyDown, { passive: false });
@@ -494,6 +527,10 @@ export function runDivDemo(options) {
     {
       return;
     }
+
+    // Before the frame reads its input (key_pressed, lockstep capture).
+    pads?.poll();
+    touch?.update();
 
     const targetFps = runtime.targetFps || 0;
     if (targetFps > 0)
@@ -655,6 +692,7 @@ export function runDivDemo(options) {
       ticker.stop();
       ticker = null;
     }
+    touch?.setRunning(false);
   };
 
   const start = (nextSource) =>
@@ -693,6 +731,7 @@ export function runDivDemo(options) {
         files: currentFiles,
         netIceServers,
         netUi: netPanel,
+        touchHost: touch,
         width: runtimeCanvas.width,
         height: runtimeCanvas.height,
         clearColor,
@@ -712,6 +751,10 @@ export function runDivDemo(options) {
         }
       });
       runtime.registerNatives();
+      // Keys still held on the controls or a gamepad carry over.
+      virtualKeys.reapply();
+      touch?.reset();
+      touch?.setRunning(true);
 
       running = true;
       lastTs = 0;
@@ -740,6 +783,8 @@ export function runDivDemo(options) {
     window.removeEventListener('keydown', handleKeyDown);
     window.removeEventListener('keyup', handleKeyUp);
     window.removeEventListener('blur', handleBlur);
+    touch?.dispose();
+    pads?.releaseAll();
     if (netPanel)
     {
       netPanel.close();
@@ -769,6 +814,14 @@ export function runDivDemo(options) {
     }
   };
 
+  // The on-screen controls' layout for this and the next runs (see
+  // touchLayout).
+  const setTouchLayout = (layout) =>
+  {
+    currentTouchLayout = layout;
+    touch?.setBaseLayout(layout);
+  };
+
   const getState = () => ({
     running,
     vm,
@@ -788,6 +841,7 @@ export function runDivDemo(options) {
     setSource,
     setFiles,
     setNetInvite,
+    setTouchLayout,
     getState
   };
 }
