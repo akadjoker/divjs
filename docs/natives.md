@@ -34,7 +34,7 @@ Conventions used below:
 | `key_pressed` | `key` | 1/0 | 1 only in the frame after the key went down (edge); `key()` stays 1 while held. Not a DIV function. |
 | `mouse_x` | — | number | Cursor x in screen coordinates. Same as `mouse.x`. |
 | `mouse_y` | — | number | Cursor y in screen coordinates. Same as `mouse.y`. |
-| `mouse_button` | `button` | 1/0 | 1 while mouse button `button` (0 left, 1 middle, 2 right) is held during this frame; a click shorter than a frame still reads 1 for one frame. `mouse.left`, `mouse.middle`, `mouse.right` are the same buttons. |
+| `mouse_button` | `button` | 1/0 | 1 while mouse button `button` (0 left, 1 middle, 2 right) is held during this frame; a click shorter than a frame still reads 1 for one frame. `mouse.left`, `mouse.middle`, `mouse.right` are the same buttons. On a touch screen the first finger is the mouse: it moves the cursor and holds the left button while it touches. |
 | `__get_mouse_field` | `field` | value | Compiler-internal: reads `mouse.<field>` (graph, file, size…). |
 | `__set_mouse_field` | `field, value` | value | Compiler-internal: writes `mouse.<field>`. |
 

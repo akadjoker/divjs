@@ -223,6 +223,8 @@ export class CanvasEngineRuntime {
       this._audioUnlock = () => this.audio.unlock();
       window.addEventListener('pointerdown', this._audioUnlock, true);
       window.addEventListener('keydown', this._audioUnlock, true);
+      // Some mobile browsers only count a finger's release as the gesture.
+      window.addEventListener('touchend', this._audioUnlock, true);
     }
     // Project files (see setFiles): normalized path -> entry, and file
     // name -> entry for lookups by name alone.
@@ -255,28 +257,73 @@ export class CanvasEngineRuntime {
       m.x = Math.round((e.clientX - r.left) * (this.width / r.width));
       m.y = Math.round((e.clientY - r.top) * (this.height / r.height));
     };
+    // Pointer events, so a finger or a pen is the mouse too: pressing,
+    // holding and dragging on a touch screen move mouse.x/y and hold
+    // mouse.left, which the browser's made-up mouse events don't do (they
+    // only come as one burst when the finger lifts). Only the first finger
+    // is the mouse; more fingers are left to the page. The held buttons are
+    // read from e.buttons (1 left, 2 right, 4 middle) on every event, which
+    // also catches a second mouse button pressed while one is held - the
+    // browser sends that as a pointermove, not a pointerdown.
+    const syncButtons = (e) =>
+    {
+      const held = [(e.buttons & 1) !== 0, (e.buttons & 4) !== 0, (e.buttons & 2) !== 0];
+      for (let b = 0; b < 3; b++)
+      {
+        if (held[b] && !m.buttons[b])
+        {
+          m.downSinceFrame[b] = true;
+        }
+        m.buttons[b] = held[b];
+      }
+    };
     const handlers = {
-      mousemove: (e) =>
+      pointermove: (e) =>
       {
+        if (!e.isPrimary)
+        {
+          return;
+        }
         toScreen(e);
+        syncButtons(e);
       },
-      mousedown: (e) =>
+      pointerdown: (e) =>
       {
+        if (!e.isPrimary)
+        {
+          return;
+        }
         toScreen(e);
-        m.buttons[e.button] = true;
-        m.downSinceFrame[e.button] = true;
+        syncButtons(e);
+        // Keep getting this pointer's moves and release when a drag
+        // leaves the canvas.
+        try
+        {
+          element.setPointerCapture(e.pointerId);
+        }
+        catch
+        {
+          // an untrusted (synthetic) event has no active pointer
+        }
       },
-      mouseup: (e) =>
+      pointerup: (e) =>
       {
+        if (!e.isPrimary)
+        {
+          return;
+        }
         toScreen(e);
-        m.buttons[e.button] = false;
+        syncButtons(e);
       },
-      mouseleave: () =>
+      // The browser took the pointer over (a system gesture) or it left
+      // without a release: nothing stays held.
+      pointercancel: () =>
       {
         m.buttons = [false, false, false];
       },
       // The right button is game input (mouse.right): the browser menu
-      // must not open over the program.
+      // must not open over the program - nor the long-press menu on a
+      // touch screen.
       contextmenu: (e) =>
       {
         e.preventDefault();
@@ -286,6 +333,13 @@ export class CanvasEngineRuntime {
     {
       element.addEventListener(type, handler);
       this._mouseListeners.push({ element, type, handler });
+    }
+    // A finger on the canvas is game input, not a page scroll or zoom.
+    if (element.style)
+    {
+      this._touchActionElement = element;
+      this._touchActionBefore = element.style.touchAction;
+      element.style.touchAction = 'none';
     }
   }
 
@@ -374,6 +428,7 @@ export class CanvasEngineRuntime {
     {
       window.removeEventListener('pointerdown', this._audioUnlock, true);
       window.removeEventListener('keydown', this._audioUnlock, true);
+      window.removeEventListener('touchend', this._audioUnlock, true);
       this._audioUnlock = null;
     }
     for (const { element, type, handler } of this._mouseListeners)
@@ -381,6 +436,11 @@ export class CanvasEngineRuntime {
       element.removeEventListener(type, handler);
     }
     this._mouseListeners = [];
+    if (this._touchActionElement)
+    {
+      this._touchActionElement.style.touchAction = this._touchActionBefore;
+      this._touchActionElement = null;
+    }
     this.clearKeyState();
     this._mouse.buttons = [false, false, false];
     this._mouse.downSinceFrame = [false, false, false];

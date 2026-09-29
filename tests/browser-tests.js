@@ -3500,9 +3500,9 @@ async function testMouseMapsOntoVirtualScreen()
   {
     const runtime = runner.getState().runtime;
     const rect = canvas.getBoundingClientRect();
-    const init = { clientX: rect.left + 200, clientY: rect.top + 120, button: 0, bubbles: true };
-    canvas.dispatchEvent(new MouseEvent('mousemove', init));
-    canvas.dispatchEvent(new MouseEvent('mousedown', init));
+    const init = { clientX: rect.left + 200, clientY: rect.top + 120, button: 0, buttons: 1, isPrimary: true, bubbles: true };
+    canvas.dispatchEvent(new PointerEvent('pointermove', { ...init, buttons: 0 }));
+    canvas.dispatchEvent(new PointerEvent('pointerdown', init));
     assert(runtime._mouse.x === 100 && runtime._mouse.y === 60,
       `rato devia mapear para (100,60) no ecra virtual 320x200, obtido (${runtime._mouse.x},${runtime._mouse.y})`);
     assert(runtime._mouse.buttons[0] === true, 'botao esquerdo devia estar carregado');
@@ -3519,6 +3519,80 @@ async function testMouseMapsOntoVirtualScreen()
 // the middle button. A click that starts and ends between two frames is
 // still seen for one frame, and the browser's context menu does not open
 // over the program (the right button is game input).
+// A finger is the mouse: pressing, holding and dragging move mouse.x/y
+// and hold mouse.left for as long as the finger stays down (the browser's
+// made-up mouse events only come as one burst when it lifts). A second
+// finger doesn't move the cursor, a cancelled touch releases the button,
+// and the canvas takes touches from the page (no scroll) until the runtime
+// is disposed.
+async function testTouchIsTheMouse()
+{
+  const bytecode = compileSource(`program touch_mouse;
+global l; mx; my;
+begin
+  loop
+    l = mouse.left; mx = mouse.x; my = mouse.y;
+    frame;
+  end
+end`);
+  const canvas = makeTestCanvas();
+  canvas.style.touchAction = 'pan-y';
+  const vm = new VM();
+  vm.load(bytecode);
+  const runtime = new CanvasEngineRuntime({ vm, ctx: canvas.getContext('2d'), width: 320, height: 200 });
+  runtime.registerNatives();
+  const read = (name) => Number(vm.globals.get(bytecode.globals[name]));
+  const step = () =>
+  {
+    runtime.beginFrame(1 / 60);
+    vm.tick();
+  };
+  const touch = (type, x, y, buttons, isPrimary = true) =>
+  {
+    const rect = canvas.getBoundingClientRect();
+    canvas.dispatchEvent(new PointerEvent(type, {
+      clientX: rect.left + x * rect.width / 320, clientY: rect.top + y * rect.height / 200,
+      button: type === 'pointermove' ? -1 : 0, buttons, isPrimary,
+      pointerId: isPrimary ? 1 : 2, pointerType: 'touch', bubbles: true, cancelable: true
+    }));
+  };
+  try
+  {
+    assert(canvas.style.touchAction === 'none', `o canvas devia ter touch-action none, tem "${canvas.style.touchAction}"`);
+    step();
+    touch('pointerdown', 40, 50, 1);
+    for (let i = 0; i < 3; i++)
+    {
+      step();
+      assert(read('l') === 1, `com o dedo em baixo mouse.left devia ficar 1 (frame ${i})`);
+    }
+    touch('pointermove', 120, 80, 1);
+    step();
+    assert(read('l') === 1 && read('mx') === 120 && read('my') === 80,
+      `a arrastar: esperado l=1 em (120,80), obtido l=${read('l')} em (${read('mx')},${read('my')})`);
+    touch('pointerdown', 300, 10, 1, false);
+    touch('pointermove', 290, 20, 1, false);
+    step();
+    assert(read('mx') === 120 && read('my') === 80, `um segundo dedo nao devia mexer o cursor, foi para (${read('mx')},${read('my')})`);
+    touch('pointerup', 120, 80, 0);
+    step();
+    assert(read('l') === 0, 'ao levantar o dedo mouse.left devia voltar a 0');
+    touch('pointerdown', 60, 60, 1);
+    step();
+    assert(read('l') === 1, 'o dedo devia carregar o botao');
+    canvas.dispatchEvent(new PointerEvent('pointercancel', { isPrimary: true, pointerId: 1, pointerType: 'touch', bubbles: true }));
+    step();
+    step();
+    assert(read('l') === 0, 'um toque cancelado pelo browser nao devia deixar o botao carregado');
+  }
+  finally
+  {
+    runtime.dispose();
+    assert(canvas.style.touchAction === 'pan-y', `dispose devia repor o touch-action, ficou "${canvas.style.touchAction}"`);
+    canvas.remove();
+  }
+}
+
 async function testMouseButtonsAndShortClicks()
 {
   const bytecode = compileSource(`program mouse_buttons;
@@ -3541,36 +3615,47 @@ end`);
     runtime.beginFrame(1 / 60);
     vm.tick();
   };
-  const fire = (type, button) =>
+  // buttons: what is held after the event (1 left, 2 right, 4 middle).
+  const fire = (type, button, buttons) =>
   {
     const rect = canvas.getBoundingClientRect();
-    const event = new MouseEvent(type, { clientX: rect.left + 10, clientY: rect.top + 10, button, bubbles: true, cancelable: true });
+    const init = { clientX: rect.left + 10, clientY: rect.top + 10, button, buttons, isPrimary: true, pointerType: 'mouse', bubbles: true, cancelable: true };
+    const event = type === 'contextmenu' ? new MouseEvent(type, init) : new PointerEvent(type, init);
     canvas.dispatchEvent(event);
     return event;
   };
   try
   {
     step();
-    fire('mousedown', 2);
+    fire('pointerdown', 2, 2);
     step();
     assert(read('r') === 1 && read('m') === 0 && read('l') === 0,
       `botao direito: esperado r=1 m=0 l=0, obtido r=${read('r')} m=${read('m')} l=${read('l')}`);
-    fire('mouseup', 2);
-    fire('mousedown', 1);
+    fire('pointerup', 2, 0);
+    fire('pointerdown', 1, 4);
     step();
     assert(read('m') === 1 && read('r') === 0, `botao do meio: esperado m=1 r=0, obtido m=${read('m')} r=${read('r')}`);
-    fire('mouseup', 1);
+    fire('pointerup', 1, 0);
     step();
+
+    // A second button pressed while one is held comes as a pointermove.
+    fire('pointerdown', 0, 1);
+    fire('pointermove', 2, 3);
+    step();
+    assert(read('l') === 1 && read('r') === 1, `esquerdo + direito juntos: esperado l=1 r=1, obtido l=${read('l')} r=${read('r')}`);
+    fire('pointerup', 0, 0);
+    step();
+    const clicksBefore = read('clicks');
 
     // A click shorter than a frame: down and up before the next tick.
-    fire('mousedown', 0);
-    fire('mouseup', 0);
+    fire('pointerdown', 0, 1);
+    fire('pointerup', 0, 0);
     step();
-    assert(read('clicks') === 1, `um clique curto devia contar 1 frame, contou ${read('clicks')}`);
+    assert(read('clicks') === clicksBefore + 1, `um clique curto devia contar 1 frame, contou ${read('clicks') - clicksBefore}`);
     step();
-    assert(read('clicks') === 1, `o clique curto so devia contar uma vez, contou ${read('clicks')}`);
+    assert(read('clicks') === clicksBefore + 1, `o clique curto so devia contar uma vez, contou ${read('clicks') - clicksBefore}`);
 
-    const menu = fire('contextmenu', 2);
+    const menu = fire('contextmenu', 2, 0);
     assert(menu.defaultPrevented, 'o menu de contexto do browser nao devia abrir sobre o jogo');
   }
   finally
@@ -4540,6 +4625,7 @@ export async function runAllTests() {
     ['runDivDemo releases mouse listeners of a replaced runtime', testRunDivDemoReleasesMouseListenersOfReplacedRuntime],
     ['mouse maps onto the virtual screen', testMouseMapsOntoVirtualScreen],
     ['mouse.left/middle/right, short clicks and no context menu', testMouseButtonsAndShortClicks],
+    ['a finger is the mouse: hold, drag, one finger only, cancel', testTouchIsTheMouse],
     ['project files are loaded before URLs (by path or name, any case)', testProjectFilesAreLoadedBeforeUrls],
     ['physics: fall, stack, contact, impact, units, teleport, pin, removal', testPhysicsBodiesFallStackAndCollide],
     ['physics: anchors, add_box, pending material, ids, type, weld, rope length, slack, limits, motor, queries, sleep, min/max', testPhysicsSecondRound],

@@ -12131,6 +12131,7 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       this._audioUnlock = () => this.audio.unlock();
       window.addEventListener("pointerdown", this._audioUnlock, true);
       window.addEventListener("keydown", this._audioUnlock, true);
+      window.addEventListener("touchend", this._audioUnlock, true);
     }
     this._files = /* @__PURE__ */ new Map();
     this._filesByName = /* @__PURE__ */ new Map();
@@ -12152,24 +12153,49 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       m.x = Math.round((e.clientX - r.left) * (this.width / r.width));
       m.y = Math.round((e.clientY - r.top) * (this.height / r.height));
     };
+    const syncButtons = (e) => {
+      const held = [(e.buttons & 1) !== 0, (e.buttons & 4) !== 0, (e.buttons & 2) !== 0];
+      for (let b = 0; b < 3; b++) {
+        if (held[b] && !m.buttons[b]) {
+          m.downSinceFrame[b] = true;
+        }
+        m.buttons[b] = held[b];
+      }
+    };
     const handlers = {
-      mousemove: (e) => {
+      pointermove: (e) => {
+        if (!e.isPrimary) {
+          return;
+        }
         toScreen(e);
+        syncButtons(e);
       },
-      mousedown: (e) => {
+      pointerdown: (e) => {
+        if (!e.isPrimary) {
+          return;
+        }
         toScreen(e);
-        m.buttons[e.button] = true;
-        m.downSinceFrame[e.button] = true;
+        syncButtons(e);
+        try {
+          element.setPointerCapture(e.pointerId);
+        } catch {
+        }
       },
-      mouseup: (e) => {
+      pointerup: (e) => {
+        if (!e.isPrimary) {
+          return;
+        }
         toScreen(e);
-        m.buttons[e.button] = false;
+        syncButtons(e);
       },
-      mouseleave: () => {
+      // The browser took the pointer over (a system gesture) or it left
+      // without a release: nothing stays held.
+      pointercancel: () => {
         m.buttons = [false, false, false];
       },
       // The right button is game input (mouse.right): the browser menu
-      // must not open over the program.
+      // must not open over the program - nor the long-press menu on a
+      // touch screen.
       contextmenu: (e) => {
         e.preventDefault();
       }
@@ -12177,6 +12203,11 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     for (const [type, handler] of Object.entries(handlers)) {
       element.addEventListener(type, handler);
       this._mouseListeners.push({ element, type, handler });
+    }
+    if (element.style) {
+      this._touchActionElement = element;
+      this._touchActionBefore = element.style.touchAction;
+      element.style.touchAction = "none";
     }
   }
   // Release everything this runtime attached outside itself. A host that
@@ -12247,12 +12278,17 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     if (this._audioUnlock) {
       window.removeEventListener("pointerdown", this._audioUnlock, true);
       window.removeEventListener("keydown", this._audioUnlock, true);
+      window.removeEventListener("touchend", this._audioUnlock, true);
       this._audioUnlock = null;
     }
     for (const { element, type, handler } of this._mouseListeners) {
       element.removeEventListener(type, handler);
     }
     this._mouseListeners = [];
+    if (this._touchActionElement) {
+      this._touchActionElement.style.touchAction = this._touchActionBefore;
+      this._touchActionElement = null;
+    }
     this.clearKeyState();
     this._mouse.buttons = [false, false, false];
     this._mouse.downSinceFrame = [false, false, false];
