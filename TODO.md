@@ -208,7 +208,7 @@ existing behavior extended to five more names.
 process's fields through `__get_path`/`__set_path`'s relative roots
 (runtime.js `resolveRelativeProcessRoot`); any variable holding a process
 id works too (`id2.x`). `son`/`bigbro`/`smallbro` are O(1) links kept on
-the Process at spawn (see docs/review-2026-09.md, P3.13).
+the Process at spawn.
 
 ---
 

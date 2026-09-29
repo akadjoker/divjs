@@ -734,7 +734,7 @@ async function testMissingSpawnProcessFailsGracefully() {
 
   vm.tick();
   // 0: the program only SPAWNs (nothing, the process doesn't exist) and
-  // then HALTs, and MAIN's own Process ends with it (P3.8) - so the
+  // then HALTs, and MAIN's own Process ends with it - so the
   // assertion is that the SPAWN added nothing that outlives MAIN.
   assert(vm.processManager.count() === 0, `SPAWN de processo inexistente nao devia criar processo, count=${vm.processManager.count()}`);
   assert(vm.mainStack[vm.mainStack.length - 1] === 0, 'SPAWN de processo inexistente devia empurrar 0');
@@ -3077,7 +3077,7 @@ async function testRelativeProcessFieldAccessFatherAndSon() {
   assert(child.y === 77, `set son.y esperado child.y=77, obtido ${child.y}`);
 }
 
-// ── Regression tests for docs/review-2026-09.md, priority 1 ─────────────────
+// ── Regression tests, part 1 ────────────────────────────────────────────────
 
 function readGlobal(vm, bytecode, name)
 {
@@ -3106,7 +3106,7 @@ function runHeadless(source, ticks = 3)
 
 async function testReturnInsideIfDoesNotFallThroughIntoNextBody()
 {
-  // P1.1: the implicit RETURN was skipped whenever the last emitted
+  // The implicit RETURN was skipped whenever the last emitted
   // instruction was a RETURN - even one nested in an IF - so the other
   // path ran straight into the next FUNCTION/PROCESS/MAIN.
   const { bytecode, vm, log } = runHeadless(`program fallthrough;
@@ -3153,7 +3153,7 @@ end`);
 
 async function testValuelessReturnDoesNotConsumeCallerOperand()
 {
-  // P1.2: a FUNCTION without a return value left nothing on the stack and
+  // A FUNCTION without a return value left nothing on the stack and
   // RETURN popped the caller's pending operand instead.
   const { bytecode, vm, log } = runHeadless(`program void_return;
 global r1; r2; r3;
@@ -3184,7 +3184,7 @@ end`);
 
 async function testFrameInsideFunctionKeepsProcessFields()
 {
-  // P1.3: a process that yielded inside a FUNCTION had the function's
+  // A process that yielded inside a FUNCTION had the function's
   // frame stored as its own locals, so its x/y became the function's
   // arguments and sync() wrote the id into the function's slot 5.
   const { bytecode, vm } = runHeadless(`program frame_in_function;
@@ -3225,7 +3225,7 @@ end`, 2);
 
 async function testPathAssignmentStatementsDoNotLeakStack()
 {
-  // P1.4: statement-level assignments compiled to a native call
+  // Statement-level assignments compiled to a native call
   // (__set_path / __set_process_field / __set_mouse_field) left the
   // native's result on the stack, growing it every frame.
   const { vm } = runHeadless(`program path_leak;
@@ -3259,7 +3259,7 @@ end`, 20);
   assert(p.stack.length === 0, `stack do processo devia ficar vazia apos 20 ticks, size=${p.stack.length}`);
 }
 
-// ── Regression tests for docs/review-2026-09.md, priority 2 ─────────────────
+// ── Regression tests, part 2 ────────────────────────────────────────────────
 
 function nextAnimationFrames(count)
 {
@@ -3304,7 +3304,7 @@ end`;
 
 async function testWriteInsideLoopIsCappedAndWarns()
 {
-  // P2.7: every WRITE persists, so write() inside a LOOP added a text per
+  // Every WRITE persists, so write() inside a LOOP added a text per
   // frame without limit and the frame rate collapsed.
   const bytecode = compileSource(`program write_loop;
 begin
@@ -3402,7 +3402,7 @@ end`);
 
 async function testCompileErrorsAreStructuredWithLineAndColumn()
 {
-  // P2.9: compile errors were plain Errors with the location only inside
+  // Compile errors were plain Errors with the location only inside
   // the message text, in two different formats, and some had none at all.
   const cases = [
     { label: 'lexer: unexpected character', stage: 'lexer', line: 3, col: 9, source: 'program t;\nbegin\n  x = 1 @ 2;\nend' },
@@ -3439,7 +3439,7 @@ async function testCompileErrorsAreStructuredWithLineAndColumn()
 
 async function testRunDivDemoRestartDoesNotDoubleTheLoop()
 {
-  // P2.1: start() while running (or stop(); start()) left the previous
+  // Start() while running (or stop(); start()) left the previous
   // RAF loop alive next to the new one, ticking the VM twice per frame.
   const canvas = makeTestCanvas();
   let frames = 0;
@@ -3466,7 +3466,7 @@ async function testRunDivDemoRestartDoesNotDoubleTheLoop()
 
 async function testRunDivDemoReleasesMouseListenersOfReplacedRuntime()
 {
-  // P2.2: each runtime added 4 mouse listeners to the canvas and nothing
+  // Each runtime added 4 mouse listeners to the canvas and nothing
   // ever removed them, keeping every previous VM alive.
   const canvas = makeTestCanvas();
   const runner = runDivDemo({ canvas, source: LOOPING_PROGRAM });
@@ -3490,7 +3490,7 @@ async function testRunDivDemoReleasesMouseListenersOfReplacedRuntime()
 
 async function testMouseMapsOntoVirtualScreen()
 {
-  // P2.8: with virtualWidth/virtualHeight the mouse listeners sat on the
+  // With virtualWidth/virtualHeight the mouse listeners sat on the
   // offscreen canvas, which never receives events, so the mouse read 0,0.
   const canvas = makeTestCanvas(640, 400);
   canvas.style.width = '640px';
@@ -3965,7 +3965,7 @@ end`);
 
 async function testKeysTypedIntoEditableElementsAreNotSwallowed()
 {
-  // P2.3: window-level key handling called preventDefault and fed the
+  // Window-level key handling called preventDefault and fed the
   // game regardless of focus, so an editor on the same page lost Space
   // and the arrow keys.
   const canvas = makeTestCanvas();
@@ -4000,7 +4000,7 @@ async function testKeysTypedIntoEditableElementsAreNotSwallowed()
 
 async function testRestartRestoresCanvasSizeAfterSetMode()
 {
-  // P2.4: set_mode() resized the canvas and the next program started on
+  // Set_mode() resized the canvas and the next program started on
   // the same canvas inherited that size.
   const canvas = makeTestCanvas(320, 200);
   const runner = runDivDemo({ canvas, source: `program a;
@@ -4026,7 +4026,7 @@ end` });
 
 async function testRuntimesDoNotShareGraphicsOrPivotResolver()
 {
-  // P2.4/P2.5: a module-global graphics registry and pivot resolver let a
+  // A module-global graphics registry and pivot resolver let a
   // second runtime on the page see the first one's graphics and move its
   // collision shapes.
   const vmA = new VM();
@@ -4051,7 +4051,7 @@ async function testRuntimesDoNotShareGraphicsOrPivotResolver()
 
 async function testPendingLoadThatNeverSettlesDoesNotFreezeTheProgram()
 {
-  // P2.6: the frame waited on pending loads with no timeout, so one fetch
+  // The frame waited on pending loads with no timeout, so one fetch
   // that never answered froze the program for good.
   const canvas = makeTestCanvas();
   let frames = 0;

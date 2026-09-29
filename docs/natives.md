@@ -383,5 +383,3 @@ Constants: waveforms `wave_square`, `wave_triangle`, `wave_saw`,
 | `song_play` | `song[, loop]` | 1/0 | Plays the song (stopping the one playing), looping unless `loop` is 0. |
 | `song_stop` | — | 1 | Stops the music. |
 | `song_playing` | — | song | The song playing (or waiting for the player's first click), 0 for none. |
- 
- 
