@@ -39,11 +39,4 @@ embeds, was drawn for DivJS and is covered by its MIT licence. (It replaced
 a copy of DIV's own 6x8 font taken from the original DIV source, which is
 published under the GPL-3.0 at github.com/DIVGAMES/DIV-Games-Studio.)
 
-## Test files whose licence is not confirmed yet
-
-`assets/` holds files the engine's tests load: graphics and fonts from the
-DIV tutorials (`assets/div-support/*.fpg`, `*.fnt`) and a few PNG sprites
-(`001.png`, `003.png`, `006.png`, `wabbit_alpha.png`, origin not recorded).
-Their terms have not been checked; they are not part of the published
-package (see `files` in `package.json`) and are not covered by DivJS's MIT
-licence.
+ 
