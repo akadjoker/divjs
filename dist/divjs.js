@@ -98,6 +98,10 @@ var TokenType = {
   DOT: "DOT",
   COMMA: "COMMA",
   SEMICOLON: "SEMICOLON",
+  COLON: "COLON",
+  // : after a CASE's values or DEFAULT
+  DOTDOT: "DOTDOT",
+  // .. in a CASE range (1..3)
   // Special
   EOF: "EOF"
 };
@@ -246,6 +250,9 @@ var Lexer = class {
     let num = "";
     let seenDot = false;
     while (this.current() && /[0-9.]/.test(this.current())) {
+      if (this.current() === "." && this.peek() === ".") {
+        break;
+      }
       if (this.current() === ".") {
         if (seenDot) {
           throw new DivError(`Malformed number '${num}.'`, { stage: "lexer", line: startLine, col: startCol });
@@ -468,7 +475,16 @@ var Lexer = class {
           break;
         case ".":
           this.advance();
-          this.tokens.push(new Token(TokenType.DOT, ".", line, col));
+          if (this.current() === ".") {
+            this.advance();
+            this.tokens.push(new Token(TokenType.DOTDOT, "..", line, col));
+          } else {
+            this.tokens.push(new Token(TokenType.DOT, ".", line, col));
+          }
+          break;
+        case ":":
+          this.advance();
+          this.tokens.push(new Token(TokenType.COLON, ":", line, col));
           break;
         case ",":
           this.advance();
@@ -1170,17 +1186,43 @@ var Parser = class {
   // sharing one body (matches if the subject equals *any* of them). At
   // least one CASE is required; DEFAULT is optional and - if present -
   // must be the last arm.
+  // SWITCH (subject) CASE ... END. Each arm takes DIV's form, "CASE 1, 3..5:
+  // statements END" and "DEFAULT: statements END" (DIV 2 manual, SWITCH
+  // statement), or the older DivJS form without ":" and without the arm's
+  // END, where an arm runs up to the next CASE, DEFAULT or the SWITCH's
+  // END. The ":" decides, arm by arm. A CASE value is an expression or a
+  // range "min..max" (both ends included).
   parseSwitch() {
     this.expect(TokenType.LPAREN, "Expected ( after SWITCH");
     const subject = this.parseExpression();
     this.expect(TokenType.RPAREN, "Expected ) after SWITCH subject");
+    this.match(TokenType.SEMICOLON);
+    const parseArmBody = (keyword) => {
+      if (this.match(TokenType.COLON)) {
+        const statements = this.parseBlockStatements();
+        this.expect(TokenType.END, `Expected END to close this ${keyword} (DIV form: ${keyword} ...: statements END)`);
+        this.match(TokenType.SEMICOLON);
+        return new Block(statements);
+      }
+      return new Block(this.parseBlockStatements());
+    };
+    const parseCaseValue = () => {
+      const value = this.parseExpression();
+      if (this.match(TokenType.DOTDOT)) {
+        const range = { type: "range", from: value, to: this.parseExpression() };
+        range.line = value.line;
+        range.col = value.col;
+        return range;
+      }
+      return value;
+    };
     const cases = [];
     while (this.match(TokenType.CASE)) {
-      const values = [this.parseExpression()];
+      const values = [parseCaseValue()];
       while (this.match(TokenType.COMMA)) {
-        values.push(this.parseExpression());
+        values.push(parseCaseValue());
       }
-      const body = new Block(this.parseBlockStatements());
+      const body = parseArmBody("CASE");
       cases.push({ values, body });
     }
     if (cases.length === 0) {
@@ -1188,7 +1230,7 @@ var Parser = class {
     }
     let defaultBody = null;
     if (this.match(TokenType.DEFAULT)) {
-      defaultBody = new Block(this.parseBlockStatements());
+      defaultBody = parseArmBody("DEFAULT");
     }
     this.expect(TokenType.END, "Expected END after SWITCH");
     return new Switch(subject, cases, defaultBody);
@@ -2743,15 +2785,11 @@ var Compiler = class {
       }
       const matchJumps = [];
       for (let i = 0; i < switchCase.values.length - 1; i++) {
-        this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
-        this.compileExpression(switchCase.values[i]);
-        this.emit(OpCodes.EQ);
+        this.emitCaseTest(subjectIdx, switchCase.values[i]);
         this.emit(OpCodes.JUMP_IF_TRUE, 0);
         matchJumps.push(this.instructions.length - 1);
       }
-      this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
-      this.compileExpression(switchCase.values[switchCase.values.length - 1]);
-      this.emit(OpCodes.EQ);
+      this.emitCaseTest(subjectIdx, switchCase.values[switchCase.values.length - 1]);
       this.emit(OpCodes.JUMP_IF_FALSE, 0);
       nextCaseJump = this.instructions.length - 1;
       const bodyStart = this.instructions.length;
@@ -2770,6 +2808,23 @@ var Compiler = class {
     for (const jumpIdx of endJumps) {
       this.instructions[jumpIdx].operands[0] = switchEnd;
     }
+  }
+  // Pushes 1 when the SWITCH subject (in local slot subjectIdx) matches a
+  // CASE value: equal to it, or within a "min..max" range, ends included.
+  emitCaseTest(subjectIdx, value) {
+    if (value.type !== "range") {
+      this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
+      this.compileExpression(value);
+      this.emit(OpCodes.EQ);
+      return;
+    }
+    this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
+    this.compileExpression(value.from);
+    this.emit(OpCodes.GTE);
+    this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
+    this.compileExpression(value.to);
+    this.emit(OpCodes.LTE);
+    this.emit(OpCodes.MUL);
   }
   // Compile for
   compileFor(stmt) {

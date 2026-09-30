@@ -35,6 +35,23 @@ Behaviour of the language itself that the function tables below rely on.
   (for example a `GLOBAL` and a `PRIVATE`, or a constant and a variable) is
   a duplicate name, and a `PRIVATE st_celeb` hides a `GLOBAL ST_CELEB`.
   Strings keep their case.
+- **SWITCH** takes DIV's form, each arm closed by its own `END`, a
+  CASE's values being numbers, expressions or ranges `min..max` (both
+  ends included) separated by commas:
+
+  ```
+  SWITCH (x)
+    CASE 1:        x = -1;  END
+    CASE 2..3, 99: x = -x;  END
+    DEFAULT:       x = 0;   END
+  END
+  ```
+
+  The first CASE that matches runs, and only that one (no fall-through,
+  so no `BREAK` is needed; `BREAK` inside a CASE leaves the loop around
+  the SWITCH). The older DivJS form, without `:` and without the arm's
+  `END` (an arm runs up to the next `CASE`, `DEFAULT` or the SWITCH's
+  `END`), is still accepted; the `:` decides, arm by arm.
 - **Division.** `/` is DIV's integer division (`7 / 2` is `3`, `-7 / 2` is
   `-3`) unless a side of it is float-typed, and then it is an ordinary
   division (`7 / 2.0` is `3.5`). Float-typed are: a number written with a

@@ -935,16 +935,12 @@ export class Compiler {
       // doesn't run for it.
       const matchJumps = [];
       for (let i = 0; i < switchCase.values.length - 1; i++) {
-        this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
-        this.compileExpression(switchCase.values[i]);
-        this.emit(OpCodes.EQ);
+        this.emitCaseTest(subjectIdx, switchCase.values[i]);
         this.emit(OpCodes.JUMP_IF_TRUE, 0); // Placeholder, patched to this case's body
         matchJumps.push(this.instructions.length - 1);
       }
 
-      this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
-      this.compileExpression(switchCase.values[switchCase.values.length - 1]);
-      this.emit(OpCodes.EQ);
+      this.emitCaseTest(subjectIdx, switchCase.values[switchCase.values.length - 1]);
       this.emit(OpCodes.JUMP_IF_FALSE, 0); // Placeholder, patched to next case/DEFAULT/end
       nextCaseJump = this.instructions.length - 1;
 
@@ -971,6 +967,26 @@ export class Compiler {
     for (const jumpIdx of endJumps) {
       this.instructions[jumpIdx].operands[0] = switchEnd;
     }
+  }
+
+  // Pushes 1 when the SWITCH subject (in local slot subjectIdx) matches a
+  // CASE value: equal to it, or within a "min..max" range, ends included.
+  emitCaseTest(subjectIdx, value)
+  {
+    if (value.type !== 'range')
+    {
+      this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
+      this.compileExpression(value);
+      this.emit(OpCodes.EQ);
+      return;
+    }
+    this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
+    this.compileExpression(value.from);
+    this.emit(OpCodes.GTE);
+    this.emit(OpCodes.LOAD_LOCAL, subjectIdx);
+    this.compileExpression(value.to);
+    this.emit(OpCodes.LTE);
+    this.emit(OpCodes.MUL);
   }
 
   // Compile for

@@ -477,7 +477,53 @@ END`);
   });
 }
 
+async function testSwitchDivForm()
+{
+  // DIV writes each arm as "CASE values: statements END" and "DEFAULT:
+  // statements END", with ranges "min..max" (DIV 2 manual, SWITCH). Only
+  // the older form without ":" and without the arm's END used to parse:
+  // the ":" was a lexer error. Both forms are accepted, arm by arm.
+  const { said } = runSource(`PROGRAM t;
+GLOBAL v; i;
+BEGIN
+  FOR i = 0 TO 6
+    v = i;
+    SWITCH (v)
+      CASE 1:
+        v = -1;
+      END
+      CASE 2..3, 99:
+        v = -v;
+      END
+      DEFAULT:
+        v = 0;
+      END
+    END
+    say(v);
+  END
+  SWITCH (i);
+    CASE 5: say('five'); END
+    CASE 7: say('seven'); END
+  END
+  SWITCH (i) CASE 1 say('one'); CASE 6..8 say('six to eight'); DEFAULT say('default'); END
+  SWITCH (i) CASE 7: say('div'); END CASE 8 say('old'); END
+END`, 1);
+  assert(said.join(' ') === '0 -1 -2 -3 0 0 0 seven six to eight div',
+    `SWITCH na forma DIV: obtido ${said.join(' ')}`);
+  expectDivError('CASE ...: sem END', `PROGRAM t;
+BEGIN
+  SWITCH (1)
+    CASE 1:
+      say(1);
+    CASE 2:
+      say(2);
+    END
+  END
+END`, 'parser', 6, 5, 'Expected END to close this CASE');
+}
+
 export const compilerTests = [
+  ['parser: SWITCH takes DIV\'s CASE ...: END arms and ranges', testSwitchDivForm],
   ['compiler: / with a float-typed side is a float division', testFloatDivision],
   ['compiler: float typing follows a variable through its body', testFloatDivisionFollowsTheVariable],
   ['compiler: STRUCT defaults fill what the initializer list leaves (decision)', testStructDefaultsFillWhatTheListLeaves],

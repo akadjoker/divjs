@@ -612,18 +612,50 @@ export class Parser {
   // sharing one body (matches if the subject equals *any* of them). At
   // least one CASE is required; DEFAULT is optional and - if present -
   // must be the last arm.
+  // SWITCH (subject) CASE ... END. Each arm takes DIV's form, "CASE 1, 3..5:
+  // statements END" and "DEFAULT: statements END" (DIV 2 manual, SWITCH
+  // statement), or the older DivJS form without ":" and without the arm's
+  // END, where an arm runs up to the next CASE, DEFAULT or the SWITCH's
+  // END. The ":" decides, arm by arm. A CASE value is an expression or a
+  // range "min..max" (both ends included).
   parseSwitch() {
     this.expect(TokenType.LPAREN, 'Expected ( after SWITCH');
     const subject = this.parseExpression();
     this.expect(TokenType.RPAREN, 'Expected ) after SWITCH subject');
+    this.match(TokenType.SEMICOLON);
+
+    const parseArmBody = (keyword) =>
+    {
+      if (this.match(TokenType.COLON))
+      {
+        const statements = this.parseBlockStatements();
+        this.expect(TokenType.END, `Expected END to close this ${keyword} (DIV form: ${keyword} ...: statements END)`);
+        this.match(TokenType.SEMICOLON);
+        return new ast.Block(statements);
+      }
+      return new ast.Block(this.parseBlockStatements());
+    };
+
+    const parseCaseValue = () =>
+    {
+      const value = this.parseExpression();
+      if (this.match(TokenType.DOTDOT))
+      {
+        const range = { type: 'range', from: value, to: this.parseExpression() };
+        range.line = value.line;
+        range.col = value.col;
+        return range;
+      }
+      return value;
+    };
 
     const cases = [];
     while (this.match(TokenType.CASE)) {
-      const values = [this.parseExpression()];
+      const values = [parseCaseValue()];
       while (this.match(TokenType.COMMA)) {
-        values.push(this.parseExpression());
+        values.push(parseCaseValue());
       }
-      const body = new ast.Block(this.parseBlockStatements());
+      const body = parseArmBody('CASE');
       cases.push({ values, body });
     }
 
@@ -633,7 +665,7 @@ export class Parser {
 
     let defaultBody = null;
     if (this.match(TokenType.DEFAULT)) {
-      defaultBody = new ast.Block(this.parseBlockStatements());
+      defaultBody = parseArmBody('DEFAULT');
     }
 
     this.expect(TokenType.END, 'Expected END after SWITCH');

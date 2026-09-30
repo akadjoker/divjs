@@ -69,6 +69,8 @@ export const TokenType = {
   DOT: 'DOT',
   COMMA: 'COMMA',
   SEMICOLON: 'SEMICOLON',
+  COLON: 'COLON',       // : after a CASE's values or DEFAULT
+  DOTDOT: 'DOTDOT',     // .. in a CASE range (1..3)
 
   // Special
   EOF: 'EOF'
@@ -255,6 +257,11 @@ export class Lexer {
     let seenDot = false;
     while (this.current() && /[0-9.]/.test(this.current()))
     {
+      // "1..3" is a CASE range: the number ends before the "..".
+      if (this.current() === '.' && this.peek() === '.')
+      {
+        break;
+      }
       if (this.current() === '.')
       {
         if (seenDot)
@@ -543,7 +550,19 @@ export class Lexer {
           break;
         case '.':
           this.advance();
-          this.tokens.push(new Token(TokenType.DOT, '.', line, col));
+          if (this.current() === '.')
+          {
+            this.advance();
+            this.tokens.push(new Token(TokenType.DOTDOT, '..', line, col));
+          }
+          else
+          {
+            this.tokens.push(new Token(TokenType.DOT, '.', line, col));
+          }
+          break;
+        case ':':
+          this.advance();
+          this.tokens.push(new Token(TokenType.COLON, ':', line, col));
           break;
         case ',':
           this.advance();
