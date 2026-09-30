@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS API Tutorial 01 - FPG, Processes & Movement</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.5;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="480"></canvas>
+  <p>
+    Tutorial 01: carrega <code>help.fpg</code>, coloca um fundo, cria um processo
+    com a bola (graph 100) e move-a com as setas.<br>
+    APIs: <code>load_fpg</code>, <code>put_screen</code>, <code>process</code>,
+    <code>graph</code>, <code>x/y</code>, <code>key</code>.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM tutor_api_01;
+
+GLOBAL g_lib = 0;
+
+PROCESS ball();
+BEGIN
+  x = 320; y = 240;
+  width = 32; height = 32;
+  file = g_lib;
+  graph = 100;      // Bola 32x32 do help.fpg
+  LOOP
+    IF (key(_left))  x = x - 3; END
+    IF (key(_right)) x = x + 3; END
+    IF (key(_up))    y = y - 3; END
+    IF (key(_down))  y = y + 3; END
+
+    IF (x < 16)  x = 16;  END
+    IF (x > 624) x = 624; END
+    IF (y < 16)  y = 16;  END
+    IF (y > 464) y = 464; END
+
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(640, 480);
+  screen_color('#0e1a29');
+
+  g_lib = load_fpg('../assets/div-support/help.fpg');
+  put_screen(g_lib, 1);   // Fondo genérico
+
+  ball();
+
+  LOOP
+    set_color('#9bc8f2');
+    text(12, 8, "Tutorial 01 - FPG / process / movement");
+    FRAME;
+  END
+END`;
+
+    const log = document.getElementById('log');
+    runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      clearColor: '#0e1a29',
+      onLog: (line) => { log.textContent = line; },
+      onError: (err) => { log.textContent = 'error: ' + (err?.message || String(err)); }
+    });
+  </script>
+</body>
+</html>

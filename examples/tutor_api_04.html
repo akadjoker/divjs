@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS API Tutorial 04 - Procedural Graphics</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.5;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="480"></canvas>
+  <p>
+    Tutorial 04: cria gráficos em tempo real usando a API <code>gfx_*</code>.<br>
+    APIs: <code>new_graphic()</code>, <code>gfx_line()</code>, <code>gfx_rect()</code>,
+    <code>gfx_circle()</code>, <code>gfx_pixel()</code>.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM tutor_api_04;
+
+GLOBAL g_ship = 0;
+GLOBAL g_star = 0;
+GLOBAL g_angle = 0;
+
+PROCESS ship();
+BEGIN
+  x = 320; y = 240;
+  width = 40; height = 40;
+  graph = g_ship;
+  angle = 0;
+
+  LOOP
+    IF (key(_left))  angle = angle + 5000; END
+    IF (key(_right)) angle = angle - 5000; END
+    g_angle = angle;
+
+    IF (key(_up)) advance(2); END
+
+    IF (x < 20)  x = 20;  END
+    IF (x > 620) x = 620; END
+    IF (y < 20)  y = 20;  END
+    IF (y > 460) y = 460; END
+
+    FRAME;
+  END
+END
+
+PROCESS star(sx, sy);
+BEGIN
+  x = sx; y = sy;
+  width = 4; height = 4;
+  graph = g_star;
+  LOOP FRAME; END
+END
+
+BEGIN
+  set_mode(640, 480);
+  screen_color('#050810');
+
+  // Procedural ship: triangle pointing right, centred at 20,20
+  g_ship = new_graphic(40, 40);
+  gfx_fill_rgba(g_ship, 0, 0, 0, 0);
+  gfx_line(g_ship, 36, 20, 4, 8, 120, 220, 255);
+  gfx_line(g_ship, 36, 20, 4, 32, 120, 220, 255);
+  gfx_line(g_ship, 12, 14, 12, 26, 100, 200, 240);
+  gfx_rect(g_ship, 4, 17, 8, 6, 255, 160, 60);
+  gfx_pixel(g_ship, 22, 20, 200, 255, 255);
+
+  // Procedural star
+  g_star = new_graphic(4, 4);
+  gfx_fill_rgba(g_star, 0, 0, 0, 0);
+  gfx_circle(g_star, 2, 2, 1, 255, 240, 200);
+
+  star(100, 80);  star(200, 60);  star(500, 120);  star(540, 400);
+  star(80, 300);  star(300, 40);  star(450, 300);  star(150, 420);
+
+  ship();
+
+  LOOP
+    set_color('#9bc8f2');
+    text(12, 8, "Tutorial 04 - new_graphic / gfx_*");
+    text(12, 22, "angle=" + g_angle / 1000 + " deg");
+    FRAME;
+  END
+END`;
+
+    const log = document.getElementById('log');
+    runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      clearColor: '#050810',
+      onLog: (line) => { log.textContent = line; },
+      onError: (err) => { log.textContent = 'error: ' + (err?.message || String(err)); }
+    });
+  </script>
+</body>
+</html>

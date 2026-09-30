@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS API Tutorial 06 - Pathfinding</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.5;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="480"></canvas>
+  <p>
+    Tutorial 06: clique com o rato para definir um destino; o agente calcula um caminho A*.<br>
+    APIs: <code>path_find()</code>, <code>path_assign()</code>, <code>path_step()</code>,
+    <code>path_length()</code>, <code>path_get_x()</code>, <code>path_get_y()</code>.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM tutor_api_06;
+
+GLOBAL g_wall_type = 0;
+GLOBAL g_path = 0;
+GLOBAL g_path_len = 0;
+GLOBAL g_target_x = 560;
+GLOBAL g_target_y = 400;
+GLOBAL g_need_repath = 1;
+GLOBAL g_mouse_prev = 0;
+
+PROCESS wall(px, py, w, h);
+BEGIN
+  width = w; height = h;
+  x = px + w / 2; y = py + h / 2;
+  LOOP
+    set_color('#2a3f55');
+    draw_rect(px, py, w, h);
+    FRAME;
+  END
+END
+
+PROCESS agent();
+BEGIN
+  x = 60; y = 60;
+  width = 16; height = 16;
+  graph = 100;      // Bola do help.fpg
+  file = 0;         // help.fpg loaded as file 0 below
+
+  LOOP
+    IF (g_need_repath)
+      IF (g_path) path_clear(g_path); END
+      g_path = path_find(x + 8, y + 8, g_target_x, g_target_y, g_wall_type, 16, 1, 4096);
+      g_path_len = path_length(g_path);
+      IF (g_path)
+        path_assign(g_path, 1);
+      END
+      g_need_repath = 0;
+    END
+
+    path_step(120, 4);
+
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(640, 480);
+  screen_color('#0e1a29');
+
+  load_fpg('../assets/div-support/help.fpg');
+  g_wall_type = TYPE wall;
+
+  // Obstacles
+  wall(160, 40, 20, 300);
+  wall(300, 140, 20, 260);
+  wall(450, 40, 20, 220);
+  wall(580, 180, 20, 260);
+  wall(80, 220, 140, 20);
+  wall(360, 320, 140, 20);
+
+  agent();
+
+  LOOP
+    IF (mouse_button(0))
+      IF (g_mouse_prev == 0)
+        g_target_x = mouse_x();
+        g_target_y = mouse_y();
+        g_need_repath = 1;
+      END
+      g_mouse_prev = 1;
+    ELSE
+      g_mouse_prev = 0;
+    END
+
+    IF (g_path)
+      FOR i = 0 TO g_path_len - 1
+        set_color('#5cc6ff');
+        circle(path_get_x(g_path, i), path_get_y(g_path, i), 2);
+      END
+    END
+
+    set_color('#ffcf5a');
+    circle(g_target_x, g_target_y, 5);
+
+    set_color('#9bc8f2');
+    text(12, 8, "Tutorial 06 - path_find / path_step");
+    text(12, 22, "points=" + g_path_len + " target=(" + g_target_x + "," + g_target_y + ")");
+    FRAME;
+  END
+END`;
+
+    const log = document.getElementById('log');
+    runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      clearColor: '#0e1a29',
+      onLog: (line) => { log.textContent = line; },
+      onError: (err) => { log.textContent = 'error: ' + (err?.message || String(err)); }
+    });
+  </script>
+</body>
+</html>

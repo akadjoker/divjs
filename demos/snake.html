@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DivJS - Snake Game</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 820px;
+      line-height: 1.4;
+    }
+    #log {
+      width: 860px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="860" height="520"></canvas>
+  <p>
+    Snake! Setas movem a cobra. Coma as maçãs para crescer.
+    Não bata nas paredes ou em você mesmo. Espaço reinicia.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM snake_game;
+
+GLOBAL g_snake_type = 0;
+GLOBAL g_apple_type = 0;
+GLOBAL g_segment_type = 0;
+GLOBAL g_score = 0;
+GLOBAL g_game_over = 0;
+GLOBAL g_high_score = 0;
+GLOBAL g_grid_size = 20;
+GLOBAL g_grid_w = 40;
+GLOBAL g_grid_h = 26;
+GLOBAL g_snake_speed = 5;
+GLOBAL g_move_timer = 0;
+
+CONST
+  GRID_SIZE = 20;
+  START_LENGTH = 3;
+
+// Snake head - controls direction
+PROCESS snake_head(start_x, start_y);
+private
+  dir_x = 0;
+  dir_y = 0;
+  next_dir_x = 0;
+  next_dir_y = 0;
+  want_dir_x = 0;
+  want_dir_y = 0;
+BEGIN
+  x = start_x;
+  y = start_y;
+  width = GRID_SIZE;
+  height = GRID_SIZE;
+  dir_x = 1;
+  dir_y = 0;
+  next_dir_x = 1;
+  next_dir_y = 0;
+  want_dir_x = 1;
+  want_dir_y = 0;
+
+  // Create initial tail
+  LOCAL i;
+  FOR (i=1; i<START_LENGTH; i++)
+    snake_segment(start_x - i * GRID_SIZE, start_y, i);
+  END
+
+  LOOP
+    IF (g_game_over)
+      FRAME;
+      CONTINUE;
+    END
+
+    // Change direction (prevent 180-degree turns)
+    IF (key(_left) AND dir_x <> 1)
+      want_dir_x = -1;
+      want_dir_y = 0;
+    ELSEIF (key(_right) AND dir_x <> -1)
+      want_dir_x = 1;
+      want_dir_y = 0;
+    ELSEIF (key(_up) AND dir_y <> 1)
+      want_dir_x = 0;
+      want_dir_y = -1;
+    ELSEIF (key(_down) AND dir_y <> -1)
+      want_dir_x = 0;
+      want_dir_y = 1;
+    END
+
+    // Move based on timer (speed control)
+    g_move_timer = g_move_timer + 1;
+    IF (g_move_timer >= g_snake_speed)
+      g_move_timer = 0;
+
+      dir_x = want_dir_x;
+      dir_y = want_dir_y;
+
+      // Save current position for next segment
+      LOCAL old_x = x;
+      LOCAL old_y = y;
+
+      // Move
+      x = x + dir_x * GRID_SIZE;
+      y = y + dir_y * GRID_SIZE;
+
+      // Check wall collision
+      IF (x < 0 OR x >= g_grid_w * GRID_SIZE OR y < 0 OR y >= g_grid_h * GRID_SIZE)
+        g_game_over = 1;
+      END
+
+      // Check self collision
+      IF (collision(g_segment_type))
+        g_game_over = 1;
+      END
+
+      // Check apple collision
+      IF (collision(g_apple_type))
+        g_score = g_score + 10;
+        spawn_apple();
+        // Add new segment at tail
+        spawn_tail_segment();
+      END
+
+      // Move tail segments
+      LOCAL prev_x = old_x;
+      LOCAL prev_y = old_y;
+
+      // Find all segments and move them
+      LOCAL seg;
+      LOCAL seg_count = 0;
+      WHILE (get_id(g_segment_type) <> 0 AND seg_count < 1000)
+        seg = get_id(g_segment_type);
+        IF (seg <> 0)
+          LOCAL temp_x = seg.x;
+          LOCAL temp_y = seg.y;
+          seg.x = prev_x;
+          seg.y = prev_y;
+          prev_x = temp_x;
+          prev_y = temp_y;
+          seg_count = seg_count + 1;
+        END
+      END
+    END
+
+    set_color('#4ecdc4');
+    draw_rect(x, y, width, height);
+
+    FRAME;
+  END
+END
+
+// Snake body segment
+PROCESS snake_segment(sx, sy, index);
+BEGIN
+  x = sx;
+  y = sy;
+  width = GRID_SIZE;
+  height = GRID_SIZE;
+
+  LOOP
+    IF (g_game_over)
+      FRAME;
+      CONTINUE;
+    END
+
+    set_color('#95e1d3');
+    draw_rect(x, y, width, height);
+
+    FRAME;
+  END
+END
+
+// Spawn new tail segment
+PROCESS spawn_tail_segment();
+BEGIN
+  // Find the last segment
+  LOCAL last_seg = 0;
+  LOCAL last_x = x;
+  LOCAL last_y = y;
+
+  // Find the segment furthest from head
+  LOCAL min_dist = 0;
+  LOCAL seg;
+  LOCAL seg_count = 0;
+
+  WHILE (get_id(g_segment_type) <> 0 AND seg_count < 1000)
+    seg = get_id(g_segment_type);
+    IF (seg <> 0)
+      LOCAL dist = distance(x, y, seg.x, seg.y);
+      IF (dist > min_dist)
+        min_dist = dist;
+        last_seg = seg;
+        last_x = seg.x;
+        last_y = seg.y;
+      END
+      seg_count = seg_count + 1;
+    END
+  END
+
+  // Spawn new segment at the tail position (it will move in next frame)
+  snake_segment(last_x, last_y, seg_count + 1);
+
+  // Increase game speed slightly
+  IF (g_snake_speed > 2)
+    g_snake_speed = g_snake_speed - 0.1;
+  END
+END
+
+// Apple that snake eats
+PROCESS apple();
+BEGIN
+  x = rand(1, g_grid_w - 1) * GRID_SIZE;
+  y = rand(1, g_grid_h - 1) * GRID_SIZE;
+  width = GRID_SIZE;
+  height = GRID_SIZE;
+
+  LOOP
+    set_color('#ff6b6b');
+    circle(x + width / 2, y + height / 2, width / 2 - 2);
+
+    FRAME;
+  END
+END
+
+PROCESS spawn_apple();
+BEGIN
+  // Remove old apple
+  LOCAL a = get_id(g_apple_type);
+  IF (a <> 0)
+    a.dead = 1;
+  END
+  // Spawn new apple
+  apple();
+END
+
+// Score and game info display
+PROCESS game_display();
+BEGIN
+  x = 430;
+  y = 30;
+
+  LOOP
+    set_color('#ffffff');
+    text(x - 100, y, "Score: " + g_score);
+    text(x - 100, y + 15, "High Score: " + g_high_score);
+
+    IF (g_game_over)
+      set_color('#ff6b6b');
+      text(x - 120, y + 50, "GAME OVER!");
+      text(x - 120, y + 70, "Press SPACE to restart");
+    END
+
+    FRAME;
+  END
+END
+
+// Restart checker
+PROCESS restart_checker();
+private
+  waiting_for_release = 0;
+BEGIN
+  LOOP
+    IF (g_game_over AND key(_space))
+      IF (waiting_for_release == 0)
+        // Restart game
+        IF (g_score > g_high_score)
+          g_high_score = g_score;
+        END
+        g_score = 0;
+        g_game_over = 0;
+        g_snake_speed = 5;
+
+        // Kill all processes
+        LOCAL p;
+        WHILE (get_id(g_snake_type) <> 0)
+          p = get_id(g_snake_type);
+          IF (p <> 0)
+            p.dead = 1;
+          END
+        END
+        WHILE (get_id(g_segment_type) <> 0)
+          p = get_id(g_segment_type);
+          IF (p <> 0)
+            p.dead = 1;
+          END
+        END
+        WHILE (get_id(g_apple_type) <> 0)
+          p = get_id(g_apple_type);
+          IF (p <> 0)
+            p.dead = 1;
+          END
+        END
+
+        // Restart
+        snake_head(200, 260);
+        apple();
+
+        waiting_for_release = 1;
+      END
+    ELSE
+      waiting_for_release = 0;
+    END
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(860, 520);
+  screen_color('#0e1a29');
+
+  g_snake_type = TYPE snake_head;
+  g_segment_type = TYPE snake_segment;
+  g_apple_type = TYPE apple;
+
+  snake_head(200, 260);
+  apple();
+
+  game_display();
+  restart_checker();
+
+  set_color('#ffffff');
+  text(10, 10, "SNAKE");
+
+  LOOP FRAME; END
+END`;
+
+    const log = document.getElementById('log');
+
+    await runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      logFn: (line) => {
+        log.textContent = line;
+      }
+    });
+  </script>
+</body>
+</html>

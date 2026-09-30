@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS API Tutorial 12 - Regions Advanced</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.5;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="480"></canvas>
+  <p>
+    Tutorial 12: usa colisões e boundaries para criar zonas de interação.<br>
+    APIs: <code>collision()</code>, <code>TYPE</code>, boundaries de tela.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM tutor_api_12;
+
+GLOBAL g_lib = 0;
+GLOBAL g_zone_objects = 0;
+
+PROCESS zone_object(zone);
+PRIVATE
+  speed = 0;
+BEGIN
+  IF (zone = 0)
+    x = rand(60, 180);
+  ELSE IF (zone = 1)
+    x = rand(460, 580);
+  ELSE
+    x = rand(260, 380);
+  END
+  
+  y = rand(300, 400);
+  width = 16; height = 16;
+  file = g_lib;
+  graph = 103;
+  speed = rand(1, 2);
+
+  LOOP
+    // Move horizontalmente
+    x = x + speed;
+    
+    // Limita e muda direção baseado na zona
+    IF (zone = 0)
+      IF (x > 180) x = 60; END
+    ELSE IF (zone = 1)
+      IF (x > 580) x = 460; END
+    ELSE
+      IF (x > 380) x = 260; END
+    END
+
+    FRAME;
+  END
+END
+
+PROCESS player();
+BEGIN
+  x = 320; y = 240;
+  width = 32; height = 32;
+  file = g_lib;
+  graph = 100;
+
+  LOOP
+    IF (key(_left))  x = x - 3; END
+    IF (key(_right)) x = x + 3; END
+    IF (key(_up))    y = y - 3; END
+    IF (key(_down))  y = y + 3; END
+
+    IF (x < 16)  x = 16;  END
+    IF (x > 624) x = 624; END
+    IF (y < 16)  y = 16;  END
+    IF (y > 464) y = 464; END
+
+    FRAME;
+  END
+END
+
+PROCESS zone_info();
+PRIVATE
+  demo_timer = 0;
+BEGIN
+  g_zone_objects = 15;
+  demo_timer = 0;
+
+  LOOP
+    // Desenha bordas das zonas
+    set_color('#2d5a3d');
+    draw_rect(40, 280, 200, 160);
+
+    set_color('#5a2d2d');
+    draw_rect(440, 280, 200, 160);
+
+    set_color('#2d4d5a');
+    draw_rect(240, 280, 200, 160);
+
+    set_color('#93aecd');
+    text(50, 290, "ZONE 1");
+    text(450, 290, "ZONE 2");
+    text(280, 290, "ZONE 3");
+
+    set_color('#9bc8f2');
+    text(12, 8, "Tutorial 12 - zones / boundaries / collision");
+
+    set_color('#93aecd');
+    text(12, 440, "zone objects: " + g_zone_objects);
+
+    // Mostra em qual zona está o player
+    IF (x > 40 AND x < 240 AND y > 280 AND y < 440)
+      set_color('#3d8a5d');
+      text(320, 450, "Player in ZONE 1");
+    ELSE IF (x > 440 AND x < 640 AND y > 280 AND y < 440)
+      set_color('#8a3d3d');
+      text(320, 450, "Player in ZONE 2");
+    ELSE IF (x > 240 AND x < 440 AND y > 280 AND y < 440)
+      set_color('#3d7d8a');
+      text(320, 450, "Player in ZONE 3");
+    ELSE
+      set_color('#5a6a7a');
+      text(320, 450, "Player outside zones");
+    END
+
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(640, 480);
+  screen_color('#0e1a29');
+
+  g_lib = load_fpg('../assets/div-support/help.fpg');
+  put_screen(g_lib, 1);
+
+  // Cria objetos em cada zona
+  g_i = 0;
+  FOR (g_i = 0; g_i < 5; g_i = g_i + 1)
+    zone_object(0);
+  END
+
+  FOR (g_i = 0; g_i < 5; g_i = g_i + 1)
+    zone_object(1);
+  END
+
+  FOR (g_i = 0; g_i < 5; g_i = g_i + 1)
+    zone_object(2);
+  END
+
+  player();
+  zone_info();
+
+  LOOP FRAME; END
+END`;
+
+    const log = document.getElementById('log');
+    runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      clearColor: '#0e1a29',
+      onLog: (line) => { log.textContent = line; },
+      onError: (err) => { log.textContent = 'error: ' + (err?.message || String(err)); }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DivJS - Total Pool</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #000;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.4;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="480"></canvas>
+  <p>
+    Total Pool / Spanish Billiards (DIV Games Studio, 2000) - ported from
+    the original pool.prg as a broad correctness test for the VM. Mouse
+    picks the menu option and aims/strikes the cue ball (click to advance
+    through aim -> effect -> shoot). Runs silent - sound wasn't ported
+    (load_pcm/sound are no-ops).
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../../divjs.js';
+
+    const canvas = document.getElementById('c');
+    const log = document.getElementById('log');
+
+    function logLine(line) {
+      log.textContent = String(line);
+    }
+
+    fetch('pool.prg')
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(`Failed to fetch pool.prg: ${res.status}`);
+        }
+        return res.text();
+      })
+      .then((source) => {
+        runDivDemo({
+          canvas,
+          source,
+          clearColor: '#000',
+          onLog: (line) => { logLine(line); },
+          onError: (err) => {
+            logLine('error: ' + (err?.message || String(err)));
+            console.error(err);
+          }
+        });
+        logLine('running: Total Pool');
+      })
+      .catch((err) => {
+        logLine('error: ' + (err?.message || String(err)));
+        console.error(err);
+      });
+  </script>
+</body>
+</html>

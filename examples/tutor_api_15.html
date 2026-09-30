@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS API Tutorial 15 - Math & Trigonometry</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.5;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="480"></canvas>
+  <p>
+    Tutorial 15: funções matemáticas para movimentos.<br>
+    APIs: <code>sin()</code>, <code>cos()</code>, <code>sqrt()</code>, <code>abs()</code>, <code>min()</code>, <code>max()</code>, <code>rand()</code>.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM tutor_api_15;
+
+GLOBAL g_lib = 0;
+GLOBAL g_anim_time = 0;
+GLOBAL g_demo_mode = 0;
+
+PROCESS orbital_object(orbit_radius, speed, phase, color_val);
+BEGIN
+  x = 320; y = 240;
+  width = 12; height = 12;
+  file = g_lib;
+  graph = 100;
+  size = 40;
+
+  LOOP
+    // Movimento orbital usando sin/cos
+    g_angle = g_anim_time * speed + phase;
+    x = 320 + cos(g_angle) * orbit_radius;
+    y = 240 + sin(g_angle) * orbit_radius;
+    
+    // Muda cor baseada em posição
+    g_red = 100 + (cos(g_angle) * 50);
+    g_green = 150 + (sin(g_angle) * 50);
+    g_blue = 200 + (cos(g_angle * 2) * 30);
+
+    FRAME;
+  END
+END
+
+PROCESS harmonic_ball(base_y, amplitude, frequency, phase, color_val);
+BEGIN
+  x = 100;
+  width = 16; height = 16;
+  file = g_lib;
+  graph = 103;
+  size = 50;
+
+  LOOP
+    // Movimento harmônico usando sin
+    y = base_y + sin(g_anim_time * frequency + phase) * amplitude;
+    
+    // Desenha linha de referência
+    set_color('#2a3f55');
+    draw_line(40, base_y, 600, base_y);
+    
+    FRAME;
+  END
+END
+
+PROCESS math_demo();
+BEGIN
+  LOOP
+    g_anim_time = g_anim_time + 0.1;
+
+    // Limpa tela
+    clear_screen('#0e1a29');
+
+    set_color('#9bc8f2');
+    text(12, 8, "Tutorial 15 - math & trigonometry");
+
+    // Modo 0: Movimento orbital
+    IF (g_demo_mode = 0)
+      set_color('#93aecd');
+      text(12, 30, "Mode 0: Orbital motion (sin/cos)");
+
+      // Central point
+      set_color('#ff6b6b');
+      draw_circle(320, 240, 8);
+
+      // Orbitas
+      g_i = 0;
+      FOR (g_i = 0; g_i < 6; g_i = g_i + 1)
+        g_radius = 60 + g_i * 25;
+        g_speed = 0.02 + g_i * 0.005;
+        set_color(100 + g_i * 20, 150, 200 + g_i * 5);
+        draw_circle(320, 240, g_radius);  // Traço da órbita
+      END
+
+    ELSE IF (g_demo_mode = 1)
+      // Modo 1: Ondas harmônicas
+      set_color('#93aecd');
+      text(12, 30, "Mode 1: Harmonic waves (sin)");
+
+      // Desenha múltiplas ondas
+      g_i = 0;
+      FOR (g_i = 0; g_i < 10; g_i = g_i + 1)
+        g_x = 0;
+        g_y = 0;
+        set_color(100 + g_i * 15, 150 + g_i * 10, 200 - g_i * 10);
+        FOR (g_x = 0; g_x < 640; g_x = g_x + 2)
+          g_amplitude = 30 + g_i * 5;
+          g_frequency = 0.02 + g_i * 0.005;
+          g_phase = g_i * 0.5;
+          g_y = 280 + sin((g_x / 10.0) * g_frequency * 10 + g_anim_time + g_phase) * g_amplitude;
+          
+          IF (g_x = 0)
+            g_x = g_x;  // Primeiro ponto
+          ELSE
+            draw_line(g_x - 2, g_y_prev, g_x, g_y);
+          END
+          g_y_prev = g_y;
+        END
+      END
+
+    ELSE IF (g_demo_mode = 2)
+      // Modo 2: Cálculos de distância
+      set_color('#93aecd');
+      text(12, 30, "Mode 2: Distance calculations (sqrt)");
+
+      // Mostra distância do mouse ao centro
+      g_dx = mouse.x - 320;
+      g_dy = mouse.y - 240;
+      g_dist = sqrt(g_dx * g_dx + g_dy * g_dy);
+      
+      // Desenha linha ao mouse
+      set_color('#ffd93d');
+      draw_line(320, 240, mouse.x, mouse.y);
+      
+      // Desenha círculos de distância
+      g_i = 0;
+      FOR (g_i = 1; g_i <= 5; g_i = g_i + 1)
+        set_color(50 + g_i * 30, 80 + g_i * 20, 120 + g_i * 15);
+        draw_circle(320, 240, g_i * 50);
+      END
+      
+      set_color('#93aecd');
+      text(12, 420, "Distance to center: " + dist);
+
+    ELSE IF (g_demo_mode = 3)
+      // Modo 3: Funções matemáticas variadas
+      set_color('#93aecd');
+      text(12, 30, "Mode 3: Math functions (abs/min/max/rand)");
+
+      // Mostra valores de funções
+      g_i = 0;
+      FOR (g_i = 0; g_i < 10; g_i = g_i + 1)
+        g_val = sin(g_anim_time + g_i) * 50;
+        g_abs_val = abs(g_val);
+        g_min_val = min(g_val, 20);
+        g_max_val = max(g_val, -30);
+        
+        set_color('#9bc8f2');
+        text(50 + g_i * 55, 150, "abs:" + g_abs_val);
+        
+        set_color('#93aecd');
+        text(50 + g_i * 55, 170, "min:" + g_min_val);
+        
+        set_color('#5a6a7a');
+        text(50 + g_i * 55, 190, "max:" + g_max_val);
+      END
+
+      // Números aleatórios
+      set_color('#ffd93d');
+      text(12, 420, "Random values:");
+      FOR (g_i = 0; g_i < 5; g_i = g_i + 1)
+        text(12 + g_i * 100, 440, "" + rand(0, 100));
+      END
+    END
+
+    // Controle de modo
+    set_color('#5a6a7a');
+    text(12, 470, "Press SPACE to change mode (0-3)");
+
+    IF (key(_space))
+      g_demo_mode = g_demo_mode + 1;
+      IF (g_demo_mode > 3) g_demo_mode = 0; END
+      REPEAT FRAME UNTIL (NOT key(_space))
+    END
+
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(640, 480);
+  screen_color('#0e1a29');
+
+  g_lib = load_fpg('../assets/div-support/help.fpg');
+  put_screen(g_lib, 1);
+
+  // Cria objetos orbitais para o modo 0
+  orbital_object(80, 0.03, 0, 0);
+  orbital_object(130, 0.025, 1.5, 1);
+  orbital_object(180, 0.02, 3.0, 2);
+
+  math_demo();
+
+  LOOP FRAME; END
+END`;
+
+    const log = document.getElementById('log');
+    runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      clearColor: '#0e1a29',
+      onLog: (line) => { log.textContent = line; },
+      onError: (err) => { log.textContent = 'error: ' + (err?.message || String(err)); }
+    });
+  </script>
+</body>
+</html>
