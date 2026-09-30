@@ -341,6 +341,8 @@ export class Compiler {
         [...this.globalMap.entries()].filter(([, v]) => typeof v === 'number')
       ),
       mainAddr,
+      // PROGRAM <name>: keys the program's saved data (save_data, save).
+      programName: program.name || '',
       // Same idea as functionTable/processTable entries' .locals - VAR
       // declarations made directly in the top-level BEGIN/END block, not
       // inside any PROCESS or FUNCTION, previously had no name-to-slot
@@ -1731,8 +1733,10 @@ export class Compiler {
   // whichever process or call is running - the manual gives OFFSET for
   // any datum; it used to be refused for everything but GLOBALs, so DIV
   // code doing get_real_point(0, OFFSET my_x, OFFSET my_y) did not
-  // compile. Whole arrays aren't supported (DIV's pointer arithmetic on
-  // offsets has no equivalent here).
+  // compile. OFFSET of a whole array or STRUCT is a reference to its
+  // first cell that also carries its number of cells (`size`), for
+  // save/load; the natives that take one variable use the first cell.
+  // DIV's pointer arithmetic on offsets has no equivalent here.
   compileOffsetOperator(expr) {
     const name = expr.name;
     const local = this.localMap.get(name);
@@ -1740,10 +1744,19 @@ export class Compiler {
     {
       if (typeof local === 'object' && local.isArray)
       {
-        throw this.error(`OFFSET "${name}" - arrays aren't supported`, expr);
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(local.base));
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(local.size));
+        this.emit(OpCodes.CALL_NATIVE, '__offset_local', 2);
+        return;
       }
       this.emit(OpCodes.LOAD_CONST, this.addConstant(local));
       this.emit(OpCodes.CALL_NATIVE, '__offset_local', 1);
+      return;
+    }
+    const struct = this.structMap.get(name);
+    if (struct && !this.globalMap.has(name))
+    {
+      this.emit(OpCodes.LOAD_CONST, this.addConstant({ __divOffsetGlobal: true, slot: struct.base, size: struct.count * struct.instanceSize }));
       return;
     }
     if (!this.globalMap.has(name)) {
@@ -1751,7 +1764,8 @@ export class Compiler {
     }
     const entry = this.globalMap.get(name);
     if (typeof entry === 'object' && entry.isArray) {
-      throw this.error(`OFFSET "${name}" - arrays aren't supported`, expr);
+      this.emit(OpCodes.LOAD_CONST, this.addConstant({ __divOffsetGlobal: true, slot: entry.base, size: entry.size }));
+      return;
     }
     this.emit(OpCodes.LOAD_CONST, this.addConstant({ __divOffsetGlobal: true, slot: entry }));
   }

@@ -2357,6 +2357,8 @@ var Compiler = class {
         [...this.globalMap.entries()].filter(([, v]) => typeof v === "number")
       ),
       mainAddr,
+      // PROGRAM <name>: keys the program's saved data (save_data, save).
+      programName: program.name || "",
       // Same idea as functionTable/processTable entries' .locals - VAR
       // declarations made directly in the top-level BEGIN/END block, not
       // inside any PROCESS or FUNCTION, previously had no name-to-slot
@@ -3361,17 +3363,27 @@ var Compiler = class {
   // whichever process or call is running - the manual gives OFFSET for
   // any datum; it used to be refused for everything but GLOBALs, so DIV
   // code doing get_real_point(0, OFFSET my_x, OFFSET my_y) did not
-  // compile. Whole arrays aren't supported (DIV's pointer arithmetic on
-  // offsets has no equivalent here).
+  // compile. OFFSET of a whole array or STRUCT is a reference to its
+  // first cell that also carries its number of cells (`size`), for
+  // save/load; the natives that take one variable use the first cell.
+  // DIV's pointer arithmetic on offsets has no equivalent here.
   compileOffsetOperator(expr) {
     const name = expr.name;
     const local = this.localMap.get(name);
     if (local !== void 0) {
       if (typeof local === "object" && local.isArray) {
-        throw this.error(`OFFSET "${name}" - arrays aren't supported`, expr);
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(local.base));
+        this.emit(OpCodes.LOAD_CONST, this.addConstant(local.size));
+        this.emit(OpCodes.CALL_NATIVE, "__offset_local", 2);
+        return;
       }
       this.emit(OpCodes.LOAD_CONST, this.addConstant(local));
       this.emit(OpCodes.CALL_NATIVE, "__offset_local", 1);
+      return;
+    }
+    const struct = this.structMap.get(name);
+    if (struct && !this.globalMap.has(name)) {
+      this.emit(OpCodes.LOAD_CONST, this.addConstant({ __divOffsetGlobal: true, slot: struct.base, size: struct.count * struct.instanceSize }));
       return;
     }
     if (!this.globalMap.has(name)) {
@@ -3379,7 +3391,8 @@ var Compiler = class {
     }
     const entry = this.globalMap.get(name);
     if (typeof entry === "object" && entry.isArray) {
-      throw this.error(`OFFSET "${name}" - arrays aren't supported`, expr);
+      this.emit(OpCodes.LOAD_CONST, this.addConstant({ __divOffsetGlobal: true, slot: entry.base, size: entry.size }));
+      return;
     }
     this.emit(OpCodes.LOAD_CONST, this.addConstant({ __divOffsetGlobal: true, slot: entry }));
   }
@@ -4828,6 +4841,7 @@ var VM = class _VM {
   }
   // Load bytecode
   load(bytecode) {
+    this.programName = bytecode.programName || "";
     this.constants = bytecode.constants;
     this.bytecode = bytecode.instructions;
     this.processTable = bytecode.processTable || /* @__PURE__ */ new Map();
@@ -12758,6 +12772,75 @@ function registerStringNatives(vm) {
   }
 }
 
+// vm/storage.js
+var MAX_SAVED_CHARS = 65536;
+var memory = /* @__PURE__ */ new Map();
+var memoryStore = {
+  getItem: (key) => memory.has(key) ? memory.get(key) : null,
+  setItem: (key, value) => {
+    memory.set(key, String(value));
+  },
+  removeItem: (key) => {
+    memory.delete(key);
+  }
+};
+var backend = null;
+function storageBackend() {
+  if (backend) {
+    return backend;
+  }
+  backend = memoryStore;
+  try {
+    const ls = globalThis.localStorage;
+    if (ls) {
+      const probe = "__divjs_probe__";
+      ls.setItem(probe, "1");
+      ls.removeItem(probe);
+      backend = ls;
+    }
+  } catch {
+  }
+  return backend;
+}
+function isSavable(value) {
+  return typeof value === "number" && Number.isFinite(value) || typeof value === "string";
+}
+function storageWrite(key, value) {
+  let text2;
+  try {
+    text2 = JSON.stringify(value);
+  } catch {
+    return false;
+  }
+  if (text2.length > MAX_SAVED_CHARS) {
+    return false;
+  }
+  try {
+    storageBackend().setItem(key, text2);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function storageRead(key) {
+  try {
+    const text2 = storageBackend().getItem(key);
+    return text2 === null || text2 === void 0 ? void 0 : JSON.parse(text2);
+  } catch {
+    return void 0;
+  }
+}
+function storageRemove(key) {
+  try {
+    const store = storageBackend();
+    const had = store.getItem(key) !== null;
+    store.removeItem(key);
+    return had;
+  } catch {
+    return false;
+  }
+}
+
 // vm/runtime.js
 var CType = {
   C_SCREEN: 0,
@@ -14181,14 +14264,93 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       }
     }
   }
-  // OFFSET <local variable>: see compileOffsetOperator.
-  offsetLocalNative(slot) {
-    return {
+  // OFFSET <local variable> (and, with its size, OFFSET <local array>):
+  // see compileOffsetOperator.
+  offsetLocalNative(slot, size) {
+    const ref = {
       __divOffsetLocal: true,
       locals: this.vm.locals,
       slot: Number(slot),
       processId: this.vm.currentProcess ? this.vm.currentProcess.id : 0
     };
+    if (size !== void 0) {
+      ref.size = Number(size) || 1;
+    }
+    return ref;
+  }
+  // Saved data (save_data/load_data, DIV's save/load) is kept under the
+  // PROGRAM's name, so the games of one site don't overwrite each other's
+  // (two programs with the same name share it).
+  storageKey(kind, name) {
+    return `divjs:${this.vm.programName || ""}:${kind}:${String(name)}`;
+  }
+  saveDataNative(key, value) {
+    if (!isSavable(value) || !storageWrite(this.storageKey("data", key), value)) {
+      this.warnStorage("save_data", key);
+      return 0;
+    }
+    return 1;
+  }
+  loadDataNative(key, fallback) {
+    const value = storageRead(this.storageKey("data", key));
+    if (isSavable(value)) {
+      return value;
+    }
+    return fallback === void 0 ? 0 : fallback;
+  }
+  deleteDataNative(key) {
+    const hadData = storageRemove(this.storageKey("data", key));
+    const hadFile = storageRemove(this.storageKey("file", key));
+    return hadData || hadFile ? 1 : 0;
+  }
+  // References to the `count` cells that start at an OFFSET reference.
+  offsetCells(ref, count) {
+    const cells = [];
+    for (let i = 0; i < count; i++) {
+      cells.push({ ...ref, slot: ref.slot + i });
+    }
+    return cells;
+  }
+  // DIV's save(file, OFFSET data[, count]): stores `count` cells from
+  // `data` under the name `file` - without `count`, all of an array or
+  // STRUCT, or one variable. As in DIV, a count past one variable takes
+  // the variables declared after it.
+  saveNative(file, ref, count) {
+    if (!this.isOffsetRef(ref)) {
+      this.logFn("[warn] save(): the second argument must be OFFSET of a variable, array or STRUCT");
+      return 0;
+    }
+    const n = Math.max(1, Math.trunc(Number(count ?? ref.size ?? 1)) || 1);
+    const values = this.offsetCells(ref, n).map((cell) => {
+      const value = this.resolveOffsetRef(cell);
+      return isSavable(value) ? value : 0;
+    });
+    if (!storageWrite(this.storageKey("file", file), values)) {
+      this.warnStorage("save", file);
+      return 0;
+    }
+    return 1;
+  }
+  // DIV's load(file, OFFSET data): puts back what save() stored, as many
+  // cells as were saved (no more than an array or STRUCT has). 0 when
+  // nothing was saved under that name.
+  loadNative(file, ref) {
+    if (!this.isOffsetRef(ref)) {
+      this.logFn("[warn] load(): the second argument must be OFFSET of a variable, array or STRUCT");
+      return 0;
+    }
+    const values = storageRead(this.storageKey("file", file));
+    if (!Array.isArray(values)) {
+      return 0;
+    }
+    const n = Math.min(values.length, ref.size ?? values.length);
+    this.offsetCells(ref, n).forEach((cell, i) => {
+      this.writeOffsetRef(cell, isSavable(values[i]) ? values[i] : 0);
+    });
+    return 1;
+  }
+  warnStorage(what, key) {
+    this.logFn(`[warn] ${what}("${key}"): not saved - only numbers and strings of up to ${MAX_SAVED_CHARS} characters in all, and the browser's storage must be available and not full`);
   }
   countPersistentTexts() {
     let count = 0;
@@ -15634,6 +15796,11 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     this.registerNetNatives();
     this.registerAudioNatives();
     registerStringNatives(this.vm);
+    this.vm.registerNative("save_data", this.saveDataNative.bind(this));
+    this.vm.registerNative("load_data", this.loadDataNative.bind(this));
+    this.vm.registerNative("delete_data", this.deleteDataNative.bind(this));
+    this.vm.registerNative("save", this.saveNative.bind(this));
+    this.vm.registerNative("load", this.loadNative.bind(this));
     this.vm.registerNative("collision_circle", this.collisionCircleNative.bind(this));
     this.vm.registerNative("collision_obb", this.collisionOBBNative.bind(this));
     this.vm.registerNative("collision_point", this.collisionPointNative.bind(this));

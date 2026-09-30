@@ -13,6 +13,7 @@ import { PhysicsWorld, PHYS_DYNAMIC } from './physics.js';
 import { NetSession } from './net.js';
 import { AudioEngine, sfxRecipe } from './audio.js';
 import { registerStringNatives } from './strings.js';
+import { isSavable, storageRead, storageRemove, storageWrite, MAX_SAVED_CHARS } from './storage.js';
 
 export const CType = {
   C_SCREEN: 0,
@@ -1932,15 +1933,120 @@ export class CanvasEngineRuntime {
     }
   }
 
-  // OFFSET <local variable>: see compileOffsetOperator.
-  offsetLocalNative(slot)
+  // OFFSET <local variable> (and, with its size, OFFSET <local array>):
+  // see compileOffsetOperator.
+  offsetLocalNative(slot, size)
   {
-    return {
+    const ref = {
       __divOffsetLocal: true,
       locals: this.vm.locals,
       slot: Number(slot),
       processId: this.vm.currentProcess ? this.vm.currentProcess.id : 0
     };
+    if (size !== undefined)
+    {
+      ref.size = Number(size) || 1;
+    }
+    return ref;
+  }
+
+  // Saved data (save_data/load_data, DIV's save/load) is kept under the
+  // PROGRAM's name, so the games of one site don't overwrite each other's
+  // (two programs with the same name share it).
+  storageKey(kind, name)
+  {
+    return `divjs:${this.vm.programName || ''}:${kind}:${String(name)}`;
+  }
+
+  saveDataNative(key, value)
+  {
+    if (!isSavable(value) || !storageWrite(this.storageKey('data', key), value))
+    {
+      this.warnStorage('save_data', key);
+      return 0;
+    }
+    return 1;
+  }
+
+  loadDataNative(key, fallback)
+  {
+    const value = storageRead(this.storageKey('data', key));
+    if (isSavable(value))
+    {
+      return value;
+    }
+    return fallback === undefined ? 0 : fallback;
+  }
+
+  deleteDataNative(key)
+  {
+    const hadData = storageRemove(this.storageKey('data', key));
+    const hadFile = storageRemove(this.storageKey('file', key));
+    return hadData || hadFile ? 1 : 0;
+  }
+
+  // References to the `count` cells that start at an OFFSET reference.
+  offsetCells(ref, count)
+  {
+    const cells = [];
+    for (let i = 0; i < count; i++)
+    {
+      cells.push({ ...ref, slot: ref.slot + i });
+    }
+    return cells;
+  }
+
+  // DIV's save(file, OFFSET data[, count]): stores `count` cells from
+  // `data` under the name `file` - without `count`, all of an array or
+  // STRUCT, or one variable. As in DIV, a count past one variable takes
+  // the variables declared after it.
+  saveNative(file, ref, count)
+  {
+    if (!this.isOffsetRef(ref))
+    {
+      this.logFn('[warn] save(): the second argument must be OFFSET of a variable, array or STRUCT');
+      return 0;
+    }
+    const n = Math.max(1, Math.trunc(Number(count ?? ref.size ?? 1)) || 1);
+    const values = this.offsetCells(ref, n).map((cell) =>
+    {
+      const value = this.resolveOffsetRef(cell);
+      return isSavable(value) ? value : 0;
+    });
+    if (!storageWrite(this.storageKey('file', file), values))
+    {
+      this.warnStorage('save', file);
+      return 0;
+    }
+    return 1;
+  }
+
+  // DIV's load(file, OFFSET data): puts back what save() stored, as many
+  // cells as were saved (no more than an array or STRUCT has). 0 when
+  // nothing was saved under that name.
+  loadNative(file, ref)
+  {
+    if (!this.isOffsetRef(ref))
+    {
+      this.logFn('[warn] load(): the second argument must be OFFSET of a variable, array or STRUCT');
+      return 0;
+    }
+    const values = storageRead(this.storageKey('file', file));
+    if (!Array.isArray(values))
+    {
+      return 0;
+    }
+    const n = Math.min(values.length, ref.size ?? values.length);
+    this.offsetCells(ref, n).forEach((cell, i) =>
+    {
+      this.writeOffsetRef(cell, isSavable(values[i]) ? values[i] : 0);
+    });
+    return 1;
+  }
+
+  warnStorage(what, key)
+  {
+    this.logFn(`[warn] ${what}("${key}"): not saved - only numbers and strings of up to ${MAX_SAVED_CHARS} characters in all, and the browser's storage must be available and not full`);
   }
 
   countPersistentTexts()
@@ -3669,6 +3775,11 @@ export class CanvasEngineRuntime {
     this.registerNetNatives();
     this.registerAudioNatives();
     registerStringNatives(this.vm);
+    this.vm.registerNative('save_data', this.saveDataNative.bind(this));
+    this.vm.registerNative('load_data', this.loadDataNative.bind(this));
+    this.vm.registerNative('delete_data', this.deleteDataNative.bind(this));
+    this.vm.registerNative('save', this.saveNative.bind(this));
+    this.vm.registerNative('load', this.loadNative.bind(this));
     this.vm.registerNative('collision_circle', this.collisionCircleNative.bind(this));
     this.vm.registerNative('collision_obb', this.collisionOBBNative.bind(this));
     this.vm.registerNative('collision_point', this.collisionPointNative.bind(this));

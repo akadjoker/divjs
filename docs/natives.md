@@ -209,7 +209,7 @@ layout for the next runs.
 | `let_me_alone` | — | number | Kills every process except the current one. |
 | `__get_path` | `root, segments…` | value | Compiler-internal: reads `scroll[n].field`, `region…`, `father.field`, `son.field`, `bigbro.field`, `smallbro.field`. |
 | `__set_path` | `root, segments…, value` | value | Compiler-internal: writes the same paths. |
-| `__offset_local` | `slot` | reference | Compiler-internal: `OFFSET <local variable>` - a live reference to that slot of the running process or FUNCTION call. |
+| `__offset_local` | `slot[, size]` | reference | Compiler-internal: `OFFSET <local variable>` - a live reference to that slot of the running process or FUNCTION call (with `size`, `OFFSET <local array>`). |
 | `__get_process_field` | `id, field` | value | Compiler-internal: reads `other.field` where `other` holds a process id. |
 | `__set_process_field` | `id, field, value` | value | Compiler-internal: writes `other.field`. |
 
@@ -308,6 +308,30 @@ is used as its text.
 | `strchr` | `string, characters` | number | Position of the first character of `string` that is one of `characters`, -1 if none. |
 | `strcmp` | `a, b` | -1/0/1 | Compares two strings in character-code order: -1 if `a` comes first, 0 if equal, 1 if `b` comes first. |
 | `itoa` | `number` | string | The whole number as text (`itoa(42)` is `"42"`). |
+
+## Saved data
+
+Small data kept from one run of the game to the next (high scores,
+settings, progress): in the browser's `localStorage`, under the
+`PROGRAM`'s name, so the games of one site don't overwrite each other's
+(two programs with the same `PROGRAM` name share their data). Where the
+page may not use storage (blocked, a private window that refuses it) and
+outside a browser, the data lasts only while the page is open.
+
+Limits: numbers and strings only (other values save as 0 in a `save`
+block, and `save_data` refuses them); at most 65536 characters for one
+value or one `save` block once encoded (about 6000 numbers); and the
+browser's own limit, a few megabytes for everything a site stores. The
+calls return 0 instead of failing when the data can't be written; the
+player can clear it with the browser's site data.
+
+| Name | Arguments | Returns | Description |
+|------|-----------|---------|-------------|
+| `save_data` | `key, value` | 1/0 | Keeps a number or a string under the name `key`. 0 when it can't (not a number or string, too long, storage full or blocked). Not a DIV function. |
+| `load_data` | `key[, default]` | value | What `save_data` kept under `key`, or `default` (0 without it) when there is nothing. Not a DIV function. |
+| `delete_data` | `key` | 1/0 | Forgets what `save_data` or `save` kept under `key`; 1 if there was something. Not a DIV function. |
+| `save` | `name, OFFSET data[, count]` | 1/0 | DIV's `save`: keeps `count` cells from `data` under `name`. Without `count`, all of an array or `STRUCT` (`OFFSET scores`), or one variable; as in DIV, a count past one variable takes the `GLOBAL`s declared after it. |
+| `load` | `name, OFFSET data` | 1/0 | DIV's `load`: puts back what `save` kept under `name`, into `data` and the cells after it (no more than an array or `STRUCT` has). 0, leaving `data` alone, when nothing was saved under that name. |
 
 ## Path finding
 

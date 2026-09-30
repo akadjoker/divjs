@@ -122,6 +122,7 @@ export class VM {
 
   // Load bytecode
   load(bytecode) {
+    this.programName = bytecode.programName || '';
     this.constants = bytecode.constants;
     this.bytecode = bytecode.instructions;
     this.processTable = bytecode.processTable || new Map();

@@ -7,6 +7,7 @@ import { Compiler } from '../compiler/compiler.js';
 import { VM } from '../vm/vm.js';
 import { CanvasEngineRuntime } from '../vm/runtime.js';
 import { parseDivMapBuffer, parseDivFpgBuffer, parseDivFntBuffer } from '../vm/div_formats.js';
+import { resetStorageBackend } from '../vm/storage.js';
 
 function compileSource(source)
 {
@@ -969,7 +970,80 @@ END`;
   runtime.dispose();
 }
 
+async function testSaveAndLoadData()
+{
+  // There was no way to keep anything (a high score, settings) from one
+  // run to the next. save_data/load_data keep numbers and strings by key,
+  // and DIV's save/load a variable, array or STRUCT, in the browser's
+  // localStorage under the PROGRAM's name.
+  const clean = () =>
+  {
+    for (const key of Object.keys(localStorage).filter((k) => k.startsWith('divjs:storetest')))
+    {
+      localStorage.removeItem(key);
+    }
+  };
+  clean();
+  const readGlobals = (vm, bytecode, names) => names.map((n) => vm.globals.get(bytecode.globals[n]));
+  const run = async (source) =>
+  {
+    const bytecode = compileSource(source);
+    const vm = new VM();
+    vm.load(bytecode);
+    const runtime = createRuntime(vm);
+    runtime.beginFrame(1 / 60);
+    vm.tick();
+    runtime.dispose();
+    return { vm, bytecode, logs: runtime.testLogs };
+  };
+  try
+  {
+    let r = await run(`PROGRAM storetest;
+GLOBAL ok1; ok2; ok3; bad; scores[3] = 10, 20, 30, 40; STRUCT cfg vol = 7; name = "Ann"; END
+BEGIN
+  ok1 = save_data("best", 1234); ok2 = save_data("who", "Zoe"); bad = save_data("x", OFFSET ok1);
+  ok3 = save("scores", OFFSET scores) + save("cfg", OFFSET cfg);
+  LOOP FRAME; END
+END`);
+    assert(readGlobals(r.vm, r.bytecode, ['ok1', 'ok2', 'ok3', 'bad']).join() === '1,1,2,0',
+      `gravar: ${readGlobals(r.vm, r.bytecode, ['ok1', 'ok2', 'ok3', 'bad'])}`);
+    assert(localStorage.getItem('divjs:storetest:data:best') === '1234', 'save_data devia ir para o localStorage');
+
+    r = await run(`PROGRAM storetest;
+GLOBAL best; who; none; dflt; got; missing; s1; s2; v; n; scores[3]; STRUCT cfg vol; name; END
+BEGIN
+  best = load_data("best"); who = load_data("who"); none = load_data("nothing"); dflt = load_data("nothing", 5);
+  got = load("scores", OFFSET scores) + load("cfg", OFFSET cfg); missing = load("nothing", OFFSET scores);
+  s1 = scores[1]; s2 = scores[3]; v = cfg.vol; n = cfg.name;
+  LOOP FRAME; END
+END`);
+    const got = readGlobals(r.vm, r.bytecode, ['best', 'who', 'none', 'dflt', 'got', 'missing', 's1', 's2', 'v', 'n']);
+    assert(got.join() === '1234,Zoe,0,5,2,0,20,40,7,Ann', `ler noutro arranque: ${got.join()}`);
+
+    // Another PROGRAM does not see this one's data.
+    r = await run(`PROGRAM other; GLOBAL best; BEGIN best = load_data("best", -1); LOOP FRAME; END END`);
+    assert(r.vm.globals.get(r.bytecode.globals.best) === -1, 'outro PROGRAM nao devia ver os dados');
+
+    // Storage that fails (blocked, full) makes the calls return 0, no error.
+    resetStorageBackend({
+      getItem: () => { throw new Error('blocked'); },
+      setItem: () => { throw new Error('full'); },
+      removeItem: () => { throw new Error('blocked'); }
+    });
+    r = await run(`PROGRAM storetest; GLOBAL a; b; c;
+BEGIN a = save_data("k", 1) + 10; b = load_data("best", 3); c = load("scores", OFFSET a) + 20; LOOP FRAME; END END`);
+    assert(readGlobals(r.vm, r.bytecode, ['a', 'b', 'c']).join() === '10,3,20', `armazenamento a falhar: ${readGlobals(r.vm, r.bytecode, ['a', 'b', 'c'])}`);
+    assert(!r.vm.halted, 'um armazenamento a falhar nao devia parar o programa');
+  }
+  finally
+  {
+    resetStorageBackend(null);
+    clean();
+  }
+}
+
 export const runtimeTests = [
+  ['save_data/load_data and DIV save/load keep data between runs', testSaveAndLoadData],
   ['draw_z puts circle/text/draw_rect among the processes', testDrawZPutsPrimitivesAmongProcesses],
   ['string functions: strlen, char, asc, chr, substr, upper, lower, strstr, strchr, strcmp, strdel, itoa', testStringFunctions],
   ['new_graphic is drawn at its real size', testNewGraphicIsDrawnAtItsRealSize],
