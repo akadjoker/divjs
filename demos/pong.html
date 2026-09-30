@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DivJS - Pong Game</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 820px;
+      line-height: 1.4;
+    }
+    #log {
+      width: 860px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="860" height="520"></canvas>
+  <p>
+    Pong clássico! Jogador 1: W/S. Jogador 2: Setas Cima/Baixo.
+    Primeiro a 7 pontos vence. Espaço reinicia.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM pong_game;
+
+GLOBAL g_paddle1_type = 0;
+GLOBAL g_paddle2_type = 0;
+GLOBAL g_ball_type = 0;
+GLOBAL g_score1 = 0;
+GLOBAL g_score2 = 0;
+GLOBAL g_game_over = 0;
+GLOBAL g_winner = 0;
+
+CONST
+  PADDLE_WIDTH = 15;
+  PADDLE_HEIGHT = 80;
+  BALL_SIZE = 10;
+  BALL_SPEED = 6;
+  PADDLE_SPEED = 7;
+  WINNING_SCORE = 7;
+
+// Player paddle controlled by keyboard
+PROCESS paddle_player(px, py, is_player1);
+private
+  up_key = 0;
+  down_key = 0;
+BEGIN
+  x = px;
+  y = py;
+  width = PADDLE_WIDTH;
+  height = PADDLE_HEIGHT;
+  graph = 1; // collision() requires a graph to be set
+
+  IF (is_player1)
+    up_key = _w;
+    down_key = _s;
+  ELSE
+    up_key = _up;
+    down_key = _down;
+  END
+
+  LOOP
+    IF (key(up_key))
+      y = y - PADDLE_SPEED;
+    END
+    IF (key(down_key))
+      y = y + PADDLE_SPEED;
+    END
+
+    // Keep paddle in bounds
+    IF (y < height / 2)
+      y = height / 2;
+    END
+    IF (y > 520 - height / 2)
+      y = 520 - height / 2;
+    END
+
+    set_color('#4ecdc4');
+    draw_rect(x - width / 2, y - height / 2, width, height);
+
+    FRAME;
+  END
+END
+
+// Ball that bounces around
+PROCESS ball();
+private
+  dx = 0;
+  dy = 0;
+  speed = 0;
+BEGIN
+  x = 430;
+  y = 260;
+  width = BALL_SIZE;
+  height = BALL_SIZE;
+  graph = 1; // collision() requires a graph to be set
+
+  // Random initial direction
+  dx = (rand(0, 1) * 2 - 1) * BALL_SPEED;
+  dy = (rand(0, 1) * 2 - 1) * BALL_SPEED;
+  speed = BALL_SPEED;
+
+  LOOP
+    IF (g_game_over)
+      set_color('#ffd700');
+      circle(x, y, width / 2);
+      FRAME;
+    END
+
+    x = x + dx;
+    y = y + dy;
+
+    // Bounce off top/bottom walls
+    IF (y < height / 2 OR y > 520 - height / 2)
+      dy = -dy;
+      y = y + dy;
+    END
+
+    // Check collision with paddle 1
+    IF (collision(g_paddle1_type))
+      dx = abs(dx);
+      x = x + dx;
+    END
+
+    // Check collision with paddle 2
+    IF (collision(g_paddle2_type))
+      dx = -abs(dx);
+      x = x + dx;
+    END
+
+    // Score detection
+    IF (x < 0)
+      g_score2 = g_score2 + 1;
+      x = 430;
+      y = 260;
+      dx = (rand(0, 1) * 2 - 1) * BALL_SPEED;
+      dy = (rand(0, 1) * 2 - 1) * BALL_SPEED;
+    END
+    IF (x > 860)
+      g_score1 = g_score1 + 1;
+      x = 430;
+      y = 260;
+      dx = (rand(0, 1) * 2 - 1) * BALL_SPEED;
+      dy = (rand(0, 1) * 2 - 1) * BALL_SPEED;
+    END
+
+    // Check for winner
+    IF (g_score1 >= WINNING_SCORE)
+      g_game_over = 1;
+      g_winner = 1;
+    END
+    IF (g_score2 >= WINNING_SCORE)
+      g_game_over = 1;
+      g_winner = 2;
+    END
+
+    set_color('#ffd700');
+    circle(x, y, width / 2);
+
+    FRAME;
+  END
+END
+
+PROCESS reset_ball();
+BEGIN
+  // Simply spawns a new ball after a score
+END
+
+PROCESS score_display();
+BEGIN
+  x = 430;
+  y = 40;
+
+  LOOP
+    set_color('#ffffff');
+    text(x - 100, y, "P1: " + g_score1);
+    text(x + 80, y, "P2: " + g_score2);
+
+    // Draw center line
+    set_color('#2b4158');
+    draw_rect(x - 2, 0, 4, 520);
+
+    IF (g_game_over)
+      set_color('#ff6b6b');
+      text(x - 120, y + 50, "GAME OVER!");
+      text(x - 120, y + 70, "Player " + g_winner + " wins!");
+      text(x - 120, y + 100, "Press SPACE to restart");
+    ELSE
+      set_color('#93aecd');
+      text(x - 80, y + 25, "P1: W/S");
+      text(x + 20, y + 25, "P2: Up/Down");
+    END
+
+    FRAME;
+  END
+END
+
+PROCESS restart_checker();
+PRIVATE waiting_for_release = 0;
+BEGIN
+  LOOP
+    IF (g_game_over AND key(_space))
+      IF (waiting_for_release == 0)
+        // Reset game
+        g_score1 = 0;
+        g_score2 = 0;
+        g_game_over = 0;
+        g_winner = 0;
+        reset_ball();
+        waiting_for_release = 1;
+      END
+    ELSE
+      waiting_for_release = 0;
+    END
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(860, 520);
+  screen_color('#0e1a29');
+
+  g_paddle1_type = TYPE paddle_player;
+  g_paddle2_type = TYPE paddle_player;
+  g_ball_type = TYPE ball;
+
+  paddle_player(30, 260, 1);    // Player 1
+  paddle_player(830, 260, 0);   // Player 2
+  ball();
+
+  score_display();
+  restart_checker();
+
+  set_color('#ffffff');
+  text(10, 10, "PONG");
+
+  LOOP FRAME; END
+END`;
+
+    const log = document.getElementById('log');
+
+    await runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      logFn: (line) => {
+        log.textContent = line;
+      }
+    });
+  </script>
+</body>
+</html>

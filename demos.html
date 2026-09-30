@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS Demos</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      padding: 2rem;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+    h1 {
+      margin: 0 0 0.5rem;
+      font-size: 2rem;
+    }
+    p {
+      margin: 0 0 2rem;
+      color: #94a3b8;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 1rem;
+    }
+    a.card {
+      display: block;
+      padding: 1.25rem;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 0.75rem;
+      text-decoration: none;
+      color: inherit;
+      transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    }
+    a.card:hover {
+      transform: translateY(-2px);
+      border-color: #60a5fa;
+      background: #243447;
+    }
+    .card-title {
+      font-weight: 600;
+      font-size: 1.1rem;
+      margin-bottom: 0.5rem;
+      color: #f8fafc;
+    }
+    .card-path {
+      font-size: 0.85rem;
+      color: #94a3b8;
+      word-break: break-all;
+    }
+    .section-title {
+      font-size: 1.25rem;
+      margin: 2rem 0 1rem;
+      color: #cbd5e1;
+    }
+    .section-title:first-of-type {
+      margin-top: 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>DivJS Demos</h1>
+  <p>Escolha um demo ou tutorial para executar.</p>
+
+  <h2 class="section-title">Game / Feature Demos</h2>
+  <div class="grid">
+    <a class="card" href="demos/asteroids.html">
+      <div class="card-title">Asteroids</div>
+      <div class="card-path">demos/asteroids.html</div>
+    </a>
+    <a class="card" href="demos/breakout.html">
+      <div class="card-title">Breakout</div>
+      <div class="card-path">demos/breakout.html</div>
+    </a>
+    <a class="card" href="demos/bunnymark.html">
+      <div class="card-title">Bunnymark</div>
+      <div class="card-path">demos/bunnymark.html</div>
+    </a>
+    <a class="card" href="demos/candy.html">
+      <div class="card-title">Candy</div>
+      <div class="card-path">demos/candy.html</div>
+    </a>
+    <a class="card" href="demos/collision.html">
+      <div class="card-title">Collision</div>
+      <div class="card-path">demos/collision.html</div>
+    </a>
+    <a class="card" href="demos/div-assets.html">
+      <div class="card-title">DIV Assets</div>
+      <div class="card-path">demos/div-assets.html</div>
+    </a>
+    <a class="card" href="demos/div-fpg-fnt-game.html">
+      <div class="card-title">DIV FPG/FNT Game</div>
+      <div class="card-path">demos/div-fpg-fnt-game.html</div>
+    </a>
+    <a class="card" href="demos/drawing.html">
+      <div class="card-title">Drawing</div>
+      <div class="card-path">demos/drawing.html</div>
+    </a>
+    <a class="card" href="demos/language-features.html">
+      <div class="card-title">Language Features</div>
+      <div class="card-path">demos/language-features.html</div>
+    </a>
+    <a class="card" href="demos/pathfind.html">
+      <div class="card-title">Pathfind</div>
+      <div class="card-path">demos/pathfind.html</div>
+    </a>
+    <a class="card" href="demos/platformer.html">
+      <div class="card-title">Platformer</div>
+      <div class="card-path">demos/platformer.html</div>
+    </a>
+    <a class="card" href="demos/pong.html">
+      <div class="card-title">Pong</div>
+      <div class="card-path">demos/pong.html</div>
+    </a>
+    <a class="card" href="demos/scroll-platformer.html">
+      <div class="card-title">Scroll Platformer</div>
+      <div class="card-path">demos/scroll-platformer.html</div>
+    </a>
+    <a class="card" href="demos/shmup.html">
+      <div class="card-title">SHMUP</div>
+      <div class="card-path">demos/shmup.html</div>
+    </a>
+    <a class="card" href="demos/side-shmup.html">
+      <div class="card-title">Side SHMUP</div>
+      <div class="card-path">demos/side-shmup.html</div>
+    </a>
+    <a class="card" href="demos/snake.html">
+      <div class="card-title">Snake</div>
+      <div class="card-path">demos/snake.html</div>
+    </a>
+    <a class="card" href="demos/timer.html">
+      <div class="card-title">Timer</div>
+      <div class="card-path">demos/timer.html</div>
+    </a>
+  </div>
+
+  <h2 class="section-title">API Tutorials</h2>
+  <div class="grid">
+    <a class="card" href="examples/tutor_api_01.html">
+      <div class="card-title">01 - FPG, Processes & Movement</div>
+      <div class="card-path">examples/tutor_api_01.html</div>
+    </a>
+    <a class="card" href="examples/tutor_api_02.html">
+      <div class="card-title">02 - Angles & advance()</div>
+      <div class="card-path">examples/tutor_api_02.html</div>
+    </a>
+    <a class="card" href="examples/tutor_api_03.html">
+      <div class="card-title">03 - Collisions</div>
+      <div class="card-path">examples/tutor_api_03.html</div>
+    </a>
+    <a class="card" href="examples/tutor_api_04.html">
+      <div class="card-title">04 - Procedural Graphics</div>
+      <div class="card-path">examples/tutor_api_04.html</div>
+    </a>
+    <a class="card" href="examples/tutor_api_05.html">
+      <div class="card-title">05 - Scroll & Regions</div>
+      <div class="card-path">examples/tutor_api_05.html</div>
+    </a>
+    <a class="card" href="examples/tutor_api_06.html">
+      <div class="card-title">06 - Pathfinding</div>
+      <div class="card-path">examples/tutor_api_06.html</div>
+    </a>
+    <a class="card" href="examples/tutor_api_07.html">
+      <div class="card-title">07 - Text & Fonts</div>
+      <div class="card-path">examples/tutor_api_07.html</div>
+    </a>
+    <a class="card" href="examples/tutor_api_08.html">
+      <div class="card-title">08 - Collision Shapes</div>
+      <div class="card-path">examples/tutor_api_08.html</div>
+    </a>
+  </div>
+</body>
+</html>

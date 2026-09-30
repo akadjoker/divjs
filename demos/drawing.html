@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DivJS - Drawing Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 860px;
+      line-height: 1.4;
+    }
+    #log {
+      width: 860px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="860" height="520"></canvas>
+  <p>
+    Demonstração de primitivas de desenho: xput com rotação e escala,
+    draw_rect, circle, text, write. Cada figura mostra diferente
+    transformação.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM drawing_demo;
+
+GLOBAL g_time = 0;
+GLOBAL g_box_type = 0;
+GLOBAL g_star_type = 0;
+
+// Draw a simple star shape using xput primitives
+PROCESS star_demo(px, py, base_size);
+private
+  angle = 0;
+BEGIN
+  x = px;
+  y = py;
+  angle = base_size;
+
+  LOOP
+    angle = angle + 2000;
+    IF (angle > 360000)
+      angle = angle - 360000;
+    END
+
+    // Draw 5-pointed star using rotated rectangles
+    set_color('#ffd700');
+
+    xput(0, 1, x + cos(angle) * 40, y - sin(angle) * 40, angle, 50, 0, 0);
+    xput(0, 1, x + cos(angle + 72000) * 40, y - sin(angle + 72000) * 40, angle + 72000, 50, 0, 0);
+    xput(0, 1, x + cos(angle + 144000) * 40, y - sin(angle + 144000) * 40, angle + 144000, 50, 0, 0);
+    xput(0, 1, x + cos(angle + 216000) * 40, y - sin(angle + 216000) * 40, angle + 216000, 50, 0, 0);
+    xput(0, 1, x + cos(angle + 288000) * 40, y - sin(angle + 288000) * 40, angle + 288000, 50, 0, 0);
+
+    set_color('#ffffff');
+    circle(x, y, 5);
+
+    FRAME;
+  END
+END
+
+// Demonstrate xput with different transformations
+PROCESS xput_demo(px, py);
+private
+  angle = 0;
+  size = 100;
+  size_dir = 1;
+BEGIN
+  x = px;
+  y = py;
+  g_star_type = TYPE star_demo;
+
+  // Spawn some stars around
+  star_demo(px - 150, py - 80, 30);
+  star_demo(px + 150, py - 80, 20);
+  star_demo(px, py + 120, 25);
+
+  LOOP
+    g_time = g_time + 1;
+
+    // Oscillate size
+    size = size + size_dir * 2;
+    IF (size >= 150)
+      size_dir = -1;
+    ELSE
+      IF (size <= 50)
+        size_dir = 1;
+      END
+    END
+
+    // Continuous rotation
+    angle = angle + 1000;
+    IF (angle > 360000)
+      angle = angle - 360000;
+    END
+
+    // Draw multiple transformed squares using xput
+
+    // Center square - rotating and scaling
+    set_color('#ff6b6b');
+    xput(0, 1, x, y, angle, size, 0, 0);
+
+    // Corner squares with different transformations
+    set_color('#4ecdc4');
+    xput(0, 1, x - 100, y - 80, -angle, size * 0.6, 0, 0);
+
+    set_color('#95e1d3');
+    xput(0, 1, x + 100, y - 80, angle * 2, size * 0.5, 4, 0);
+
+    set_color('#f38181');
+    xput(0, 1, x, y + 100, -angle * 1.5, size * 0.7, 2, 0);
+
+    // Text labels
+    set_color('#ffffff');
+    text(x - 100, y - 130, "xput rotation & scale");
+    text(x - 50, y - 110, "angle: " + angle);
+    text(x - 50, y - 95, "size: " + size + "%");
+
+    // Demonstrate draw_rect
+    set_color('#2b4158');
+    draw_rect(x - 150, y - 60, 300, 180, '#1a2f40');
+
+    // Demonstrate text
+    set_color('#93aecd');
+    text(x - 140, y - 50, "Primitives demo:");
+    text(x - 140, y - 35, "- xput: advanced blit");
+    text(x - 140, y - 20, "- draw_rect: rectangles");
+    text(x - 140, y - 5,  "- circle: circles");
+    text(x - 140, y + 10, "- text: immediate text");
+
+    // Animated circles
+    set_color('#ff9999');
+    circle(x + cos(g_time * 1000) * 60, y + sin(g_time * 1000) * 40, 15);
+
+    set_color('#99ff99');
+    circle(x + cos(g_time * 1000 + 90000) * 60, y + sin(g_time * 1000 + 90000) * 40, 15);
+
+    set_color('#9999ff');
+    circle(x + cos(g_time * 1000 + 180000) * 60, y + sin(g_time * 1000 + 180000) * 40, 15);
+
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(860, 520);
+  screen_color('#0e1a29');
+
+  g_box_type = TYPE xput_demo;
+
+  xput_demo(430, 260);
+
+  // Initial greeting
+  set_color('#ffffff');
+  text(10, 10, "Drawing primitives demo running!");
+  text(10, 25, "Press ESC to exit");
+
+  LOOP FRAME; END
+END`;
+
+    const log = document.getElementById('log');
+
+    await runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      logFn: (line) => {
+        log.textContent = line;
+      }
+    });
+  </script>
+</body>
+</html>

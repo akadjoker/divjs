@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DivJS — Scroll Platformer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #070b14;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #1a2f48;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0c1320;
+    }
+    p {
+      color: #6a8db0;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.4;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0a1018;
+      border: 1px solid #1c2c40;
+      padding: 6px;
+      min-height: 28px;
+      color: #7ab0e0;
+      font: 11px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="400"></canvas>
+  <p>
+    ← → mover · ↑ / Z saltar · Mundo com scroll horizontal. Apanha moedas,
+    evita os espinhos. Câmara segue o jogador.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM scroll_platformer;
+
+CONST
+  TILE = 16;
+  GRAVITY = 1;
+  JUMP_V = -12;
+  MOVE_SPD = 4;
+  WORLD_W = 3200;
+
+GLOBAL
+  g_player_type = 0;
+  g_solid_type = 0;
+  g_coin_type = 0;
+  g_spike_type = 0;
+  g_goal_type = 0;
+
+  g_player_gfx = 0;
+  g_coin_gfx = 0;
+  g_spike_gfx = 0;
+  g_goal_gfx = 0;
+
+  g_gfx_init = 0;
+
+  g_coins = 0;
+  g_lives = 3;
+  g_level_done = 0;
+  g_player_x = 0;
+
+// Create all graphics once
+PROCESS init_graphics();
+BEGIN
+  // Player (12x16) - green adventurer
+  g_player_gfx = new_graphic(12, 16);
+  gfx_fill_rgba(g_player_gfx, 0, 0, 0, 0);
+  gfx_rect(g_player_gfx, 3, 1, 6, 5, 100, 220, 100);
+  gfx_pixel(g_player_gfx, 5, 3, 20, 20, 20);
+  gfx_pixel(g_player_gfx, 7, 3, 20, 20, 20);
+  gfx_rect(g_player_gfx, 4, 6, 4, 6, 80, 180, 80);
+  gfx_rect(g_player_gfx, 3, 12, 2, 4, 60, 140, 60);
+  gfx_rect(g_player_gfx, 7, 12, 2, 4, 60, 140, 60);
+
+  // Coin (10x10)
+  g_coin_gfx = new_graphic(10, 10);
+  gfx_fill_rgba(g_coin_gfx, 0, 0, 0, 0);
+  gfx_circle(g_coin_gfx, 5, 5, 4, 255, 210, 40);
+  gfx_circle(g_coin_gfx, 5, 5, 2, 255, 250, 120);
+
+  // Spike (14x10)
+  g_spike_gfx = new_graphic(14, 10);
+  gfx_fill_rgba(g_spike_gfx, 0, 0, 0, 0);
+  gfx_rect(g_spike_gfx, 0, 7, 14, 3, 180, 80, 80);
+  gfx_rect(g_spike_gfx, 1, 4, 3, 3, 220, 100, 100);
+  gfx_rect(g_spike_gfx, 5, 2, 4, 5, 220, 100, 100);
+  gfx_rect(g_spike_gfx, 10, 4, 3, 3, 220, 100, 100);
+
+  // Goal flag (16x24)
+  g_goal_gfx = new_graphic(16, 24);
+  gfx_fill_rgba(g_goal_gfx, 0, 0, 0, 0);
+  gfx_rect(g_goal_gfx, 0, 0, 2, 24, 120, 100, 60);
+  gfx_rect(g_goal_gfx, 2, 2, 12, 7, 255, 200, 60);
+
+  g_gfx_init = 1;
+END
+
+// Solid platform / ground tile
+PROCESS solid(px, py, pw, ph, r, g, b);
+BEGIN
+  x = px; y = py;
+  width = pw; height = ph;
+  z = 100;
+  ctype = c_scroll;
+  graph = new_graphic(pw, ph);
+  gfx_rect(graph, 0, 0, pw, ph, r, g, b);
+  gfx_rect(graph, 0, 0, pw, 4, r + 30, g + 30, b + 20);
+  gfx_rect_outline(graph, 0, 0, pw, ph, r - 30, g - 30, b - 30);
+  LOOP FRAME; END
+END
+
+// Collectible coin
+PROCESS coin_item(cx, cy);
+private
+  bob = 0;
+BEGIN
+  x = cx; y = cy;
+  width = 10; height = 10;
+  ctype = c_scroll;
+  graph = g_coin_gfx;
+
+  LOOP
+    bob = bob + 5000;
+    y = cy + sin(bob) * 3 / 100000;
+    IF (collision(g_player_type))
+      g_coins = g_coins + 1;
+      BREAK;
+    END
+    FRAME;
+  END
+END
+
+// Dangerous spike
+PROCESS spike(sx, sy);
+BEGIN
+  x = sx; y = sy;
+  width = 14; height = 10;
+  ctype = c_scroll;
+  graph = g_spike_gfx;
+  LOOP
+    IF (collision(g_player_type))
+      signal(g_player_type, s_wakeup);
+      FRAME;
+    END
+    FRAME;
+  END
+END
+
+// Goal flag
+PROCESS goal(gx, gy);
+BEGIN
+  x = gx; y = gy;
+  width = 16; height = 24;
+  ctype = c_scroll;
+  graph = g_goal_gfx;
+  LOOP
+    IF (collision(g_player_type))
+      g_level_done = 1;
+    END
+    FRAME;
+  END
+END
+
+// The player
+PROCESS player();
+private
+  vx = 0;
+  vy = 0;
+  on_ground = 0;
+  facing = 1;
+  hurt_t = 0;
+BEGIN
+  x = 80; y = 100;
+  width = 12; height = 16;
+  ctype = c_scroll;
+  graph = g_player_gfx;
+
+  LOOP
+    // Horizontal input
+    vx = 0;
+    IF (key(_left))
+      vx = -MOVE_SPD;
+      facing = -1;
+    END
+    IF (key(_right))
+      vx = MOVE_SPD;
+      facing = 1;
+    END
+
+    // Jump
+    IF ((key(_up) OR key(_z)) AND on_ground)
+      vy = JUMP_V;
+      on_ground = 0;
+    END
+
+    // Gravity
+    vy = vy + GRAVITY;
+    IF (vy > 12) vy = 12; END
+
+    // Horizontal move + collision
+    x = x + vx;
+    IF (place_meeting(x, y, g_solid_type))
+      IF (vx > 0)
+        WHILE (place_meeting(x, y, g_solid_type))
+          x = x - 1;
+        END
+      ELSE
+        WHILE (place_meeting(x, y, g_solid_type))
+          x = x + 1;
+        END
+      END
+    END
+
+    // Vertical move + collision
+    y = y + vy;
+    on_ground = 0;
+    IF (place_meeting(x, y, g_solid_type))
+      IF (vy >= 0)
+        on_ground = 1;
+        WHILE (place_meeting(x, y, g_solid_type))
+          y = y - 1;
+        END
+      ELSE
+        WHILE (place_meeting(x, y, g_solid_type))
+          y = y + 1;
+        END
+      END
+      vy = 0;
+    END
+
+    // Spike collision = lose life + respawn
+    IF (collision(g_spike_type))
+      g_lives = g_lives - 1;
+      x = 80; y = 100; vy = 0;
+    END
+
+    // Fall off the world
+    IF (y > 450)
+      g_lives = g_lives - 1;
+      x = 80; y = 100; vy = 0;
+    END
+
+    // Flip sprite based on facing
+    IF (facing < 0)
+      flags = 1;
+    ELSE
+      flags = 0;
+    END
+
+    // Publish position for camera
+    g_player_x = x;
+
+    FRAME;
+  END
+END
+
+// Camera that follows the player horizontally
+PROCESS camera();
+private
+  target_x = 0;
+BEGIN
+  scroll[0].x0 = 0;
+  scroll[0].y0 = 0;
+
+  LOOP
+    // Center camera on player
+    target_x = g_player_x - 320;
+
+    // Clamp to world bounds
+    IF (target_x < 0) target_x = 0; END
+    IF (target_x > WORLD_W - 640) target_x = WORLD_W - 640; END
+
+    // Smooth follow
+    scroll[0].x0 = scroll[0].x0 + (target_x - scroll[0].x0) / 8;
+    scroll[0].y0 = 0;
+
+    FRAME;
+  END
+END
+
+// HUD overlay (stays on screen, not scrolled)
+PROCESS hud();
+BEGIN
+  ctype = c_screen;
+  LOOP
+    set_color('#ffd700');
+    text(10, 8, "Coins: " + g_coins);
+    set_color('#ff6b6b');
+    text(540, 8, "Lives: " + g_lives);
+    IF (g_level_done)
+      set_color('#6bff99');
+      text(240, 180, "*** LEVEL COMPLETE! ***");
+    END
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(640, 400);
+  screen_color('#0c1320');
+
+  init_graphics();
+  WHILE (g_gfx_init == 0) FRAME; END
+
+  g_player_type = TYPE player;
+  g_solid_type = TYPE solid;
+  g_coin_type = TYPE coin_item;
+  g_spike_type = TYPE spike;
+  g_goal_type = TYPE goal;
+
+  // Background parallax stars
+  set_color('#1a2a3a');
+  draw_rect(0, 0, 640, 400, '#0c1320');
+
+  // Ground - bottom row
+  solid(0,   384, 400, 16, 60, 100, 50);
+  solid(400, 384, 300, 16, 60, 100, 50);
+  solid(700, 384, 200, 16, 60, 100, 50);
+  solid(900, 384, 400, 16, 60, 100, 50);
+  solid(1300, 384, 300, 16, 60, 100, 50);
+  solid(1600, 384, 400, 16, 60, 100, 50);
+  solid(2000, 384, 500, 16, 60, 100, 50);
+  solid(2500, 384, 700, 16, 60, 100, 50);
+
+  // Platforms section 1 (start area)
+  solid(130, 310, 64, 12, 70, 110, 140);
+  solid(230, 260, 64, 12, 70, 110, 140);
+  solid(330, 210, 80, 12, 70, 110, 140);
+
+  // Platforms section 2 (gap jump)
+  solid(480, 320, 48, 12, 90, 130, 160);
+  solid(570, 280, 48, 12, 90, 130, 160);
+
+  // Platforms section 3 (stairs up)
+  solid(720, 330, 48, 12, 80, 120, 150);
+  solid(780, 290, 48, 12, 80, 120, 150);
+  solid(840, 250, 48, 12, 80, 120, 150);
+
+  // Platforms section 4 (descending)
+  solid(980, 290, 64, 12, 90, 130, 160);
+  solid(1080, 330, 64, 12, 90, 130, 160);
+
+  // Platforms section 5 (high climb)
+  solid(1250, 300, 48, 12, 100, 140, 170);
+  solid(1320, 250, 48, 12, 100, 140, 170);
+  solid(1390, 200, 48, 12, 100, 140, 170);
+
+  // Platforms section 6 (long jumps)
+  solid(1550, 300, 48, 12, 70, 120, 150);
+  solid(1650, 280, 48, 12, 70, 120, 150);
+  solid(1750, 260, 48, 12, 70, 120, 150);
+  solid(1850, 280, 48, 12, 70, 120, 150);
+
+  // Platforms section 7 (final approach)
+  solid(2050, 320, 64, 12, 80, 130, 160);
+  solid(2150, 280, 64, 12, 80, 130, 160);
+  solid(2280, 240, 80, 12, 80, 130, 160);
+
+  // Ceiling blocks to limit vertical movement
+  solid(330, 100, 80, 12, 50, 70, 40);
+  solid(1390, 80, 48, 12, 50, 70, 40);
+
+  // Spikes in gaps and on platforms
+  spike(430, 374);
+  spike(675, 374);
+  spike(875, 374);
+  spike(1200, 374);
+  spike(1500, 374);
+  spike(1950, 374);
+  spike(1980, 374);
+
+  // Spikes on ground (hazard zones)
+  spike(1300, 374);
+  spike(1320, 374);
+
+  // Coins - scattered throughout
+  coin_item(150, 280);
+  coin_item(250, 230);
+  coin_item(350, 180);
+  coin_item(500, 290);
+  coin_item(590, 250);
+  coin_item(740, 300);
+  coin_item(800, 260);
+  coin_item(860, 220);
+  coin_item(1000, 260);
+  coin_item(1100, 300);
+  coin_item(1270, 270);
+  coin_item(1340, 220);
+  coin_item(1410, 170);
+  coin_item(1570, 270);
+  coin_item(1670, 250);
+  coin_item(1770, 230);
+  coin_item(1870, 250);
+  coin_item(2070, 290);
+  coin_item(2170, 250);
+  coin_item(2300, 210);
+
+  // Goal flag at the end
+  goal(3100, 360);
+
+  // Start scroll + camera
+  start_scroll(0, 0, 0, 0, 0, 0);
+  camera();
+  player();
+  hud();
+
+  LOOP FRAME; END
+END`;
+
+    const log = document.getElementById('log');
+
+    await runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      logFn: (line) => {
+        log.textContent = line;
+      }
+    });
+  </script>
+</body>
+</html>

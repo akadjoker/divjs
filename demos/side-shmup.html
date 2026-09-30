@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DivJS — Side-Scrolling Shmup</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #050810;
+      color: #8ab4d8;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #152535;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #03060c;
+    }
+    p {
+      color: #5a7a98;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.4;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0a1018;
+      border: 1px solid #1c2c40;
+      padding: 6px;
+      min-height: 28px;
+      color: #7ab0e0;
+      font: 11px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="400"></canvas>
+  <p>
+    ↑↓ mover · Z / ESPAÇO disparar · R / ENTER reiniciar após game over.
+    Naves inimigas vêm da direita. Destrói o máximo que conseguires!
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM side_shmup;
+
+CONST
+  WORLD_W = 3200;
+
+GLOBAL
+  g_player_type = 0;
+  g_enemy_type   = 0;
+  g_bullet_type  = 0;
+  g_ebullet_type = 0;
+
+  g_ship_gfx   = 0;
+  g_bullet_gfx = 0;
+  g_enemy_gfx  = 0;
+  g_ebull_gfx  = 0;
+  g_boom_gfx   = 0;
+  g_star_gfx   = 0;
+
+  g_gfx_init = 0;
+
+  g_score  = 0;
+  g_lives  = 3;
+  g_over   = 0;
+  g_restart = 0;
+
+  g_player_y = 200;
+
+PROCESS init_graphics();
+BEGIN
+  // Player ship (24x16) — pointing right
+  g_ship_gfx = new_graphic(24, 16);
+  gfx_fill_rgba(g_ship_gfx, 0, 0, 0, 0);
+  gfx_rect(g_ship_gfx, 0, 6, 8, 4, 80, 160, 255);
+  gfx_rect(g_ship_gfx, 6, 4, 14, 8, 100, 200, 255);
+  gfx_rect(g_ship_gfx, 18, 7, 6, 2, 160, 230, 255);
+  gfx_rect(g_ship_gfx, 2, 10, 8, 4, 60, 130, 220);
+  gfx_rect(g_ship_gfx, 10, 2, 4, 3, 200, 240, 255);
+  gfx_rect(g_ship_gfx, 0, 14, 4, 2, 255, 140, 60);
+  gfx_rect(g_ship_gfx, 2, 0, 2, 2, 255, 200, 80);
+
+  // Player bullet (12x3)
+  g_bullet_gfx = new_graphic(12, 3);
+  gfx_fill_rgba(g_bullet_gfx, 0, 0, 0, 0);
+  gfx_rect(g_bullet_gfx, 0, 1, 8, 1, 255, 255, 180);
+  gfx_rect(g_bullet_gfx, 8, 0, 4, 3, 255, 255, 255);
+
+  // Enemy ship (24x16) — pointing left
+  g_enemy_gfx = new_graphic(24, 16);
+  gfx_fill_rgba(g_enemy_gfx, 0, 0, 0, 0);
+  gfx_rect(g_enemy_gfx, 16, 6, 8, 4, 255, 80, 80);
+  gfx_rect(g_enemy_gfx, 4, 4, 14, 8, 220, 60, 60);
+  gfx_rect(g_enemy_gfx, 0, 7, 6, 2, 255, 160, 60);
+  gfx_rect(g_enemy_gfx, 14, 10, 8, 4, 200, 50, 50);
+  gfx_rect(g_enemy_gfx, 10, 2, 4, 3, 255, 180, 80);
+  gfx_rect(g_enemy_gfx, 20, 14, 4, 2, 255, 100, 40);
+  gfx_rect(g_enemy_gfx, 20, 0, 2, 2, 255, 200, 80);
+
+  // Enemy bullet (6x6)
+  g_ebull_gfx = new_graphic(6, 6);
+  gfx_fill_rgba(g_ebull_gfx, 0, 0, 0, 0);
+  gfx_circle(g_ebull_gfx, 3, 3, 2, 255, 120, 60);
+  gfx_pixel(g_ebull_gfx, 3, 3, 255, 255, 180);
+
+  // Explosion (32x32)
+  g_boom_gfx = new_graphic(32, 32);
+  gfx_fill_rgba(g_boom_gfx, 0, 0, 0, 0);
+  gfx_circle(g_boom_gfx, 16, 16, 14, 255, 200, 60);
+  gfx_circle(g_boom_gfx, 16, 16, 10, 255, 140, 40);
+  gfx_circle(g_boom_gfx, 16, 16, 6, 255, 240, 200);
+  gfx_pixel(g_boom_gfx, 8, 16, 255, 255, 200);
+  gfx_pixel(g_boom_gfx, 24, 16, 255, 255, 200);
+  gfx_pixel(g_boom_gfx, 16, 8, 255, 255, 200);
+  gfx_pixel(g_boom_gfx, 16, 24, 255, 255, 200);
+
+  // Background star (2x2)
+  g_star_gfx = new_graphic(2, 2);
+  gfx_fill_rgba(g_star_gfx, 0, 0, 0, 0);
+  gfx_rect(g_star_gfx, 0, 0, 2, 2, 150, 180, 220);
+
+  g_gfx_init = 1;
+END
+
+// ---- Background stars (scroll slower = parallax) ----
+PROCESS star_field();
+PRIVATE
+  sx = 0;
+  sy = 0;
+  spd = 0;
+  i = 0;
+BEGIN
+  // 60 stars total
+  i = 0;
+  WHILE (i < 60)
+    sx = rand(640);
+    sy = rand(400);
+    spd = rand(3) + 1;
+    star(sx, sy, spd);
+    i = i + 1;
+  END
+END
+
+PROCESS star(sx, sy, spd);
+BEGIN
+  x = sx; y = sy;
+  width = 2; height = 2;
+  ctype = c_screen;
+  graph = g_star_gfx;
+  LOOP
+    x = x - spd;
+    IF (x < -2)
+      x = 642;
+      y = rand(400);
+    END
+    FRAME;
+  END
+END
+
+// ---- Explosion ----
+PROCESS explosion(ex, ey);
+PRIVATE
+  life = 14;
+BEGIN
+  x = ex; y = ey;
+  width = 32; height = 32;
+  ctype = c_screen;
+  graph = g_boom_gfx;
+  LOOP
+    life = life - 1;
+    alpha = life * 7;
+    IF (life <= 0) BREAK; END
+    FRAME;
+  END
+END
+
+// ---- Player bullet ----
+PROCESS p_bullet(bx, by);
+BEGIN
+  x = bx; y = by;
+  width = 12; height = 3;
+  ctype = c_screen;
+  graph = g_bullet_gfx;
+  LOOP
+    x = x + 12;
+    IF (x > 650) BREAK; END
+    IF (collision(g_enemy_type))
+      explosion(x, y);
+      g_score = g_score + 100;
+      BREAK;
+    END
+    FRAME;
+  END
+END
+
+// ---- Enemy bullet ----
+PROCESS e_bullet(bx, by);
+BEGIN
+  x = bx; y = by;
+  width = 6; height = 6;
+  ctype = c_screen;
+  graph = g_ebull_gfx;
+  LOOP
+    x = x - 5;
+    IF (x < -10) BREAK; END
+    IF (collision(g_player_type))
+      explosion(x, y);
+      g_lives = g_lives - 1;
+      BREAK;
+    END
+    FRAME;
+  END
+END
+
+// ---- Enemy ship ----
+PROCESS enemy();
+PRIVATE
+  vy = 0;
+  hp = 2;
+  shoot_t = 0;
+  tick = 0;
+BEGIN
+  x = 660; y = rand(340) + 30;
+  width = 24; height = 16;
+  ctype = c_screen;
+  graph = g_enemy_gfx;
+
+  vy = rand(5) - 2;
+  shoot_t = rand(60) + 30;
+
+  LOOP
+    IF (g_over) BREAK; END
+
+    tick = tick + 1;
+
+    // Move left with sine wave
+    x = x - 2;
+    y = y + sin(tick * 3000) * 3 / 100000;
+
+    // Bounce vertically
+    y = y + vy;
+    IF (y < 20)
+      y = 20;
+      vy = -vy;
+    END
+    IF (y > 380)
+      y = 380;
+      vy = -vy;
+    END
+
+    // Shoot at player
+    shoot_t = shoot_t - 1;
+    IF (shoot_t <= 0 AND x < 640 AND x > 0)
+      e_bullet(x - 12, y);
+      shoot_t = rand(80) + 40;
+    END
+
+    // Collide with player ship
+    IF (collision(g_player_type))
+      explosion(x, y);
+      g_lives = g_lives - 1;
+      BREAK;
+    END
+
+    // Flash when hit
+    IF (collision(g_bullet_type))
+      hp = hp - 1;
+      red = 255; green = 255; blue = 100;
+    ELSE
+      red = 255; green = 255; blue = 255;
+    END
+    IF (hp <= 0)
+      explosion(x, y);
+      g_score = g_score + 100;
+      BREAK;
+    END
+
+    // Despawn off-screen
+    IF (x < -30) BREAK; END
+
+    FRAME;
+  END
+END
+
+// ---- Enemy spawner ----
+PROCESS spawner();
+PRIVATE
+  delay = 90;
+  wave = 0;
+BEGIN
+  LOOP
+    IF (g_over) BREAK; END
+    delay = delay - 1;
+    IF (delay <= 0)
+      enemy();
+      wave = wave + 1;
+      IF (wave < 10)
+        delay = 70;
+      ELSE
+        IF (wave < 20)
+          delay = 50;
+        ELSE
+          delay = 35;
+        END
+      END
+    END
+    FRAME;
+  END
+END
+
+// ---- Player ship ----
+PROCESS player();
+PRIVATE
+  cooldown = 0;
+  inv = 0;
+  flash = 0;
+BEGIN
+  x = 60; y = 200;
+  width = 24; height = 16;
+  ctype = c_screen;
+  graph = g_ship_gfx;
+
+  LOOP
+    // Movement
+    IF (key(_up)   OR key(_w)) y = y - 5; END
+    IF (key(_down) OR key(_s)) y = y + 5; END
+
+    IF (y < 20)  y = 20;  END
+    IF (y > 380) y = 380; END
+
+    g_player_y = y;
+
+    // Shooting
+    cooldown = cooldown - 1;
+    IF ((key(_z) OR key(_space)) AND cooldown <= 0)
+      p_bullet(x + 20, y);
+      cooldown = 8;
+    END
+
+    // Invincibility after hit
+    inv = inv - 1;
+    IF (inv < 0) inv = 0; END
+    IF (inv > 0)
+      flash = flash + 1;
+      IF (flash > 2)
+        alpha = 100;
+        flash = 0;
+      ELSE
+        alpha = 30;
+      END
+    ELSE
+      alpha = 100;
+      red = 255; green = 255; blue = 255;
+    END
+
+    // Detect hit by enemy bullet
+    IF (collision(g_ebullet_type) AND inv == 0)
+      inv = 90;
+      red = 255; green = 100; blue = 100;
+    END
+
+    // Game over
+    IF (g_lives <= 0)
+      g_over = 1;
+      explosion(x, y);
+      BREAK;
+    END
+
+    FRAME;
+  END
+END
+
+// ---- Game manager: handles restart flow ----
+PROCESS game_manager();
+BEGIN
+  ctype = c_screen;
+  // Start first round
+  player();
+  spawner();
+
+  LOOP
+    // Wait for game over
+    IF (g_over)
+      // Wait for restart key
+      WHILE (NOT (key(_r) OR key(_enter))) FRAME; END
+      // Reset globals
+      g_score = 0;
+      g_lives = 3;
+      g_over = 0;
+      g_player_y = 200;
+      // Respawn player + spawner
+      player();
+      spawner();
+    END
+    FRAME;
+  END
+END
+
+// ---- HUD ----
+PROCESS hud();
+BEGIN
+  ctype = c_screen;
+  LOOP
+    set_color('#7ce0ff');
+    text(12, 8, "SCORE " + g_score);
+    set_color('#ff6b6b');
+    text(540, 8, "LIVES " + g_lives);
+    IF (g_over)
+      set_color('#ffe070');
+      text(250, 180, "*** GAME OVER ***");
+      set_color('#7ab0e0');
+      text(220, 200, "Final Score: " + g_score);
+      set_color('#7ce0ff');
+      text(220, 230, "Press R or ENTER to restart");
+    END
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(640, 400);
+  screen_color('#03060c');
+
+  init_graphics();
+  WHILE (g_gfx_init == 0) FRAME; END
+
+  g_player_type  = TYPE player;
+  g_enemy_type   = TYPE enemy;
+  g_bullet_type  = TYPE p_bullet;
+  g_ebullet_type = TYPE e_bullet;
+
+  star_field();
+  game_manager();
+  hud();
+
+  LOOP FRAME; END
+END`;
+
+    const log = document.getElementById('log');
+
+    await runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      logFn: (line) => {
+        log.textContent = line;
+      }
+    });
+  </script>
+</body>
+</html>
