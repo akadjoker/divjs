@@ -117,7 +117,7 @@ const RESERVED_PATH_ROOTS = new Set(['scroll', 'region', 'father', 'son', 'bigbr
 // (sin(90000) is exactly 1). A program's own FUNCTION of the same name
 // takes precedence.
 const FLOAT_NATIVES = new Set([
-  'get_delta', 'get_time', 'sin', 'cos', 'tan', 'torad', 'sqrt', 'lerp', 'hermite', 'smoothstep'
+  'get_delta', 'get_time', 'sin', 'cos', 'tan', 'torad', 'sqrt', 'lerp', 'hermite', 'smoothstep', 'song_time'
 ]);
 
 // True when evaluating `expr` could change program state (a call, or an

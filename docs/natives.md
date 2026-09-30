@@ -56,8 +56,8 @@ Behaviour of the language itself that the function tables below rely on.
   `-3`) unless a side of it is float-typed, and then it is an ordinary
   division (`7 / 2.0` is `3.5`). Float-typed are: a number written with a
   decimal point (`1.0`, `0.5`); `get_delta`, `get_time`, `sin`, `cos`,
-  `tan`, `torad`, `sqrt`, `lerp`, `hermite`, `smoothstep`; arithmetic with
-  a float-typed operand; a variable of a `PROCESS`, `FUNCTION` or the main
+  `tan`, `torad`, `sqrt`, `lerp`, `hermite`, `smoothstep`, `song_time`;
+  arithmetic with a float-typed operand; a variable of a `PROCESS`, `FUNCTION` or the main
   program from where it is given a float until it is given something
   else (after an `IF`, a `SWITCH` or a loop, only if it is a float on
   every path); and a `GLOBAL`, `LOCAL`, array, `STRUCT` field, parameter
@@ -495,3 +495,5 @@ Constants: waveforms `wave_square`, `wave_triangle`, `wave_saw`,
 | `song_play` | `song[, loop]` | 1/0 | Plays the song (stopping the one playing), looping unless `loop` is 0. |
 | `song_stop` | — | 1 | Stops the music. |
 | `song_playing` | — | song | The song playing (or waiting for the player's first click), 0 for none. |
+| `song_time` | — | number | Seconds of the playing song heard so far, read from the audio clock (less the time the sound takes to reach the speakers), counting on through every loop: sync a rhythm game to this, not to frames. It stops while the sound is paused (a hidden page). 0 with no song, while it waits for the player's first click, and once a song that doesn't loop has ended. |
+| `song_step` | — | number | The step (sixteenth note, 4 a beat) of the song being heard, from 0 to the song's length - 1, back to 0 when it loops: `song_step() / 4` is the beat. -1 with no song. |

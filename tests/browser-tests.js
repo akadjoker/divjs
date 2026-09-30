@@ -4932,6 +4932,64 @@ end`);
   assert(audio.songPlaying === 0 && audio.master === null, 'dispose() devia parar e desligar o som');
 }
 
+async function testSongTimeFollowsTheAudioClock()
+{
+  // A rhythm game had no way to know where the music is. song_time() is
+  // read from the audio clock (less the output latency), song_step() is
+  // the step being heard.
+  const bytecode = compileSource(`program t;
+global song; t0; s0;
+begin
+  song = song_new(240);
+  song_track(song, inst_square, "C5 E5 G5 C6 . . . .");
+  t0 = song_time(); s0 = song_step();
+  song_play(song);
+  loop frame; end
+end`);
+  const vm = new VM();
+  vm.load(bytecode);
+  const runtime = new CanvasEngineRuntime({ vm, ctx: document.createElement('canvas').getContext('2d'), width: 320, height: 200, logFn: () => {} });
+  runtime.registerNatives();
+  const audio = runtime.audio;
+  const time = () => vm.natives.get('song_time')();
+  const step = () => vm.natives.get('song_step')();
+  try
+  {
+    audio.unlock();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert(audio.running, 'o contexto de audio devia estar a tocar');
+    runtime.beginFrame(1 / 60);
+    vm.tick();
+    assert(vm.globals.get(bytecode.globals.t0) === 0 && vm.globals.get(bytecode.globals.s0) === -1,
+      'sem musica song_time() devia dar 0 e song_step() -1');
+    const ctx = audio.context();
+    const latency = Number(ctx.outputLatency) || Number(ctx.baseLatency) || 0;
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const t = time();
+    const expected = ctx.currentTime - latency - audio.song.startTime;
+    assert(t > 0.3 && Math.abs(t - expected) < 0.02, `song_time() devia seguir o relogio do audio: ${t} vs ${expected}`);
+    // 240 bpm = 16 steps a second, 8 steps a loop.
+    const k = step();
+    const fromTime = Math.floor(time() * 16) % 8;
+    assert(k >= 0 && k < 8 && (k === fromTime || (k + 1) % 8 === fromTime), `song_step() ${k}, pelo tempo ${fromTime}`);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert(time() > t + 0.4, `song_time() devia continuar pelas repeticoes: ${time()} depois de ${t}`);
+    vm.natives.get('song_stop')();
+    assert(time() === 0 && step() === -1, 'depois de song_stop devia dar 0 / -1');
+
+    // A song that doesn't loop: the time runs to its end, then 0.
+    const once = audio.newSong(480);
+    audio.addTrack(once, 0, 'C5 D5 E5 F5 G5 A5 B5 C6');
+    audio.playSong(once, false);
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    assert(time() === 0 && step() === -1, `acabada, devia dar 0 / -1: ${time()} / ${step()}`);
+  }
+  finally
+  {
+    runtime.dispose();
+  }
+}
+
 export async function runAllTests() {
   const tests = [
     ['lexer: keywords/operators/delimiters', testLexerKeywordsOperatorsAndDelimiters],
@@ -5030,6 +5088,7 @@ export async function runAllTests() {
     ['audio: effects, determinism, notes', testAudioSynthesisAndNotes],
     ['audio: natives play, load a WAV from project files, songs', testAudioNativesPlayLoadAndSong],
     ['audio: silent while the page is hidden, goes on when shown', testAudioPausesWhileHidden],
+    ['audio: song_time and song_step follow the audio clock', testSongTimeFollowsTheAudioClock],
     ['keys typed into editable elements are not swallowed', testKeysTypedIntoEditableElementsAreNotSwallowed],
     ['restart restores the canvas size after set_mode', testRestartRestoresCanvasSizeAfterSetMode],
     ['runtimes do not share graphics or pivot resolver', testRuntimesDoNotShareGraphicsOrPivotResolver],

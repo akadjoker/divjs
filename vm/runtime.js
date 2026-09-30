@@ -2205,7 +2205,9 @@ export class CanvasEngineRuntime {
       song_track: (song, instrument, notes, volume) => audio.addTrack(song, instrument, notes, num(volume, 60) / 100),
       song_play: (song, loop) => audio.playSong(song, num(loop, 1) !== 0),
       song_stop: () => { audio.stopSong(); return 1; },
-      song_playing: () => audio.songPlaying
+      song_playing: () => audio.songPlaying,
+      song_time: () => audio.songTime(),
+      song_step: () => audio.songStep()
     };
     for (const [name, fn] of Object.entries(natives))
     {

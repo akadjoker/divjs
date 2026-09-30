@@ -254,6 +254,7 @@ export class AudioEngine
     this.songs = new Map();          // id -> { bpm, tracks: [{ inst, events, steps, volume }] }
     this.nextSongId = 1;
     this.song = null;                // { id, loop, step, nextTime, length, nodes }
+    this.endingSong = null;          // a song that doesn't loop, playing its last scheduled steps
     this.soundVolume = 1;
     this.musicVolume = 0.6;
     this.timer = 0;
@@ -605,12 +606,14 @@ export class AudioEngine
     this.context();
     s.started = true;
     s.nextTime = ctx.currentTime + 0.05;
+    s.startTime = s.nextTime;
     this.schedule();
     this.timer = setInterval(() => this.schedule(), SCHEDULE_EVERY_MS);
   }
 
   stopSong()
   {
+    this.endingSong = null;
     if (this.timer)
     {
       clearInterval(this.timer);
@@ -638,6 +641,51 @@ export class AudioEngine
     return this.song ? this.song.id : 0;
   }
 
+  // The song being heard: the playing one, or a song that doesn't loop
+  // whose last steps are scheduled but not over yet.
+  heardSong(now)
+  {
+    if (this.song)
+    {
+      return this.song.started ? this.song : null;
+    }
+    const s = this.endingSong;
+    return s && now < s.nextTime ? s : null;
+  }
+
+  // Seconds of the song heard so far, from the audio clock (so it stays
+  // in step with the music, and stops while the sound is paused), less
+  // the time the sound takes to reach the speakers. Counts on through
+  // every loop. 0 with no song, or while it waits for the player's first
+  // click.
+  songTime()
+  {
+    const ctx = sharedContext;
+    if (!ctx)
+    {
+      return 0;
+    }
+    const latency = Number(ctx.outputLatency) || Number(ctx.baseLatency) || 0;
+    const now = ctx.currentTime - latency;
+    const s = this.heardSong(now);
+    return s ? Math.max(0, now - s.startTime) : 0;
+  }
+
+  // The step (sixteenth note) of the song being heard: 0 up to the song's
+  // length - 1, back to 0 when it loops. -1 with no song.
+  songStep()
+  {
+    const ctx = sharedContext;
+    const latency = ctx ? Number(ctx.outputLatency) || Number(ctx.baseLatency) || 0 : 0;
+    const s = ctx ? this.heardSong(ctx.currentTime - latency) : null;
+    if (!s)
+    {
+      return -1;
+    }
+    const stepTime = 60 / s.def.bpm / STEPS_PER_BEAT;
+    return Math.floor(this.songTime() / stepTime + 1e-9) % s.length;
+  }
+
   // Schedules every step that starts within the lookahead.
   schedule()
   {
@@ -658,6 +706,9 @@ export class AudioEngine
           this.timer = 0;
           const nodes = s.nodes;
           setTimeout(() => nodes.clear(), 2000);
+          // Its last steps are still to be heard: songTime() follows
+          // them until s.nextTime, the end of the last step.
+          this.endingSong = s;
           this.song = null;
           return;
         }
