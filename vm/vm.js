@@ -706,6 +706,18 @@ export class VM {
         break;
       }
 
+      // "/" with a float-typed side (a float literal, a variable given a
+      // float value...): always a real division, since a whole value
+      // such as 5.0 can't be told from 5 at run time.
+      case OpCodes.FDIV:
+      {
+        const b = this.pop();
+        const a = this.pop();
+        this.push(b === 0 ? 0 : a / b);
+        this.ip++;
+        break;
+      }
+
       case OpCodes.MOD: {
         const b = this.pop();
         const a = this.pop();

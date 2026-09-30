@@ -417,7 +417,69 @@ BEGIN say(s[0].a, s[0].b, s[1].a, s[1].b, u[1].p, u[1].q); END`);
   assert(said[0] === '1,6,5,6,8,0', `lista + defaults esperado 1,6,5,6,8,0; obtido ${said[0]}`);
 }
 
+async function testFloatDivision()
+{
+  // "/" truncated whenever both values were whole at run time, and a JS
+  // number can't tell 5.0 from 5: "1.0 / 2" gave 0 and "a = 5.0; a / 2"
+  // gave 2. A float-typed side now makes it a real division; whole
+  // values keep DIV's integer division.
+  const { said } = runSource(`PROGRAM t;
+GLOBAL a; b; g = 0.5; h[2] = 1.0, 2, 3; n; w[3];
+FUNCTION half(v) BEGIN RETURN v / 2; END
+FUNCTION f3() BEGIN RETURN 3.0; END
+BEGIN
+  say(1.0 / 2, 1 / 2.0, 7 / 2, -7 / 2);
+  a = 5.0; b = a;
+  say(a / 2, b / 2, ((a > 0) * 5) / 2);
+  g = 1; say(g / 2, h[0] / 2, h[1] / 2);
+  say(half(5.0), f3() / 2);
+  a /= 2; say(a);
+  n = 7; n = n / 2; say(n);
+  w[0] = 1; w[1] = w[0] * 2; say(w[1] / 4);
+END`);
+  const expect = ['0.5,0.5,3,-3', '2.5,2.5,2', '0.5,0.5,1', '2.5,1.5', '2.5', '3', '0'];
+  expect.forEach((line, i) =>
+  {
+    assert(said[i] === line, `linha ${i}: esperado ${line}, obtido ${said[i]}`);
+  });
+}
+
+async function testFloatDivisionFollowsTheVariable()
+{
+  // A variable is a float from where it is given one until it is given
+  // something else; where paths join it stays a float only if it is one
+  // on every path. Programs reuse a variable for a fraction and then for
+  // a whole number (a bit mask, a counter) and divide that as DIV does.
+  const { said } = runSource(`PROGRAM t;
+GLOBAL k;
+PROCESS p(v)
+PRIVATE h, q = 0.5, m;
+BEGIN
+  h = 2.5; say(h / 2);
+  h = 0; h += 3; say(h / 2);
+  IF (v > 0) h = 1.5; ELSE h = 3; END
+  say(h / 2);
+  h = 4.0;
+  LOOP h = h / 2; IF (h < 1) BREAK; END END
+  say(h);
+  m = q * 4; say(m / 3);
+  m = (m > 0) * 2; say(m / 3);
+  FOR k = 0 TO 3 END say(k / 2);
+END
+BEGIN
+  p(0);
+  FRAME;
+END`);
+  const expect = ['1.25', '1', '1', '0.5', String(2 / 3), '0', '2'];
+  expect.forEach((line, i) =>
+  {
+    assert(said[i] === line, `linha ${i}: esperado ${line}, obtido ${said[i]}`);
+  });
+}
+
 export const compilerTests = [
+  ['compiler: / with a float-typed side is a float division', testFloatDivision],
+  ['compiler: float typing follows a variable through its body', testFloatDivisionFollowsTheVariable],
   ['compiler: STRUCT defaults fill what the initializer list leaves (decision)', testStructDefaultsFillWhatTheListLeaves],
   ['compiler: FOR/FROM evaluate the TO limit once (decision)', testForLimitIsEvaluatedOnce],
   ['compiler: FOR with a GLOBAL counter uses the global', testForLoopUsesGlobalCounter],

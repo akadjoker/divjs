@@ -1481,7 +1481,10 @@ var Parser = class {
   }
   parsePrimaryInner() {
     if (this.match(TokenType.NUMBER)) {
-      return new Number2(parseFloat(this.previous().value));
+      const raw = this.previous().value;
+      const literal = new Number2(parseFloat(raw));
+      literal.isFloat = raw.includes(".");
+      return literal;
     }
     if (this.match(TokenType.STRING)) {
       return new String2(this.previous().value);
@@ -1531,7 +1534,9 @@ var OpCodes = {
   MUL: 34,
   // Multiplication
   DIV: 35,
-  // Division
+  // Division (integer when both values are whole)
+  FDIV: 38,
+  // Float division (a float-typed side, see Compiler.compile)
   MOD: 36,
   // Modulo
   NEG: 37,
@@ -1603,6 +1608,386 @@ function hashCode(str) {
 }
 function processTypeCode(name) {
   return -(1 + hashCode(String(name)) % 2147483646);
+}
+
+// compiler/floattypes.js
+function isFlowKey(key) {
+  return typeof key === "string" && !key.endsWith("[]") && (key.startsWith("PROCESS:") || key.startsWith("FUNCTION:") || key.startsWith("MAIN:"));
+}
+function isWholeLiteral(expr) {
+  if (!expr) {
+    return false;
+  }
+  if (expr.type === "number") {
+    return expr.isFloat !== true;
+  }
+  return expr.type === "unary" && expr.operator === "-" && isWholeLiteral(expr.operand);
+}
+function meet(states) {
+  const live = states.filter(Boolean);
+  if (live.length === 0) {
+    return null;
+  }
+  const out = /* @__PURE__ */ new Map();
+  for (const [key, value] of live[0]) {
+    if (value && live.every((s) => s.get(key) === true)) {
+      out.set(key, true);
+    }
+  }
+  return out;
+}
+function sameState(a2, b) {
+  if (a2 === null || b === null) {
+    return a2 === b;
+  }
+  if (a2.size !== b.size) {
+    return false;
+  }
+  for (const [key, value] of a2) {
+    if (b.get(key) !== value) {
+      return false;
+    }
+  }
+  return true;
+}
+var Walker = class {
+  constructor(info, floatNatives, typed) {
+    this.keys = info.keys;
+    this.calls = info.calls;
+    this.floatNatives = floatNatives;
+    this.typed = typed;
+    this.decisions = /* @__PURE__ */ new Map();
+    this.records = /* @__PURE__ */ new Map();
+    this.state = /* @__PURE__ */ new Map();
+    this.loops = [];
+    this.routine = null;
+  }
+  isTyped(key) {
+    return this.typed === null ? true : this.typed.has(key);
+  }
+  readKey(key) {
+    if (!key) {
+      return false;
+    }
+    if (isFlowKey(key)) {
+      return this.state !== null && this.state.get(key) === true;
+    }
+    return this.isTyped(key);
+  }
+  // `node` gives `key` the value `valueExpr`, which is a float or not.
+  give(node, key, isFloat, valueExpr) {
+    if (!key) {
+      return;
+    }
+    if (isFlowKey(key)) {
+      if (this.state !== null) {
+        this.state.set(key, isFloat);
+      }
+      return;
+    }
+    this.records.set(node, { key, isFloat, neutral: !isFloat && isWholeLiteral(valueExpr) });
+  }
+  // Walks the index expressions of an access path (they can hold
+  // divisions and calls of their own).
+  walkPath(expr) {
+    let node = expr;
+    while (node.type === "member_access" || node.type === "index_access") {
+      if (node.type === "index_access") {
+        this.expr(node.index);
+      }
+      node = node.object;
+    }
+  }
+  // Evaluates an expression for its effects (assignments, calls, nested
+  // divisions) and returns whether it is a float.
+  expr(expr) {
+    if (!expr) {
+      return false;
+    }
+    switch (expr.type) {
+      case "number":
+        return expr.isFloat === true;
+      case "identifier":
+        return this.readKey(this.keys.get(expr));
+      case "member_access":
+      case "index_access":
+        this.walkPath(expr);
+        return this.readKey(this.keys.get(expr));
+      case "unary": {
+        const operand = this.expr(expr.operand);
+        return expr.operator === "-" && operand;
+      }
+      case "binary": {
+        if (expr.operator === "&&" || expr.operator === "||") {
+          this.expr(expr.left);
+          const afterLeft = this.state && new Map(this.state);
+          this.expr(expr.right);
+          this.state = meet([afterLeft, this.state]);
+          return false;
+        }
+        const left = this.expr(expr.left);
+        const right = this.expr(expr.right);
+        if (expr.operator === "/") {
+          this.decisions.set(expr, left || right);
+        }
+        return ["+", "-", "*", "/", "%"].includes(expr.operator) && (left || right);
+      }
+      case "assign":
+        return this.assign(expr);
+      case "call":
+        return this.call(expr);
+      default:
+        return false;
+    }
+  }
+  assign(node) {
+    const target = node.target;
+    if (target.type === "member_access" || target.type === "index_access") {
+      this.walkPath(target);
+    }
+    const key = this.keys.get(target);
+    let isFloat;
+    if (node.operator) {
+      const current = this.readKey(key);
+      const value = this.expr(node.value);
+      if (node.operator === "/") {
+        this.decisions.set(node, current || value);
+      }
+      isFloat = current || value;
+      this.give(node, key, isFloat, null);
+    } else {
+      isFloat = this.expr(node.value);
+      this.give(node, key, isFloat, node.value);
+    }
+    return isFloat;
+  }
+  call(node) {
+    const info = this.calls.get(node);
+    const floats = node.args.map((arg) => this.expr(arg));
+    if (!info) {
+      return false;
+    }
+    if (info.kind === "NATIVE") {
+      return this.floatNatives.has(info.name);
+    }
+    info.params.forEach((param, i) => {
+      const key = info.paramKeys[i];
+      if (key) {
+        this.records.set(node.args[i], { key, isFloat: floats[i], neutral: !floats[i] && isWholeLiteral(node.args[i]) });
+      }
+    });
+    return info.kind === "FUNCTION" && this.isTyped(`R:${info.name}`);
+  }
+  block(block) {
+    for (const stmt of block && block.statements || []) {
+      this.stmt(stmt);
+    }
+  }
+  // Runs `body` (a function walking one pass of the loop) until the state
+  // at the top of the loop stops changing; continue states feed the top,
+  // break states the exit.
+  loop(pass) {
+    const entry = this.state;
+    let head = entry;
+    let exit = null;
+    for (let i = 0; i < 64; i++) {
+      const ctx = { breaks: [], continues: [] };
+      this.loops.push(ctx);
+      this.state = head && new Map(head);
+      const leftAt = pass();
+      this.loops.pop();
+      const end = this.state;
+      const next = meet([entry, end, ...ctx.continues]);
+      exit = meet([leftAt === void 0 ? head : leftAt, end, ...ctx.breaks]);
+      if (sameState(next, head)) {
+        break;
+      }
+      head = next;
+    }
+    this.state = exit;
+  }
+  stmt(stmt) {
+    switch (stmt.type) {
+      case "expression":
+        this.expr(stmt.expression);
+        break;
+      case "var":
+        this.give(stmt, this.keys.get(stmt), this.expr(stmt.value), stmt.value);
+        break;
+      case "frame":
+        this.expr(stmt.value);
+        break;
+      case "return":
+        if (stmt.value) {
+          const isFloat = this.expr(stmt.value);
+          if (this.routine.kind === "FUNCTION") {
+            this.records.set(stmt, { key: `R:${this.routine.name}`, isFloat, neutral: !isFloat && isWholeLiteral(stmt.value) });
+          }
+        }
+        this.state = null;
+        break;
+      case "break":
+        if (this.loops.length > 0) {
+          this.loops[this.loops.length - 1].breaks.push(this.state);
+        }
+        this.state = null;
+        break;
+      case "continue":
+        if (this.loops.length > 0) {
+          this.loops[this.loops.length - 1].continues.push(this.state);
+        }
+        this.state = null;
+        break;
+      case "if": {
+        this.expr(stmt.condition);
+        const before = this.state;
+        this.state = before && new Map(before);
+        this.block(stmt.thenBranch);
+        const afterThen = this.state;
+        this.state = before && new Map(before);
+        if (stmt.elseBranch) {
+          this.block(stmt.elseBranch);
+        }
+        this.state = meet([afterThen, this.state]);
+        break;
+      }
+      case "switch": {
+        this.expr(stmt.subject);
+        const before = this.state;
+        const ends = [];
+        for (const c of stmt.cases) {
+          this.state = before && new Map(before);
+          for (const value of c.values) {
+            this.expr(value.type === "range" ? value.from : value);
+            if (value.type === "range") {
+              this.expr(value.to);
+            }
+          }
+          this.block(c.body);
+          ends.push(this.state);
+        }
+        this.state = before && new Map(before);
+        if (stmt.defaultBody) {
+          this.block(stmt.defaultBody);
+        }
+        ends.push(this.state);
+        this.state = meet(ends);
+        break;
+      }
+      case "while":
+        this.loop(() => {
+          this.expr(stmt.condition);
+          const leftAt = this.state && new Map(this.state);
+          this.block(stmt.body);
+          return leftAt;
+        });
+        break;
+      case "loop":
+        this.loop(() => {
+          this.block(stmt.body);
+          return null;
+        });
+        break;
+      case "repeat":
+        this.loop(() => {
+          this.block(stmt.body);
+          this.expr(stmt.condition);
+          return void 0;
+        });
+        break;
+      case "cfor":
+        this.expr(stmt.init);
+        this.loop(() => {
+          this.expr(stmt.condition);
+          const leftAt = this.state && new Map(this.state);
+          this.block(stmt.body);
+          this.expr(stmt.step);
+          return leftAt;
+        });
+        break;
+      case "for": {
+        const key = this.keys.get(stmt);
+        this.give(stmt, key, this.expr(stmt.start), stmt.start);
+        this.expr(stmt.end);
+        const stepFloat = this.expr(stmt.step);
+        this.loop(() => {
+          const leftAt = this.state && new Map(this.state);
+          this.block(stmt.body);
+          if (key && isFlowKey(key) && this.state !== null) {
+            this.state.set(key, this.readKey(key) || stepFloat);
+          }
+          return leftAt;
+        });
+        if (key && !isFlowKey(key) && stmt.step) {
+          this.records.set(stmt.step, { key, isFloat: stepFloat, neutral: !stepFloat && isWholeLiteral(stmt.step) });
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  // One body: its parameters start as their entry typing, PRIVATEs as
+  // their initial value.
+  routineBody(routine) {
+    this.routine = routine;
+    this.state = /* @__PURE__ */ new Map();
+    this.loops = [];
+    for (const key of routine.paramKeys) {
+      if (key && isFlowKey(key) && this.isTyped(key)) {
+        this.state.set(key, true);
+      }
+    }
+    for (const { node, key, value } of routine.inits) {
+      this.give(node, key, value ? this.expr(value) : false, value);
+    }
+    this.block(routine.body);
+  }
+  run(program) {
+    this.routine = { kind: "MAIN", name: "" };
+    this.state = null;
+    for (const { node, key, value } of program.declarations) {
+      this.give(node, key, this.expr(value), value);
+    }
+    for (const routine of program.routines) {
+      this.routineBody(routine);
+    }
+  }
+};
+function analyzeFloatDivisions(program, info, floatNatives) {
+  const run = (typed2) => {
+    const walker = new Walker(info, floatNatives, typed2);
+    walker.run(program);
+    const byKey = /* @__PURE__ */ new Map();
+    for (const record of walker.records.values()) {
+      if (!byKey.has(record.key)) {
+        byKey.set(record.key, []);
+      }
+      byKey.get(record.key).push(record);
+    }
+    return { walker, byKey };
+  };
+  let typed = null;
+  for (let i = 0; i < 64; i++) {
+    const { byKey } = run(typed);
+    const next = new Set([...byKey.keys()].filter((key) => byKey.get(key).every((r) => r.isFloat || r.neutral) && (typed === null || typed.has(key))));
+    if (typed !== null && next.size === typed.size) {
+      break;
+    }
+    typed = next;
+  }
+  const candidates = typed;
+  let reached = /* @__PURE__ */ new Set();
+  let last = run(reached);
+  for (let i = 0; i < 64; i++) {
+    const next = new Set([...candidates].filter((key) => reached.has(key) || (last.byKey.get(key) || []).some((r) => r.isFloat)));
+    if (next.size === reached.size) {
+      break;
+    }
+    reached = next;
+    last = run(reached);
+  }
+  return last.walker.decisions;
 }
 
 // compiler/compiler.js
@@ -1765,6 +2150,18 @@ var BUILTIN_CONSTANTS = Object.freeze({
 });
 var PROCESS_FIELD_NAMES = Object.freeze([...CANONICAL_LOCAL_SLOTS.keys()]);
 var RESERVED_PATH_ROOTS = /* @__PURE__ */ new Set(["scroll", "region", "father", "son", "bigbro", "smallbro", "mouse"]);
+var FLOAT_NATIVES = /* @__PURE__ */ new Set([
+  "get_delta",
+  "get_time",
+  "sin",
+  "cos",
+  "tan",
+  "torad",
+  "sqrt",
+  "lerp",
+  "hermite",
+  "smoothstep"
+]);
 function hasSideEffects(expr) {
   if (!expr) {
     return false;
@@ -1822,8 +2219,30 @@ var Compiler = class {
       col: node && Number.isInteger(node.col) ? node.col : null
     });
   }
-  // Compile program
+  // Compile program.
+  //
+  // "/" is DIV's integer division, but DivJS also has fractional numbers,
+  // and a JS number can't tell 5.0 from 5 at run time. So a first pass
+  // resolves every name, compiler/floattypes.js works out which "/" have
+  // a float-typed side ("1.0 / 2", "a = 5.0; a / 2") and, if any has, a
+  // second pass compiles those to FDIV (always a real division). Every
+  // other "/" stays DIV: an integer division when both values are whole.
   compile(program) {
+    this.floatInfo = { keys: /* @__PURE__ */ new WeakMap(), calls: /* @__PURE__ */ new WeakMap() };
+    this.floatDecisions = /* @__PURE__ */ new Map();
+    const bytecode = this.compileOnce(program);
+    const decisions = analyzeFloatDivisions(this.describeForFloatTyping(program), this.floatInfo, FLOAT_NATIVES);
+    this.floatInfo = null;
+    if (![...decisions.values()].some(Boolean)) {
+      return bytecode;
+    }
+    this.floatDecisions = decisions;
+    return this.compileOnce(program);
+  }
+  compileOnce(program) {
+    this.routine = { kind: "MAIN", name: "" };
+    this.switchDepth = 0;
+    this.forDepth = 0;
     this.constants = [];
     this.constantIndex = /* @__PURE__ */ new Map();
     this.instructions = [];
@@ -1871,6 +2290,7 @@ var Compiler = class {
     }
     const mainAddr = this.instructions.length;
     this.instructions[jumpToMain].operands[0] = mainAddr;
+    this.routine = { kind: "MAIN", name: "" };
     this.resetCanonicalLocals();
     this.declarePrivates(program.mainPrivates);
     this.emitLocalInitializers();
@@ -2015,6 +2435,7 @@ var Compiler = class {
   // Compile function
   compileFunction(stmt) {
     const startAddr = this.instructions.length;
+    this.routine = { kind: "FUNCTION", name: stmt.name };
     const savedLocals = new Map(this.localMap);
     this.localMap = /* @__PURE__ */ new Map();
     for (let i = 0; i < stmt.params.length; i++) {
@@ -2133,6 +2554,7 @@ var Compiler = class {
   // Compile process
   compileProcess(stmt) {
     const startAddr = this.instructions.length;
+    this.routine = { kind: "PROCESS", name: stmt.name };
     this.processTable.set(stmt.name, {
       addr: startAddr,
       params: stmt.params,
@@ -2368,6 +2790,7 @@ var Compiler = class {
         stmt
       );
     }
+    this.recordKey(stmt, this.varKey(stmt.varName));
     const autoDirection = stmt.step === null;
     let constantStepValue;
     if (autoDirection) {
@@ -2546,6 +2969,7 @@ var Compiler = class {
       this.nextLocalSlot += 1;
       this.localMap.set(stmt.name, idx);
     }
+    this.recordKey(stmt, this.varKey(stmt.name));
     this.compileExpression(stmt.value);
     this.emit(OpCodes.STORE_LOCAL, idx);
   }
@@ -2555,6 +2979,10 @@ var Compiler = class {
       this.compileCompoundAssignment(stmt, false);
       return;
     }
+    this.compilePlainAssignment(stmt);
+    this.recordKey(stmt.target, this.targetKey(stmt.target));
+  }
+  compilePlainAssignment(stmt) {
     if (stmt.target.type === "identifier") {
       const name = stmt.target.name;
       if (this.localMap.has(name)) {
@@ -2629,6 +3057,8 @@ var Compiler = class {
       operator: stmt.operator,
       left: target,
       right: stmt.value,
+      // "t /= v" divides as floattypes.js decided for the statement.
+      floatDivision: this.floatDecisions.get(stmt) === true,
       line: stmt.line,
       col: stmt.col
     };
@@ -2641,6 +3071,7 @@ var Compiler = class {
     for (const temp of temps) {
       this.freeTemp(temp);
     }
+    this.recordKey(stmt.target, this.targetKey(stmt.target));
   }
   // Assignment in expression position: perform the store, then leave the
   // assigned value on the stack for the enclosing expression to consume
@@ -2674,12 +3105,132 @@ var Compiler = class {
       for (const temp of temps) {
         this.freeTemp(temp);
       }
+      this.recordKey(expr.target, this.targetKey(expr.target));
       return;
     }
     throw this.error(`Invalid assignment target: ${expr.target.type}`, expr);
   }
+  // Float typing (see compile()). Keys name what a value is stored in:
+  // G:<global>, G:<array>[], S:<struct>.<field>, L:<LOCAL>, R:<function>
+  // (its result) and <kind>:<routine>:<name> for parameters, PRIVATEs and
+  // other variables of one PROCESS/FUNCTION/MAIN. The predefined process
+  // fields (x, y, angle...) have no key: they are never float-typed.
+  routineVarKey(kind, routine, name) {
+    if (kind !== "FUNCTION") {
+      if (CANONICAL_LOCAL_SLOTS.has(name)) {
+        return null;
+      }
+      if ((this.localDecls || []).some((decl) => decl.name === name)) {
+        return `L:${name}`;
+      }
+    }
+    return `${kind}:${routine}:${name}`;
+  }
+  varKey(name) {
+    if (this.localMap.has(name)) {
+      if (name.startsWith("@tmp")) {
+        return null;
+      }
+      const entry = this.localMap.get(name);
+      const key = this.routineVarKey(this.routine.kind, this.routine.name, name);
+      return key && typeof entry === "object" && entry.isArray ? `${key}[]` : key;
+    }
+    if (this.globalMap.has(name)) {
+      const entry = this.globalMap.get(name);
+      return typeof entry === "object" && entry.isArray ? `G:${name}[]` : `G:${name}`;
+    }
+    return null;
+  }
+  // Key of an assignment target or a read: a variable, a cell of a
+  // declared array, or a field of a STRUCT (any record, any nesting).
+  targetKey(expr) {
+    if (expr.type === "identifier") {
+      return this.varKey(expr.name);
+    }
+    if (expr.type !== "member_access" && expr.type !== "index_access") {
+      return null;
+    }
+    let root = expr;
+    while (root.type === "member_access" || root.type === "index_access") {
+      root = root.object;
+    }
+    if (root.type !== "identifier") {
+      return null;
+    }
+    if (this.structMap.has(root.name) && !this.localMap.has(root.name)) {
+      return expr.type === "member_access" ? `S:${root.name}.${expr.property}` : null;
+    }
+    if (expr.type === "index_access" && expr.object === root) {
+      const key = this.varKey(root.name);
+      return key && key.endsWith("[]") ? key : null;
+    }
+    return null;
+  }
+  // First pass only: remembers what an assignment target, VAR or FOR
+  // variable names (see compiler/floattypes.js).
+  recordKey(node, key) {
+    if (this.floatInfo && node) {
+      this.floatInfo.keys.set(node, key);
+    }
+  }
+  // What floattypes.js needs to know about the program besides the bodies:
+  // the values given by declarations, and each PROCESS/FUNCTION/MAIN with
+  // the keys of its parameters and PRIVATEs.
+  describeForFloatTyping(program) {
+    const declarations = [];
+    for (const g2 of program.globals || []) {
+      if (g2.size !== void 0) {
+        for (const value of g2.initializers || []) {
+          declarations.push({ node: value, key: `G:${g2.name}[]`, value });
+        }
+      } else if (g2.value) {
+        declarations.push({ node: g2, key: `G:${g2.name}`, value: g2.value });
+      }
+    }
+    const structFields = (structName, def) => {
+      for (const f of def.fields || []) {
+        if (f.nested) {
+          structFields(structName, f.nested);
+        } else if (f.defaultValue && !f.size) {
+          declarations.push({ node: f, key: `S:${structName}.${f.name}`, value: f.defaultValue });
+        }
+      }
+    };
+    for (const st2 of program.structs || []) {
+      structFields(st2.name, st2);
+    }
+    for (const decl of program.locals || []) {
+      if (decl.value && decl.size === void 0 && !CANONICAL_LOCAL_SLOTS.has(decl.name)) {
+        declarations.push({ node: decl, key: `L:${decl.name}`, value: decl.value });
+      }
+    }
+    const routine = (kind, name, params, privates, body) => {
+      const inits = [];
+      for (const priv of privates || []) {
+        if (priv.size === void 0 && !params.includes(priv.name)) {
+          inits.push({ node: priv, key: this.routineVarKey(kind, name, priv.name), value: priv.value || null });
+        }
+      }
+      return {
+        kind,
+        name,
+        body,
+        paramKeys: params.map((param) => this.routineVarKey(kind, name, param)),
+        inits
+      };
+    };
+    const routines = [
+      ...(program.functions || []).map((f) => routine("FUNCTION", f.name, f.params, f.privates, f.body)),
+      ...(program.processes || []).map((p) => routine("PROCESS", p.name, p.params, p.privates, p.body)),
+      routine("MAIN", "", [], program.mainPrivates, { statements: program.mainBlock })
+    ];
+    return { declarations, routines };
+  }
   // Compile expression
   compileExpression(expr) {
+    if (this.floatInfo && (expr.type === "identifier" || expr.type === "member_access" || expr.type === "index_access")) {
+      this.floatInfo.keys.set(expr, this.targetKey(expr));
+    }
     switch (expr.type) {
       case "number":
         this.emit(OpCodes.LOAD_CONST, this.addConstant(expr.value));
@@ -2825,7 +3376,7 @@ var Compiler = class {
         this.emit(OpCodes.MUL);
         break;
       case "/":
-        this.emit(OpCodes.DIV);
+        this.emit(expr.floatDivision || this.floatDecisions.get(expr) ? OpCodes.FDIV : OpCodes.DIV);
         break;
       case "%":
         this.emit(OpCodes.MOD);
@@ -2886,6 +3437,16 @@ var Compiler = class {
         `FUNCTION "${name}" expects ${functionInfo.params.length} argument(s), got ${argc}`,
         expr
       );
+    }
+    if (this.floatInfo) {
+      const kind = processInfo ? "PROCESS" : functionInfo ? "FUNCTION" : "NATIVE";
+      const params = (processInfo || functionInfo || { params: [] }).params;
+      this.floatInfo.calls.set(expr, {
+        kind,
+        name,
+        params,
+        paramKeys: params.map((param) => this.routineVarKey(kind, name, param))
+      });
     }
     for (const arg of expr.args) {
       this.compileExpression(arg);
@@ -4556,6 +5117,16 @@ var VM = class _VM {
         } else {
           this.push(a2 / b);
         }
+        this.ip++;
+        break;
+      }
+      // "/" with a float-typed side (a float literal, a variable given a
+      // float value...): always a real division, since a whole value
+      // such as 5.0 can't be told from 5 at run time.
+      case OpCodes.FDIV: {
+        const b = this.pop();
+        const a2 = this.pop();
+        this.push(b === 0 ? 0 : a2 / b);
         this.ip++;
         break;
       }

@@ -23,7 +23,8 @@ export const OpCodes = {
   ADD: 0x20,         // Addition
   SUB: 0x21,         // Subtraction
   MUL: 0x22,         // Multiplication
-  DIV: 0x23,         // Division
+  DIV: 0x23,         // Division (integer when both values are whole)
+  FDIV: 0x26,        // Float division (a float-typed side, see Compiler.compile)
   MOD: 0x24,         // Modulo
   NEG: 0x25,         // Negate
   

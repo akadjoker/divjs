@@ -1,6 +1,7 @@
 import { OpCodes } from './bytecode.js';
 import { processTypeCode } from '../utils/hash.js';
 import { DivError } from './errors.js';
+import { analyzeFloatDivisions } from './floattypes.js';
 
 // Returns the numeric value of `expr` if it's a compile-time constant -
 // a bare number literal ("STEP 2") or a unary minus directly wrapping one
@@ -111,6 +112,14 @@ export const PROCESS_FIELD_NAMES = Object.freeze([...CANONICAL_LOCAL_SLOTS.keys(
 // used to compile to __get_path/__set_path and silently read 0.
 const RESERVED_PATH_ROOTS = new Set(['scroll', 'region', 'father', 'son', 'bigbro', 'smallbro', 'mouse']);
 
+// Natives whose result is a fraction by nature: a division by one of them
+// is a float division even when the value they return happens to be whole
+// (sin(90000) is exactly 1). A program's own FUNCTION of the same name
+// takes precedence.
+const FLOAT_NATIVES = new Set([
+  'get_delta', 'get_time', 'sin', 'cos', 'tan', 'torad', 'sqrt', 'lerp', 'hermite', 'smoothstep'
+]);
+
 // True when evaluating `expr` could change program state (a call, or an
 // assignment used as a value). Only then can evaluating something once
 // instead of twice make an observable difference.
@@ -179,8 +188,35 @@ export class Compiler {
     });
   }
 
-  // Compile program
-  compile(program) {
+  // Compile program.
+  //
+  // "/" is DIV's integer division, but DivJS also has fractional numbers,
+  // and a JS number can't tell 5.0 from 5 at run time. So a first pass
+  // resolves every name, compiler/floattypes.js works out which "/" have
+  // a float-typed side ("1.0 / 2", "a = 5.0; a / 2") and, if any has, a
+  // second pass compiles those to FDIV (always a real division). Every
+  // other "/" stays DIV: an integer division when both values are whole.
+  compile(program)
+  {
+    this.floatInfo = { keys: new WeakMap(), calls: new WeakMap() };
+    this.floatDecisions = new Map();
+    const bytecode = this.compileOnce(program);
+    const decisions = analyzeFloatDivisions(this.describeForFloatTyping(program), this.floatInfo, FLOAT_NATIVES);
+    this.floatInfo = null;
+    if (![...decisions.values()].some(Boolean))
+    {
+      return bytecode;
+    }
+    this.floatDecisions = decisions;
+    return this.compileOnce(program);
+  }
+
+  compileOnce(program)
+  {
+    this.routine = { kind: 'MAIN', name: '' };
+    // Hidden-name counters: both passes must name alike.
+    this.switchDepth = 0;
+    this.forDepth = 0;
     this.constants = [];
     this.constantIndex = new Map();
     this.instructions = [];
@@ -278,6 +314,7 @@ export class Compiler {
     // instead of the actual global. This isn't a rare-name edge case:
     // "x", "y", "id", "speed" are exactly the names likely to be both a
     // GLOBAL and a process param in a real program.
+    this.routine = { kind: 'MAIN', name: '' };
     this.resetCanonicalLocals();
     this.declarePrivates(program.mainPrivates);
     this.emitLocalInitializers();
@@ -465,6 +502,7 @@ export class Compiler {
   // Compile function
   compileFunction(stmt) {
     const startAddr = this.instructions.length;
+    this.routine = { kind: 'FUNCTION', name: stmt.name };
 
     // Reset locals for this function
     const savedLocals = new Map(this.localMap);
@@ -638,6 +676,7 @@ export class Compiler {
   // Compile process
   compileProcess(stmt) {
     const startAddr = this.instructions.length;
+    this.routine = { kind: 'PROCESS', name: stmt.name };
 
     // Store process in table (locals map is finalized at the end).
     this.processTable.set(stmt.name, {
@@ -970,6 +1009,7 @@ export class Compiler {
         stmt
       );
     }
+    this.recordKey(stmt, this.varKey(stmt.varName));
 
     // When the step is a literal number - "STEP 2", "STEP -1", or the
     // implicit default of 1 when STEP is omitted entirely - its sign is
@@ -1227,6 +1267,7 @@ export class Compiler {
       this.nextLocalSlot += 1;
       this.localMap.set(stmt.name, idx);
     }
+    this.recordKey(stmt, this.varKey(stmt.name));
 
     this.compileExpression(stmt.value);
     this.emit(OpCodes.STORE_LOCAL, idx);
@@ -1239,6 +1280,11 @@ export class Compiler {
       this.compileCompoundAssignment(stmt, false);
       return;
     }
+    this.compilePlainAssignment(stmt);
+    this.recordKey(stmt.target, this.targetKey(stmt.target));
+  }
+
+  compilePlainAssignment(stmt) {
 
     if (stmt.target.type === 'identifier') {
       const name = stmt.target.name;
@@ -1328,6 +1374,8 @@ export class Compiler {
       operator: stmt.operator,
       left: target,
       right: stmt.value,
+      // "t /= v" divides as floattypes.js decided for the statement.
+      floatDivision: this.floatDecisions.get(stmt) === true,
       line: stmt.line,
       col: stmt.col
     };
@@ -1344,6 +1392,7 @@ export class Compiler {
     {
       this.freeTemp(temp);
     }
+    this.recordKey(stmt.target, this.targetKey(stmt.target));
   }
 
   // Assignment in expression position: perform the store, then leave the
@@ -1381,14 +1430,174 @@ export class Compiler {
       {
         this.freeTemp(temp);
       }
+      this.recordKey(expr.target, this.targetKey(expr.target));
       return;
     }
 
     throw this.error(`Invalid assignment target: ${expr.target.type}`, expr);
   }
 
+  // Float typing (see compile()). Keys name what a value is stored in:
+  // G:<global>, G:<array>[], S:<struct>.<field>, L:<LOCAL>, R:<function>
+  // (its result) and <kind>:<routine>:<name> for parameters, PRIVATEs and
+  // other variables of one PROCESS/FUNCTION/MAIN. The predefined process
+  // fields (x, y, angle...) have no key: they are never float-typed.
+  routineVarKey(kind, routine, name)
+  {
+    if (kind !== 'FUNCTION')
+    {
+      if (CANONICAL_LOCAL_SLOTS.has(name))
+      {
+        return null;
+      }
+      if ((this.localDecls || []).some((decl) => decl.name === name))
+      {
+        return `L:${name}`;
+      }
+    }
+    return `${kind}:${routine}:${name}`;
+  }
+
+  varKey(name)
+  {
+    if (this.localMap.has(name))
+    {
+      if (name.startsWith('@tmp'))
+      {
+        return null;
+      }
+      const entry = this.localMap.get(name);
+      const key = this.routineVarKey(this.routine.kind, this.routine.name, name);
+      return key && typeof entry === 'object' && entry.isArray ? `${key}[]` : key;
+    }
+    if (this.globalMap.has(name))
+    {
+      const entry = this.globalMap.get(name);
+      return typeof entry === 'object' && entry.isArray ? `G:${name}[]` : `G:${name}`;
+    }
+    return null;
+  }
+
+  // Key of an assignment target or a read: a variable, a cell of a
+  // declared array, or a field of a STRUCT (any record, any nesting).
+  targetKey(expr)
+  {
+    if (expr.type === 'identifier')
+    {
+      return this.varKey(expr.name);
+    }
+    if (expr.type !== 'member_access' && expr.type !== 'index_access')
+    {
+      return null;
+    }
+    let root = expr;
+    while (root.type === 'member_access' || root.type === 'index_access')
+    {
+      root = root.object;
+    }
+    if (root.type !== 'identifier')
+    {
+      return null;
+    }
+    if (this.structMap.has(root.name) && !this.localMap.has(root.name))
+    {
+      return expr.type === 'member_access' ? `S:${root.name}.${expr.property}` : null;
+    }
+    if (expr.type === 'index_access' && expr.object === root)
+    {
+      const key = this.varKey(root.name);
+      return key && key.endsWith('[]') ? key : null;
+    }
+    return null;
+  }
+
+  // First pass only: remembers what an assignment target, VAR or FOR
+  // variable names (see compiler/floattypes.js).
+  recordKey(node, key)
+  {
+    if (this.floatInfo && node)
+    {
+      this.floatInfo.keys.set(node, key);
+    }
+  }
+
+  // What floattypes.js needs to know about the program besides the bodies:
+  // the values given by declarations, and each PROCESS/FUNCTION/MAIN with
+  // the keys of its parameters and PRIVATEs.
+  describeForFloatTyping(program)
+  {
+    const declarations = [];
+    for (const g of program.globals || [])
+    {
+      if (g.size !== undefined)
+      {
+        for (const value of g.initializers || [])
+        {
+          declarations.push({ node: value, key: `G:${g.name}[]`, value });
+        }
+      }
+      else if (g.value)
+      {
+        declarations.push({ node: g, key: `G:${g.name}`, value: g.value });
+      }
+    }
+    const structFields = (structName, def) =>
+    {
+      for (const f of def.fields || [])
+      {
+        if (f.nested)
+        {
+          structFields(structName, f.nested);
+        }
+        else if (f.defaultValue && !f.size)
+        {
+          declarations.push({ node: f, key: `S:${structName}.${f.name}`, value: f.defaultValue });
+        }
+      }
+    };
+    for (const st of program.structs || [])
+    {
+      structFields(st.name, st);
+    }
+    for (const decl of program.locals || [])
+    {
+      if (decl.value && decl.size === undefined && !CANONICAL_LOCAL_SLOTS.has(decl.name))
+      {
+        declarations.push({ node: decl, key: `L:${decl.name}`, value: decl.value });
+      }
+    }
+    const routine = (kind, name, params, privates, body) =>
+    {
+      const inits = [];
+      for (const priv of privates || [])
+      {
+        if (priv.size === undefined && !params.includes(priv.name))
+        {
+          inits.push({ node: priv, key: this.routineVarKey(kind, name, priv.name), value: priv.value || null });
+        }
+      }
+      return {
+        kind,
+        name,
+        body,
+        paramKeys: params.map((param) => this.routineVarKey(kind, name, param)),
+        inits
+      };
+    };
+    const routines = [
+      ...(program.functions || []).map((f) => routine('FUNCTION', f.name, f.params, f.privates, f.body)),
+      ...(program.processes || []).map((p) => routine('PROCESS', p.name, p.params, p.privates, p.body)),
+      routine('MAIN', '', [], program.mainPrivates, { statements: program.mainBlock })
+    ];
+    return { declarations, routines };
+  }
+
   // Compile expression
   compileExpression(expr) {
+    if (this.floatInfo && (expr.type === 'identifier' || expr.type === 'member_access' || expr.type === 'index_access'))
+    {
+      this.floatInfo.keys.set(expr, this.targetKey(expr));
+    }
     switch (expr.type) {
       case 'number':
         this.emit(OpCodes.LOAD_CONST, this.addConstant(expr.value));
@@ -1591,7 +1800,7 @@ export class Compiler {
         this.emit(OpCodes.MUL);
         break;
       case '/':
-        this.emit(OpCodes.DIV);
+        this.emit(expr.floatDivision || this.floatDecisions.get(expr) ? OpCodes.FDIV : OpCodes.DIV);
         break;
       case '%':
         this.emit(OpCodes.MOD);
@@ -1668,6 +1877,18 @@ export class Compiler {
         `FUNCTION "${name}" expects ${functionInfo.params.length} argument(s), got ${argc}`,
         expr
       );
+    }
+
+    if (this.floatInfo)
+    {
+      const kind = processInfo ? 'PROCESS' : (functionInfo ? 'FUNCTION' : 'NATIVE');
+      const params = (processInfo || functionInfo || { params: [] }).params;
+      this.floatInfo.calls.set(expr, {
+        kind,
+        name,
+        params,
+        paramKeys: params.map((param) => this.routineVarKey(kind, name, param))
+      });
     }
 
     // Compile args

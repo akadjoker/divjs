@@ -1017,7 +1017,12 @@ export class Parser {
   parsePrimaryInner() {
     // Number
     if (this.match(TokenType.NUMBER)) {
-      return new ast.Number(parseFloat(this.previous().value));
+      // A literal written with a decimal point ("1.0", "0.5") is a float:
+      // the compiler makes "/" a float division when either side is one.
+      const raw = this.previous().value;
+      const literal = new ast.Number(parseFloat(raw));
+      literal.isFloat = raw.includes('.');
+      return literal;
     }
 
     // String

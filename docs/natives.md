@@ -25,6 +25,34 @@ Conventions used below:
   the call; called from MAIN they act on MAIN.
 - `—` in the Returns column means the function always returns `0`.
 
+## Language notes
+
+Behaviour of the language itself that the function tables below rely on.
+
+- **Names are case-insensitive**, as in DIV (DIV 2 manual 5.5: "ABc or abC
+  are the same name"): keywords, variables, constants, processes and
+  natives. `ST_CELEB` and `st_celeb` are the same name, so declaring both
+  (for example a `GLOBAL` and a `PRIVATE`, or a constant and a variable) is
+  a duplicate name, and a `PRIVATE st_celeb` hides a `GLOBAL ST_CELEB`.
+  Strings keep their case.
+- **Division.** `/` is DIV's integer division (`7 / 2` is `3`, `-7 / 2` is
+  `-3`) unless a side of it is float-typed, and then it is an ordinary
+  division (`7 / 2.0` is `3.5`). Float-typed are: a number written with a
+  decimal point (`1.0`, `0.5`); `get_delta`, `get_time`, `sin`, `cos`,
+  `tan`, `torad`, `sqrt`, `lerp`, `hermite`, `smoothstep`; arithmetic with
+  a float-typed operand; a variable of a `PROCESS`, `FUNCTION` or the main
+  program from where it is given a float until it is given something
+  else (after an `IF`, a `SWITCH` or a loop, only if it is a float on
+  every path); and a `GLOBAL`, `LOCAL`, array, `STRUCT` field, parameter
+  or `FUNCTION` result that is given a float somewhere and otherwise only
+  whole literals (`speed = 0;`). `x`, `y`, `angle` and the other
+  predefined process fields are never float-typed. So `a = 5.0; a / 2` is
+  `2.5`, and `a = 5.0; a = int(a); a / 2` is `2`. `int(v) / n` always
+  divides whole numbers; `v * 1.0 / n` always divides as floats. When
+  neither side is float-typed but a value is not whole at run time
+  (`get_fps() / 2`), the division is not truncated either. Dividing by 0
+  gives 0.
+
 ## Input
 
 | Name | Arguments | Returns | Description |
