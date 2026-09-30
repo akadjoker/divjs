@@ -201,6 +201,16 @@ layout for the next runs.
 | `start_scroll` | `n, file, graph, back_graph, region, flags` | `n` | Starts scroll window `n`; flags 1/2 wrap the foreground horizontally/vertically. Driven by `scroll[n].x0/y0/camera/…`. |
 | `stop_scroll` | `n` | — | Stops scroll window `n`. |
 
+Drawing order: every process is painted by its `z`, the greatest first
+(furthest back), whether it is in a scroll window (`ctype = c_scroll`) or
+on the screen, so a screen process of a smaller `z` is painted over a
+scroll process and one of a greater `z` under it; the scroll windows'
+planes are painted behind every process. This differs from DIV, which
+paints each scroll window (its planes and its processes) as one layer at
+the depth `scroll[n].z` (512 by default, so screen processes at the
+default `z` 0 were over the whole window, and a screen process of `z`
+above 512 was hidden behind it); `scroll[n].z` has no effect in DivJS.
+
 ## Processes and signals
 
 | Name | Arguments | Returns | Description |

@@ -1042,7 +1042,42 @@ BEGIN a = save_data("k", 1) + 10; b = load_data("best", 3); c = load("scores", O
   }
 }
 
+async function testScrollProcessesAreOrderedByZWithTheOthers()
+{
+  // Decision (report: processes in a scroll window drawn over ordinary
+  // processes of a lower z): not reproduced. The processes of a scroll
+  // window and the ordinary ones are painted in one order, by z; the
+  // scroll's planes are behind every process. DIV paints a scroll window
+  // as one layer at scroll.z (512); DivJS doesn't (games put screen-space
+  // parallax layers between the planes and the scroll's processes).
+  const source = `PROGRAM t;
+GLOBAL g_bg; g_red; g_blue;
+PROCESS inscroll(x, y, z) BEGIN ctype = c_scroll; graph = g_red; LOOP FRAME; END END
+PROCESS onscreen(x, y, z) BEGIN graph = g_blue; LOOP FRAME; END END
+BEGIN
+  g_bg = new_graphic(640, 400); gfx_fill(g_bg, 0, 60, 0);
+  g_red = new_graphic(20, 20); gfx_fill(g_red, 255, 0, 0);
+  g_blue = new_graphic(20, 20); gfx_fill(g_blue, 0, 0, 255);
+  onscreen(30, 30, -1);
+  onscreen(80, 30, 1);
+  onscreen(130, 30, 600);
+  start_scroll(0, 0, g_bg, 0, 0, 0);
+  inscroll(30, 30, 0);
+  inscroll(80, 30, 0);
+  LOOP FRAME; END
+END`;
+  const { runtime, frame } = startProgram(source);
+  await frame(3);
+  const at = (x, y) => pixelAt(runtime, x, y).slice(0, 3).join(',');
+  assert(at(30, 30) === '0,0,255', `processo normal de z -1 a frente do do scroll (z 0), obtido ${at(30, 30)}`);
+  assert(at(80, 30) === '255,0,0', `processo do scroll (z 0) a frente do normal de z 1, obtido ${at(80, 30)}`);
+  assert(at(130, 30) === '0,0,255', `um processo de z 600 fica a frente dos planos do scroll, obtido ${at(130, 30)}`);
+  assert(at(200, 100) === '0,60,0', `o plano do scroll devia estar desenhado, obtido ${at(200, 100)}`);
+  runtime.dispose();
+}
+
 export const runtimeTests = [
+  ['scroll processes are ordered by z with the others (decision)', testScrollProcessesAreOrderedByZWithTheOthers],
   ['save_data/load_data and DIV save/load keep data between runs', testSaveAndLoadData],
   ['draw_z puts circle/text/draw_rect among the processes', testDrawZPutsPrimitivesAmongProcesses],
   ['string functions: strlen, char, asc, chr, substr, upper, lower, strstr, strchr, strcmp, strdel, itoa', testStringFunctions],
