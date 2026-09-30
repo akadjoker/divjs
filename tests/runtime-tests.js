@@ -1133,7 +1133,59 @@ END`;
   runtime.dispose();
 }
 
+async function testPhysicsGroupAndIgnore()
+{
+  // There was no way to stop two bodies colliding (a player and its own
+  // shots, a ghost). phys_ignore(a, b) stops one pair, phys_group(n) every
+  // body of group n with each other.
+  const source = `PROGRAM t;
+GLOBAL ground_id; a_y; b_y; c_y; d_y; e_y; f_y; g_y; h_y; ok1; ok2;
+PROCESS ground() BEGIN x = 160; y = 190; phys_edge(-160, 0, 160, 0); LOOP FRAME; END END
+PROCESS crate(x, y, n, grp)
+BEGIN
+  IF (grp > 0) phys_group(grp); END
+  phys_box(20, 20, phys_dynamic);
+  phys_material(1, 0.8, 0);
+  IF (n == 7) phys_ignore(0, ground_id); END
+  LOOP
+    SWITCH (n)
+      CASE 1: a_y = y; END CASE 2: b_y = y; END CASE 3: c_y = y; END CASE 4: d_y = y; END
+      CASE 5: e_y = y; END CASE 6: f_y = y; END CASE 7: g_y = y; END CASE 8: h_y = y; END
+    END
+    FRAME;
+  END
+END
+PRIVATE a; b;
+BEGIN
+  set_fps(60, 0);
+  ground_id = ground();
+  a = crate(40, 150, 1, 0);
+  b = crate(40, 110, 2, 0);
+  ok1 = phys_ignore(a, b);
+  crate(100, 150, 3, 1);
+  crate(100, 110, 4, 1);
+  crate(160, 150, 5, 0);
+  crate(160, 110, 6, 0);
+  crate(220, 110, 7, 0);
+  crate(280, 150, 8, 2);
+  ok2 = phys_group(0, a) + phys_ignore(a, a);
+  LOOP FRAME; END
+END`;
+  const { vm, runtime, frame } = startProgram(source);
+  await frame(90);
+  const g = (i) => vm.globals.get(i);
+  const [a, b, c, d, e, f, gy, h] = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => g(i));
+  assert(Math.abs(a - 180) < 2 && Math.abs(b - 180) < 2, `phys_ignore: a caixa de cima atravessa a de baixo, a=${a} b=${b}`);
+  assert(Math.abs(c - 180) < 2 && Math.abs(d - 180) < 2, `phys_group: as do mesmo grupo atravessam-se, c=${c} d=${d}`);
+  assert(Math.abs(e - 180) < 2 && Math.abs(f - 160) < 2, `sem filtro empilham, e=${e} f=${f}`);
+  assert(gy > 300, `phys_ignore(0, chao): cai pelo chao, y=${gy}`);
+  assert(Math.abs(h - 180) < 2, `sozinha no grupo 2 pousa no chao, y=${h}`);
+  assert(g(9) === 1 && g(10) === 1, `phys_ignore devolve 1, phys_group 1 e ignore(a, a) 0: ${g(9)} ${g(10)}`);
+  runtime.dispose();
+}
+
 export const runtimeTests = [
+  ['physics: phys_ignore and phys_group stop bodies colliding', testPhysicsGroupAndIgnore],
   ['a[0].x: field of the process an array cell or STRUCT field holds', testFieldOfAProcessIdHeldInAnArrayCell],
   ['a process\'s region clips its graphic', testRegionClipsProcesses],
   ['scroll processes are ordered by z with the others (decision)', testScrollProcessesAreOrderedByZWithTheOthers],

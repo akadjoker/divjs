@@ -414,6 +414,8 @@ shown with `[, id]` act on process `id`'s body instead when it is given.
 | `phys_raycast` | `x1, y1, x2, y2[, OFFSET hx, OFFSET hy]` | id | The first body the line from (x1, y1) to (x2, y2) hits (not the caller's), or 0; stores the hit point in `hx, hy`. |
 | `phys_awake` | `[id]` | 1/0 | 1 while the world simulates the body; 0 once it has come to rest and fallen asleep (until something touches it), and always 0 for static bodies. |
 | `phys_remove` | `[id]` | 1/0 | Removes the calling process's body (the process stays). |
+| `phys_ignore` | `a, b[, ignore]` | 1/0 | The bodies of processes `a` and `b` (0: the calling process) stop colliding with each other (`ignore` 1, the default), or collide again (0): a player and its own shots, a ghost through one wall. Works before the bodies exist and lasts until `phys_clear`. 0 when `a` and `b` are the same process or one doesn't exist. |
+| `phys_group` | `group[, id]` | 1/0 | Puts the body in `group` (a whole number from 1): bodies of the same group never collide with each other, and still collide with everything else (all of one player's shots). 0 takes it out of its group. Works before the body exists. |
 | `phys_clear` | — | 1 | Removes every body and joint (a new level). |
 | `phys_bodies` | — | number | How many bodies the world has. |
 

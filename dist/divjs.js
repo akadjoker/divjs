@@ -11145,6 +11145,8 @@ var PhysicsWorld = class _PhysicsWorld {
     this.nextJointId = 1;
     this.impacts = /* @__PURE__ */ new Map();
     this.pendingMaterials = /* @__PURE__ */ new Map();
+    this.groups = /* @__PURE__ */ new Map();
+    this.ignoredPairs = /* @__PURE__ */ new Set();
     this.anchor = null;
     this.substeps = 1;
     this.velocityIterations = 8;
@@ -11217,6 +11219,14 @@ var PhysicsWorld = class _PhysicsWorld {
         angle: -(Number(process.angle) || 0) * DIV_TO_RAD
       });
       body.setUserData(process);
+      const collides = body.shouldCollide;
+      body.shouldCollide = (that) => {
+        const other = that.getUserData();
+        if (other && this.ignoredPairs.has(_PhysicsWorld.pairKey(process.id, other.id))) {
+          return false;
+        }
+        return collides.call(body, that);
+      };
       entry = {
         process,
         body,
@@ -11232,8 +11242,62 @@ var PhysicsWorld = class _PhysicsWorld {
   }
   addFixture(entry, shape) {
     const m = entry.material;
-    entry.body.createFixture({ shape, density: m.density, friction: m.friction, restitution: m.restitution });
+    entry.body.createFixture({
+      shape,
+      density: m.density,
+      friction: m.friction,
+      restitution: m.restitution,
+      filterGroupIndex: -(this.groups.get(entry.process.id) || 0)
+    });
     entry.body.resetMassData();
+  }
+  // ── Collision filtering ───────────────────────────────────────────────
+  static pairKey(a2, b) {
+    return a2 < b ? `${a2}:${b}` : `${b}:${a2}`;
+  }
+  // Makes the contacts of the process's body be checked again (after a
+  // change of group or of ignored pairs): ones no longer allowed end.
+  refilter(processId) {
+    const entry = this.entries.get(processId);
+    if (!entry) {
+      return;
+    }
+    for (let f = entry.body.getFixtureList(); f; f = f.getNext()) {
+      f.setFilterGroupIndex(-(this.groups.get(processId) || 0));
+    }
+    entry.body.setAwake(true);
+  }
+  // Bodies in the same group (a whole number above 0) never collide with
+  // each other; 0 takes the body out of its group. Set before or after
+  // the body exists.
+  setGroup(process, group) {
+    if (!process) {
+      return 0;
+    }
+    const g2 = Math.max(0, Math.trunc(Number(group)) || 0);
+    if (g2 > 0) {
+      this.groups.set(process.id, g2);
+    } else {
+      this.groups.delete(process.id);
+    }
+    this.refilter(process.id);
+    return 1;
+  }
+  // The two processes' bodies stop (ignore 1) or go back to (0)
+  // colliding with each other, now or once they have bodies.
+  setIgnored(a2, b, ignore) {
+    if (!a2 || !b || a2 === b) {
+      return 0;
+    }
+    const key = _PhysicsWorld.pairKey(a2.id, b.id);
+    if (ignore) {
+      this.ignoredPairs.add(key);
+    } else {
+      this.ignoredPairs.delete(key);
+    }
+    this.refilter(a2.id);
+    this.refilter(b.id);
+    return 1;
   }
   pixels(process, value) {
     return (Number(value) || 0) / _PhysicsWorld.resolutionOf(process) / this.scale;
@@ -11307,6 +11371,8 @@ var PhysicsWorld = class _PhysicsWorld {
       this.destroyEntry(id, entry);
     }
     this.pendingMaterials.clear();
+    this.groups.clear();
+    this.ignoredPairs.clear();
   }
   // ── Motion ────────────────────────────────────────────────────────────
   setVelocity(process, vx, vy) {
@@ -14757,6 +14823,8 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
         return hit.id;
       },
       phys_remove: (id) => physics.remove(who(id)),
+      phys_group: (group, id) => physics.setGroup(who(id), group),
+      phys_ignore: (a2, b, on2) => physics.setIgnored(who(a2), who(b), on2 === void 0 ? 1 : Number(on2) || 0),
       phys_clear: () => {
         physics.clear();
         return 1;

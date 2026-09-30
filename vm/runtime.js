@@ -2422,6 +2422,8 @@ export class CanvasEngineRuntime {
         return hit.id;
       },
       phys_remove: (id) => physics.remove(who(id)),
+      phys_group: (group, id) => physics.setGroup(who(id), group),
+      phys_ignore: (a, b, on) => physics.setIgnored(who(a), who(b), on === undefined ? 1 : Number(on) || 0),
       phys_clear: () => { physics.clear(); return 1; },
       phys_bodies: () => physics.bodyCount
     };
