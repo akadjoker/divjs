@@ -35,6 +35,10 @@ Behaviour of the language itself that the function tables below rely on.
   (for example a `GLOBAL` and a `PRIVATE`, or a constant and a variable) is
   a duplicate name, and a `PRIVATE st_celeb` hides a `GLOBAL ST_CELEB`.
   Strings keep their case.
+- **Fields of another process** are read and written through anything
+  holding its id: a variable (`enemy.x`), an array cell (`enemies[i].x`)
+  or a `STRUCT` field (`squad[i].leader.x`), as well as `father`, `son`,
+  `bigbro` and `smallbro`. An id of no living process reads 0.
 - **SWITCH** takes DIV's form, each arm closed by its own `END`, a
   CASE's values being numbers, expressions or ranges `min..max` (both
   ends included) separated by commas:
@@ -220,8 +224,8 @@ above 512 was hidden behind it); `scroll[n].z` has no effect in DivJS.
 | `__get_path` | `root, segments…` | value | Compiler-internal: reads `scroll[n].field`, `region…`, `father.field`, `son.field`, `bigbro.field`, `smallbro.field`. |
 | `__set_path` | `root, segments…, value` | value | Compiler-internal: writes the same paths. |
 | `__offset_local` | `slot[, size]` | reference | Compiler-internal: `OFFSET <local variable>` - a live reference to that slot of the running process or FUNCTION call (with `size`, `OFFSET <local array>`). |
-| `__get_process_field` | `id, field` | value | Compiler-internal: reads `other.field` where `other` holds a process id. |
-| `__set_process_field` | `id, field, value` | value | Compiler-internal: writes `other.field`. |
+| `__get_process_field` | `id, field` | value | Compiler-internal: reads `other.field` (or `a[i].field`, `s[i].f.field`) where `other` holds a process id. |
+| `__set_process_field` | `id, field, value` | value | Compiler-internal: writes `other.field` (or `a[i].field`, `s[i].f.field`). |
 
 ## Collision
 

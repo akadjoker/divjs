@@ -1102,7 +1102,39 @@ END`;
   runtime.dispose();
 }
 
+async function testFieldOfAProcessIdHeldInAnArrayCell()
+{
+  // "a[0].x" - a field of the process whose id an array cell (or a STRUCT
+  // field) holds - did not compile: "a" is not declared with this shape.
+  const source = `PROGRAM t;
+GLOBAL a[3]; k = 1; r[8];
+STRUCT s[1] pid; hp; END
+PROCESS p(x) BEGIN LOOP FRAME; END END
+PROCESS q()
+PRIVATE b[2];
+BEGIN
+  b[1] = p(70); FRAME; r[0] = b[1].x; b[1].x += 5; r[1] = b[1].x;
+  LOOP FRAME; END
+END
+BEGIN
+  a[0] = p(33); a[k] = p(44);
+  s[1].pid = a[k];
+  q();
+  FRAME;
+  r[2] = a[0].x; r[3] = a[k].x; r[4] = s[1].pid.x;
+  a[0].x = 50; s[1].pid.x -= 4;
+  r[5] = a[0].x; r[6] = a[1].x; r[7] = s[0].pid.x;
+  LOOP FRAME; END
+END`;
+  const { vm, runtime, frame } = startProgram(source);
+  await frame(3);
+  const got = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => vm.globals.get(5 + i));
+  assert(got.join(' ') === '70 75 33 44 44 50 40 0', `campos pelo id numa celula: ${got.join(' ')}`);
+  runtime.dispose();
+}
+
 export const runtimeTests = [
+  ['a[0].x: field of the process an array cell or STRUCT field holds', testFieldOfAProcessIdHeldInAnArrayCell],
   ['a process\'s region clips its graphic', testRegionClipsProcesses],
   ['scroll processes are ordered by z with the others (decision)', testScrollProcessesAreOrderedByZWithTheOthers],
   ['save_data/load_data and DIV save/load keep data between runs', testSaveAndLoadData],

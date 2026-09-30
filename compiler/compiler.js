@@ -2150,7 +2150,85 @@ export class Compiler {
     return true;
   }
 
+  // True when `expr` (an access path) reads one plain value: a cell of a
+  // declared array, or a scalar field of a STRUCT record. Such a value can
+  // hold a process id, whose fields "a[0].x" / "s[i].enemy.x" then name.
+  isScalarValuePath(expr)
+  {
+    if (expr.type !== 'index_access' && expr.type !== 'member_access')
+    {
+      return false;
+    }
+    const path = this.collectPath(expr);
+    if (RESERVED_PATH_ROOTS.has(path.root))
+    {
+      return false;
+    }
+    if (path.segments.length === 1 && path.segments[0].kind === 'index')
+    {
+      const entry = this.localMap.has(path.root) ? this.localMap.get(path.root) : this.globalMap.get(path.root);
+      return !!entry && typeof entry === 'object' && entry.isArray;
+    }
+    const st = this.localMap.has(path.root) ? null : this.structMap.get(path.root);
+    if (!st)
+    {
+      return false;
+    }
+    let fields = st.fields;
+    let i = 0;
+    let scalar = false;
+    const segs = path.segments;
+    while (i < segs.length)
+    {
+      scalar = false;
+      if (segs[i].kind === 'index')
+      {
+        i++;
+        continue;
+      }
+      const f = fields.get(segs[i].value);
+      if (!f)
+      {
+        return false;
+      }
+      if (f.isNested)
+      {
+        fields = f.nestedDef.fields;
+        i++;
+      }
+      else if (f.size > 1)
+      {
+        if (i + 1 >= segs.length || segs[i + 1].kind !== 'index')
+        {
+          return false;
+        }
+        i += 2;
+        scalar = true;
+      }
+      else
+      {
+        i++;
+        scalar = true;
+      }
+      if (scalar && i < segs.length)
+      {
+        return false;
+      }
+    }
+    return scalar;
+  }
+
   compilePathGet(expr) {
+    // "<value>.field" where the value is an array cell or a STRUCT field
+    // holding a process id: that process's field, as with "id.field".
+    if (expr.type === 'member_access' && this.isScalarValuePath(expr.object))
+    {
+      this.compileExpression(expr.object);
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(expr.property));
+      this.emit(OpCodes.CALL_NATIVE, '__get_process_field', 2);
+      return;
+    }
+
     const path = this.collectPath(expr);
 
     // Route to indexed opcodes for declared arrays
@@ -2266,6 +2344,16 @@ export class Compiler {
   }
 
   compilePathSet(targetExpr, valueExpr) {
+    if (targetExpr.type === 'member_access' && this.isScalarValuePath(targetExpr.object))
+    {
+      this.compileExpression(targetExpr.object);
+      this.emit(OpCodes.LOAD_CONST, this.addConstant(targetExpr.property));
+      this.compileExpression(valueExpr);
+      this.emit(OpCodes.CALL_NATIVE, '__set_process_field', 3);
+      this.emit(OpCodes.POP); // statement: discard the native's result
+      return;
+    }
+
     const path = this.collectPath(targetExpr);
 
     // Route to indexed opcodes for declared arrays
