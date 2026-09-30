@@ -285,6 +285,29 @@ layout for the next runs.
 | `load_bdf_font` | `path` | font | Loads a BDF bitmap font. |
 | `load_bdf_font_text` | `bdf_source` | font | Loads a BDF font from its text. |
 
+## Strings
+
+Strings are values: `s = "text"` copies, `s = a + b` joins (numbers join
+as their text, `"score " + 10`), and `==` / `!=` compare them. So the DIV 2
+functions that change a string in place return the new one instead
+(`s = upper(s)`). Positions count from 0; anything that isn't a string
+is used as its text.
+
+| Name | Arguments | Returns | Description |
+|------|-----------|---------|-------------|
+| `strlen` | `string` | number | Number of characters. |
+| `char` | `string` | number | Character code of the first character (`char("A")` is 65); 0 for `""`. |
+| `asc` | `string[, index]` | number | Character code of the character at `index` (default 0); 0 past the end. Not a DIV function. |
+| `chr` | `code` | string | The one-character string with that character code (`chr(65)` is `"A"`). Not a DIV function. |
+| `substr` | `string, start[, count]` | string | `count` characters from `start` (all the rest without `count`); a negative `start` counts from the end (`substr(s, -3)` is the last three). Not a DIV function. |
+| `strdel` | `string, from_start, from_end` | string | The string without `from_start` characters at the start and `from_end` at the end. |
+| `upper` | `string` | string | The string in capitals. |
+| `lower` | `string` | string | The string in small letters. |
+| `strstr` | `string, part` | number | Position of the first `part` in `string`, -1 if it isn't there. |
+| `strchr` | `string, characters` | number | Position of the first character of `string` that is one of `characters`, -1 if none. |
+| `strcmp` | `a, b` | -1/0/1 | Compares two strings in character-code order: -1 if `a` comes first, 0 if equal, 1 if `b` comes first. |
+| `itoa` | `number` | string | The whole number as text (`itoa(42)` is `"42"`). |
+
 ## Path finding
 
 | Name | Arguments | Returns | Description |

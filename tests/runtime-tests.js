@@ -903,7 +903,38 @@ async function testDefaultFpsIsDivsEighteenAndSetFpsIsClamped()
   runtime.dispose();
 }
 
+async function testStringFunctions()
+{
+  // There was no way to measure a string or read its characters. DIV 2's
+  // string functions return the new string here (strings are values).
+  const source = `PROGRAM t;
+GLOBAL s = "Hello, World"; r[20];
+BEGIN
+  r[0] = strlen(s); r[1] = char("A"); r[2] = asc(s, 1); r[3] = chr(66);
+  r[4] = substr(s, 7); r[5] = substr(s, 0, 5); r[6] = substr(s, -5, 3);
+  r[7] = upper(s); r[8] = lower(s); r[9] = strstr(s, "World"); r[10] = strstr(s, "x");
+  r[11] = strchr(s, " ,"); r[12] = strcmp("a", "b"); r[13] = strcmp(s, s); r[14] = strcmp("b", "a");
+  r[15] = strdel(s, 2, 3); r[16] = itoa(42) + "!"; r[17] = strlen(""); r[18] = asc(s, 99); r[19] = strdel("ab", 1, 1);
+  LOOP FRAME; END
+END`;
+  const { vm, runtime, frame } = startProgram(source);
+  await frame(1);
+  const got = [];
+  for (let i = 1; i <= 20; i++)
+  {
+    got.push(vm.globals.get(i));
+  }
+  const expected = [12, 65, 101, 'B', 'World', 'Hello', 'Wor', 'HELLO, WORLD', 'hello, world', 7, -1,
+    5, -1, 0, 1, 'llo, Wo', '42!', 0, 0, ''];
+  expected.forEach((value, i) =>
+  {
+    assert(got[i] === value, `r[${i}] esperado ${JSON.stringify(value)}, obtido ${JSON.stringify(got[i])}`);
+  });
+  runtime.dispose();
+}
+
 export const runtimeTests = [
+  ['string functions: strlen, char, asc, chr, substr, upper, lower, strstr, strchr, strcmp, strdel, itoa', testStringFunctions],
   ['new_graphic is drawn at its real size', testNewGraphicIsDrawnAtItsRealSize],
   ['load_graphic is drawn at its real size', testLoadGraphicIsDrawnAtItsRealSize],
   ['loose graphic codes do not collide with FPG codes', testLooseGraphicCodesDoNotCollideWithFpgCodes],

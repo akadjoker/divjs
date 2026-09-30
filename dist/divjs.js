@@ -806,12 +806,12 @@ var Parser = class {
       this.pos++;
       return;
     }
-    const text = message || `Expected ${type}`;
+    const text2 = message || `Expected ${type}`;
     const previous = this.tokens[this.pos - 1];
     if (type === TokenType.SEMICOLON && previous && previous.endLine !== void 0) {
-      throw new DivError(text, { stage: "parser", line: previous.endLine, col: previous.endCol });
+      throw new DivError(text2, { stage: "parser", line: previous.endLine, col: previous.endCol });
     }
-    throw this.error(text);
+    throw this.error(text2);
   }
   // Consume a leading "COMPILER_OPTIONS ...;" directive, if present.
   // It isn't a keyword in the tokenizer - it arrives as a plain
@@ -6138,11 +6138,11 @@ async function loadDivFpgFromUrl(url) {
 async function loadDivFntFromUrl(url) {
   return parseDivFntBuffer(await fetchBuffer(url));
 }
-function renderDivFontText(ctx, font, x2, y, text, align = 0) {
+function renderDivFontText(ctx, font, x2, y, text2, align = 0) {
   if (!ctx || !font) {
     return 0;
   }
-  const lines = String(text).split("\n");
+  const lines = String(text2).split("\n");
   const widths = lines.map((line) => {
     let w = 0;
     for (let i = 0; i < line.length; i++) {
@@ -11597,8 +11597,8 @@ function bytesToBase64Url(bytes) {
   }
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-function base64UrlToBytes(text) {
-  const base64 = text.replace(/-/g, "+").replace(/_/g, "/");
+function base64UrlToBytes(text2) {
+  const base64 = text2.replace(/-/g, "+").replace(/_/g, "/");
   const binary = atob(base64 + "=".repeat((4 - base64.length % 4) % 4));
   return Uint8Array.from(binary, (c) => c.charCodeAt(0));
 }
@@ -11607,11 +11607,11 @@ async function encodeCode(value) {
   return CODE_PREFIX + bytesToBase64Url(new Uint8Array(await new Response(stream).arrayBuffer()));
 }
 async function decodeCode(code) {
-  const text = String(code || "").trim();
-  if (!text.startsWith(CODE_PREFIX)) {
+  const text2 = String(code || "").trim();
+  if (!text2.startsWith(CODE_PREFIX)) {
     throw new Error("That is not a DivJS connection code");
   }
-  const bytes = base64UrlToBytes(text.slice(CODE_PREFIX.length));
+  const bytes = base64UrlToBytes(text2.slice(CODE_PREFIX.length));
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
   return JSON.parse(await new Response(stream).text());
 }
@@ -12191,8 +12191,8 @@ function noteFrequency(token) {
   const midi = 12 * (Number(m[3]) + 1) + semitone;
   return 440 * Math.pow(2, (midi - 69) / 12);
 }
-function parseNotes(text, drums = false) {
-  const tokens = String(text || "").split(/[\s|]+/).filter((t) => t.length > 0);
+function parseNotes(text2, drums = false) {
+  const tokens = String(text2 || "").split(/[\s|]+/).filter((t) => t.length > 0);
   const events = [];
   let last = null;
   tokens.forEach((token, step) => {
@@ -12653,6 +12653,69 @@ var AudioEngine = class {
     }
   }
 };
+
+// vm/strings.js
+function text(value) {
+  return value === void 0 || value === null ? "" : String(value);
+}
+function whole(value, fallback = 0) {
+  const n = Math.trunc(Number(value));
+  return Number.isFinite(n) ? n : fallback;
+}
+var STRING_NATIVES = {
+  // DIV 2 names.
+  strlen: (s) => text(s).length,
+  strcmp: (a2, b) => {
+    const x2 = text(a2);
+    const y = text(b);
+    return x2 < y ? -1 : x2 > y ? 1 : 0;
+  },
+  strstr: (s, part) => text(s).indexOf(text(part)),
+  strchr: (s, chars) => {
+    const str = text(s);
+    const set = text(chars);
+    for (let i = 0; i < str.length; i++) {
+      if (set.includes(str[i])) {
+        return i;
+      }
+    }
+    return -1;
+  },
+  upper: (s) => text(s).toUpperCase(),
+  lower: (s) => text(s).toLowerCase(),
+  strdel: (s, fromStart, fromEnd) => {
+    const str = text(s);
+    const start = Math.max(0, whole(fromStart));
+    const end = Math.max(0, whole(fromEnd));
+    return start + end >= str.length ? "" : str.slice(start, str.length - end);
+  },
+  itoa: (n) => String(whole(n)),
+  char: (s) => {
+    const str = text(s);
+    return str.length > 0 ? str.charCodeAt(0) : 0;
+  },
+  // DivJS additions.
+  substr: (s, start, count) => {
+    const str = text(s);
+    let from = whole(start);
+    if (from < 0) {
+      from = Math.max(0, str.length + from);
+    }
+    const n = count === void 0 ? str.length : Math.max(0, whole(count));
+    return str.substr(from, n);
+  },
+  asc: (s, index) => {
+    const str = text(s);
+    const i = whole(index);
+    return i >= 0 && i < str.length ? str.charCodeAt(i) : 0;
+  },
+  chr: (code) => String.fromCharCode(Math.max(0, whole(code)) & 65535)
+};
+function registerStringNatives(vm) {
+  for (const [name, fn2] of Object.entries(STRING_NATIVES)) {
+    vm.registerNative(name, fn2);
+  }
+}
 
 // vm/runtime.js
 var CType = {
@@ -14087,7 +14150,7 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     }
     return count;
   }
-  writeNative(font, x2, y, align, text) {
+  writeNative(font, x2, y, align, text2) {
     if (this.drawCommands.length >= this.maxTexts && this.countPersistentTexts() >= this.maxTexts) {
       if (!this._warnedTextLimit) {
         this._warnedTextLimit = true;
@@ -14097,7 +14160,7 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       }
       return 0;
     }
-    const isOffset = this.isOffsetRef(text);
+    const isOffset = this.isOffsetRef(text2);
     const id = this.nextTextId++;
     this.drawCommands.push({
       type: "text",
@@ -14112,7 +14175,7 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       y: Number(y),
       // Keep the descriptor itself when it's an OFFSET, so the draw pass
       // re-resolves it; plain values are stringified once here as before.
-      text: isOffset ? text : String(text),
+      text: isOffset ? text2 : String(text2),
       color: this.currentColor,
       ctype: this.getCurrentCType(),
       fontId: Number(font) || 0,
@@ -14166,12 +14229,12 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     });
     return 0;
   }
-  textNative(x2, y, text) {
+  textNative(x2, y, text2) {
     this.drawCommands.push({
       type: "text",
       x: Number(x2),
       y: Number(y),
-      text: String(text),
+      text: String(text2),
       color: this.currentColor,
       ctype: this.getCurrentCType()
     });
@@ -14227,22 +14290,22 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
   // for this program.
   registerTouchNatives() {
     const host = () => this.touchHost;
-    const text = (value) => value === void 0 || value === null || value === 0 ? "" : String(value);
+    const text2 = (value) => value === void 0 || value === null || value === 0 ? "" : String(value);
     this.vm.registerNative("touch_controls", (state = 1) => {
       host()?.setEnabled(Number(state) || 0);
       return 0;
     });
     this.vm.registerNative("touch_pad", (kind = 1, keys) => {
       const pad = ["none", "dpad", "stick"][Number(kind)] || "dpad";
-      host()?.patchLayout(keys === void 0 ? { pad } : { pad, padKeys: text(keys) });
+      host()?.patchLayout(keys === void 0 ? { pad } : { pad, padKeys: text2(keys) });
       return 0;
     });
     this.vm.registerNative("touch_buttons", (list) => {
-      host()?.patchLayout({ buttons: text(list) });
+      host()?.patchLayout({ buttons: text2(list) });
       return 0;
     });
     this.vm.registerNative("touch_menu", (list) => {
-      host()?.patchLayout({ menu: text(list) });
+      host()?.patchLayout({ menu: text2(list) });
       return 0;
     });
     this.vm.registerNative("is_touch", () => {
@@ -15198,14 +15261,14 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     });
     return id;
   }
-  loadBdfFontTextNative(text) {
-    if (!text) {
+  loadBdfFontTextNative(text2) {
+    if (!text2) {
       return 0;
     }
     const id = this.reserveBitmapFont();
     const entry = this.bitmapFonts.get(id);
     try {
-      entry.font = parseBennuBdfFont(String(text));
+      entry.font = parseBennuBdfFont(String(text2));
       entry.loaded = true;
     } catch (error) {
       entry.error = error?.message || String(error);
@@ -15225,8 +15288,8 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
         throw new Error(`HTTP ${response.status}`);
       }
       return response.text();
-    }).then((text) => {
-      entry.font = parseBennuBdfFont(text);
+    }).then((text2) => {
+      entry.font = parseBennuBdfFont(text2);
       entry.loaded = true;
     }).catch((error) => {
       entry.error = error?.message || String(error);
@@ -15294,11 +15357,11 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       dy: row === 1 ? -Math.round(height * 0.5) : row === 2 ? -height : 0
     };
   }
-  drawSystemText(x2, y, align, text, color) {
+  drawSystemText(x2, y, align, text2, color) {
     const w = FONT_6X8_WIDTH;
     const h = FONT_6X8_HEIGHT;
     const atlas = this.systemFontAtlas(color);
-    const str = String(text);
+    const str = String(text2);
     const offset = _CanvasEngineRuntime.textAlignOffset(align, str.length * w, h);
     let penX = Math.round(Number(x2) || 0) + offset.dx;
     const penY = Math.round(Number(y) || 0) + offset.dy;
@@ -15357,12 +15420,12 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     }
     return canvas;
   }
-  drawBitmapText(fontId, x2, y, align, text, color) {
+  drawBitmapText(fontId, x2, y, align, text2, color) {
     const entry = this.bitmapFonts.get(Number(fontId) || 0);
     if (!entry || !entry.loaded || !entry.font) {
       return false;
     }
-    const str = String(text);
+    const str = String(text2);
     const font = entry.font;
     const fillColor = String(color || this.ctx.fillStyle || "#ffffff");
     const lines = str.split("\n");
@@ -15515,6 +15578,7 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     this.registerPhysicsNatives();
     this.registerNetNatives();
     this.registerAudioNatives();
+    registerStringNatives(this.vm);
     this.vm.registerNative("collision_circle", this.collisionCircleNative.bind(this));
     this.vm.registerNative("collision_obb", this.collisionOBBNative.bind(this));
     this.vm.registerNative("collision_point", this.collisionPointNative.bind(this));
@@ -15691,13 +15755,13 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     c.stroke();
     return 0;
   }
-  gfxTextNative(id, x2, y, text, r, g2, b, size) {
+  gfxTextNative(id, x2, y, text2, r, g2, b, size) {
     const c = this._gfxCtx(id);
     if (!c) return 0;
     c.fillStyle = this._cssRGB(r, g2, b);
     c.font = `${Math.round(size || 12)}px monospace`;
     c.textBaseline = "top";
-    c.fillText(String(text), x2, y);
+    c.fillText(String(text2), x2, y);
     return 0;
   }
   transformPoint(x2, y, ctype) {
@@ -16228,14 +16292,14 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
           return;
         }
         if (cmd.type === "text") {
-          let text = cmd.text;
-          if (this.isOffsetRef(text)) {
-            const value = this.resolveOffsetRef(text);
-            text = text.asInt ? String(Math.floor(Number(value) || 0)) : String(value);
+          let text2 = cmd.text;
+          if (this.isOffsetRef(text2)) {
+            const value = this.resolveOffsetRef(text2);
+            text2 = text2.asInt ? String(Math.floor(Number(value) || 0)) : String(value);
           }
-          const drewBitmap = cmd.fontId > 0 ? this.drawBitmapText(cmd.fontId, pos.x, pos.y, cmd.align || 0, text, cmd.color) : false;
+          const drewBitmap = cmd.fontId > 0 ? this.drawBitmapText(cmd.fontId, pos.x, pos.y, cmd.align || 0, text2, cmd.color) : false;
           if (!drewBitmap) {
-            this.drawSystemText(pos.x, pos.y, cmd.align || 0, text, cmd.color);
+            this.drawSystemText(pos.x, pos.y, cmd.align || 0, text2, cmd.color);
           }
           return;
         }
@@ -17027,13 +17091,13 @@ function createNetPanel(doc = document, { inviteLink = null } = {}) {
     close,
     error
   };
-  function el(tag, style, text) {
+  function el(tag, style, text2) {
     const node = doc.createElement(tag);
     if (style) {
       node.style.cssText = style;
     }
-    if (text !== void 0) {
-      node.textContent = text;
+    if (text2 !== void 0) {
+      node.textContent = text2;
     }
     return node;
   }
@@ -17063,9 +17127,9 @@ function createNetPanel(doc = document, { inviteLink = null } = {}) {
     doc.body.appendChild(root);
     return { body, status, buttons, cancel };
   }
-  async function copyText(button, text, done) {
+  async function copyText(button, text2, done) {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(text2);
       button.textContent = done;
     } catch {
       button.textContent = "Select and copy it";
@@ -17731,9 +17795,9 @@ async function bootDivDemo(options) {
     onFrame,
     onError
   } = options || {};
-  const setLoading = (text) => {
+  const setLoading = (text2) => {
     if (!loadingElement) return;
-    loadingElement.textContent = text;
+    loadingElement.textContent = text2;
     loadingElement.classList.remove("hidden");
   };
   const hideLoading = () => {
@@ -17882,8 +17946,8 @@ function disassemble(bytecode) {
     for (let addr = range.addr; addr < range.end; addr++) {
       const instr = bytecode.instructions[addr];
       const opName = OpCodeNames[instr.opcode] || `UNKNOWN(0x${instr.opcode.toString(16)})`;
-      const { text, comment } = formatOperands(bytecode, instr, localsByIdx, globalsByIdx);
-      let line = `${String(addr).padStart(5, " ")}: ${opName.padEnd(14)} ${text}`;
+      const { text: text2, comment } = formatOperands(bytecode, instr, localsByIdx, globalsByIdx);
+      let line = `${String(addr).padStart(5, " ")}: ${opName.padEnd(14)} ${text2}`;
       if (comment) {
         line += `  ; ${comment}`;
       }
@@ -17988,8 +18052,8 @@ function bytesToBase64(bytes) {
 function scriptJson(value) {
   return JSON.stringify(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
-function escapeHtml(text) {
-  return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+function escapeHtml(text2) {
+  return String(text2).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 }
 var ENGINE_NOTICE = `DivJS engine - https://github.com/akadjoker/divjs
 MIT License. Copyright (c) 2026 akadjoker

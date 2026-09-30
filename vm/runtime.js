@@ -12,6 +12,7 @@ import { font6x8Pixel, FONT_6X8_WIDTH, FONT_6X8_HEIGHT } from './font_6x8.js';
 import { PhysicsWorld, PHYS_DYNAMIC } from './physics.js';
 import { NetSession } from './net.js';
 import { AudioEngine, sfxRecipe } from './audio.js';
+import { registerStringNatives } from './strings.js';
 
 export const CType = {
   C_SCREEN: 0,
@@ -3649,6 +3650,7 @@ export class CanvasEngineRuntime {
     this.registerPhysicsNatives();
     this.registerNetNatives();
     this.registerAudioNatives();
+    registerStringNatives(this.vm);
     this.vm.registerNative('collision_circle', this.collisionCircleNative.bind(this));
     this.vm.registerNative('collision_obb', this.collisionOBBNative.bind(this));
     this.vm.registerNative('collision_point', this.collisionPointNative.bind(this));
