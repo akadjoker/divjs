@@ -10,6 +10,7 @@ import { loadDivFpgFromUrl, loadDivFntFromUrl, loadDivMapFromUrl } from './div_f
 import { getProcessShapes, setPivotResolver } from './process.js';
 import { font6x8Pixel, FONT_6X8_WIDTH, FONT_6X8_HEIGHT } from './font_6x8.js';
 import { MinHeap } from './min_heap.js';
+import { loadPcmFile } from './pcm_loader.js';
 
 export const CType = {
   C_SCREEN: 0,
@@ -98,6 +99,12 @@ export class CanvasEngineRuntime {
     this.debugStatsX = Number(options.debugStatsX) || 8;
     this.debugStatsY = Number(options.debugStatsY) || 8;
     this.fpsValue = 0;
+
+    // Audio system - Web Audio API for PCM playback
+    this.audioContext = null;
+    this.audioBuffers = new Map(); // soundId -> AudioBuffer
+    this.nextSoundId = 1;
+    this.activeSources = new Map(); // soundId -> Set of AudioBufferSourceNodes
     this.fpsAccumTime = 0;
     this.fpsAccumFrames = 0;
     this.targetFps = 0; // 0 = uncapped, set via set_fps()
@@ -2754,21 +2761,14 @@ export class CanvasEngineRuntime {
     // Dummy no-ops: real DIV natives with no implementation here yet.
     // Registered so calling them is silent (returns 0) instead of
     // spamming "Native function not found" - covers the actual usage
-    // seen porting coins.prg/pool.prg. sound is entirely unimplemented
-    // (no audio subsystem at all yet); load_pal/unload_fpg are no-ops
-    // because there's no separate palette/library-unload state to
-    // apply them to; map_get_pixel needs a palette-index pixel read on
-    // an arbitrary loaded graphic (see the pending get_pixel palette-
-    // index item) - real DIV games' collision-by-color-map logic (e.g.
-    // coins.prg's check_position) silently does nothing until that
-    // lands, same as it did unregistered.
-    this.vm.registerNative('load_pcm', () => 0);
-    this.vm.registerNative('sound', () => 0);
-    this.vm.registerNative('change_sound', () => 0);
-    this.vm.registerNative('stop_sound', () => 0);
+    // seen porting coins.prg/pool.prg.
+    this.vm.registerNative('load_pcm', this.loadPcmNative.bind(this));
+    this.vm.registerNative('sound', this.soundNative.bind(this));
+    this.vm.registerNative('change_sound', () => 0); // Not commonly used
+    this.vm.registerNative('stop_sound', this.stopSoundNative.bind(this));
     this.vm.registerNative('load_pal', () => 0);
     this.vm.registerNative('unload_fpg', () => 0);
-    this.vm.registerNative('unload_pcm', () => 0);
+    this.vm.registerNative('unload_pcm', this.unloadPcmNative.bind(this));
     this.vm.registerNative('unload_map', () => 0);
     this.vm.registerNative('map_get_pixel', () => 0);
     this.vm.registerNative('load_bdf_font', this.loadBdfFontNative.bind(this));
@@ -3561,5 +3561,145 @@ export class CanvasEngineRuntime {
       this.ctx.fillRect(0, 0, this.width, this.height);
       this.ctx.restore();
     }
+  }
+
+  // === Audio System ===
+
+  /**
+   * Initialize the Web Audio context (must be done after user interaction)
+   */
+  initAudioContext() {
+    if (!this.audioContext) {
+      try {
+        this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      } catch (e) {
+        console.error('Web Audio API not supported:', e);
+      }
+    }
+    return this.audioContext;
+  }
+
+  /**
+   * load_pcm(filename, [loop]) - Load a PCM audio file
+   * Returns a sound ID (>= 0) on success, or -1 on failure.
+   * DIV's load_pcm returns a sound identifier for use with sound().
+   */
+  loadPcmNative(filename, loopFlag) {
+    this.initAudioContext();
+    if (!this.audioContext) {
+      return -1;
+    }
+
+    const fname = String(filename || '');
+    if (!fname) {
+      return -1;
+    }
+
+    // CALL_NATIVE pushes our return value straight onto the VM stack
+    // synchronously, so this can't be `async` - DIV scripts expect the
+    // sound id back immediately. Allocate the id now and fill in the
+    // decoded buffer once the fetch/decode resolves; sound() just no-ops
+    // until then.
+    const soundId = this.nextSoundId++;
+    const entry = { buffer: null, loop: !!loopFlag, filename: fname };
+    this.audioBuffers.set(soundId, entry);
+
+    const filePath = this.getPathNative('') + fname;
+    loadPcmFile(filePath, this.audioContext).then((audioBuffer) => {
+      entry.buffer = audioBuffer;
+      this.logFn(`[audio] Loaded PCM "${fname}" as sound ${soundId} (loop=${entry.loop})`);
+    }).catch((error) => {
+      console.error(`[audio] Failed to load PCM "${fname}":`, error);
+      this.audioBuffers.delete(soundId);
+    });
+
+    return soundId;
+  }
+
+  /**
+   * sound(soundId) - Play a loaded PCM sound
+   * Returns the number of active instances of this sound (for tracking).
+   * DIV's sound() returns the channel used or 0 on failure.
+   * We simplify: returns 1 if started, 0 on failure.
+   */
+  soundNative(soundId) {
+    this.initAudioContext();
+    if (!this.audioContext) {
+      return 0;
+    }
+
+    const id = Number(soundId);
+    const soundData = this.audioBuffers.get(id);
+
+    if (!soundData || !soundData.buffer) {
+      console.warn(`[audio] sound(${id}) called but no such sound loaded`);
+      return 0;
+    }
+
+    try {
+      const source = this.audioContext.createBufferSource();
+      source.buffer = soundData.buffer;
+      source.loop = soundData.loop;
+      source.connect(this.audioContext.destination);
+
+      source.onended = () => {
+        const sources = this.activeSources.get(id);
+        if (sources) {
+          sources.delete(source);
+          if (sources.size === 0) {
+            this.activeSources.delete(id);
+          }
+        }
+      };
+
+      source.start(0);
+
+      // Track active sources so we can stop them
+      if (!this.activeSources.has(id)) {
+        this.activeSources.set(id, new Set());
+      }
+      this.activeSources.get(id).add(source);
+
+      return 1;
+    } catch (error) {
+      console.error(`[audio] Failed to play sound ${id}:`, error);
+      return 0;
+    }
+  }
+
+  /**
+   * stop_sound(soundId) - Stop all instances of a sound
+   * DIV's stop_sound() takes a channel number; we interpret soundId as the ID to stop.
+   */
+  stopSoundNative(soundId) {
+    const id = Number(soundId);
+    const sources = this.activeSources.get(id);
+
+    if (sources && sources.size > 0) {
+      for (const source of sources) {
+        try {
+          source.stop();
+        } catch (e) {
+          // Source might have already stopped
+        }
+      }
+      this.activeSources.delete(id);
+    }
+    return 0;
+  }
+
+  /**
+   * unload_pcm(soundId) - Unload a PCM sound and free memory
+   */
+  unloadPcmNative(soundId) {
+    const id = Number(soundId);
+
+    // Stop any playing instances first
+    this.stopSoundNative(id);
+
+    // Remove the buffer
+    this.audioBuffers.delete(id);
+
+    return 0;
   }
 }
