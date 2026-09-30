@@ -16490,6 +16490,11 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
         }
         continue;
       }
+      const regionId = Number(process.region) || 0;
+      if (regionId > 0) {
+        this.withRegionClip(this.getRegionRect(regionId), () => this.drawProcessAt(process, 0, 0));
+        continue;
+      }
       this.drawProcessAt(process, 0, 0);
     }
     drawLayeredDeeperThan(-Infinity);

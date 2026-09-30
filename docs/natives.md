@@ -192,7 +192,7 @@ layout for the next runs.
 |------|-----------|---------|-------------|
 | `advance` | `distance[, angle]` | — | Moves the current process `distance` pixels along its own `angle` (or the given one). |
 | `xadvance` | `distance, angle` | — | Moves the current process `distance` pixels along `angle`. |
-| `define_region` | `n, x, y, width, height` | `n` | Defines screen region `n` (1-31). An omitted size means the screen's. |
+| `define_region` | `n, x, y, width, height` | `n` | Defines screen region `n` (1-31). An omitted size means the screen's. A process whose `region` is `n` is only seen inside it (0, the default, is the whole screen; so is a region never defined); a scroll window started in it is drawn inside it. |
 | `out_region` | `id, region` | 1/0 | 1 when the graphic of process `id` is completely outside `region` (0 = the screen). A missing process gives 0. |
 | `out_of_region` | `[region]` | 1/0 | 1 when the current process's box touches or passes the edge of `region`. |
 | `exit_region` | `[region]` | 1/0 | Same as `out_of_region()`. |

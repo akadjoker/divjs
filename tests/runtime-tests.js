@@ -1076,7 +1076,34 @@ END`;
   runtime.dispose();
 }
 
+async function testRegionClipsProcesses()
+{
+  // A process's REGION is where its graphic may be seen (DIV manual,
+  // LOCAL region); it was ignored, so the graphic showed on the whole
+  // screen.
+  const source = `PROGRAM t;
+GLOBAL g;
+PROCESS box(x, y, region) BEGIN graph = g; LOOP FRAME; END END
+BEGIN
+  g = new_graphic(40, 40); gfx_fill(g, 0, 0, 255);
+  define_region(1, 0, 0, 100, 100);
+  box(100, 100, 1);
+  box(200, 100, 0);
+  box(250, 150, 7);
+  LOOP FRAME; END
+END`;
+  const { runtime, frame } = startProgram(source);
+  await frame(2);
+  const at = (x, y) => pixelAt(runtime, x, y).slice(0, 3).join(',');
+  assert(at(90, 90) === '0,0,255', `dentro da regiao devia ver-se, obtido ${at(90, 90)}`);
+  assert(at(110, 110) === '0,0,0', `fora da regiao 1 nao devia ver-se, obtido ${at(110, 110)}`);
+  assert(at(210, 110) === '0,0,255', `regiao 0 e o ecra todo, obtido ${at(210, 110)}`);
+  assert(at(260, 160) === '0,0,255', `uma regiao nao definida e o ecra todo, obtido ${at(260, 160)}`);
+  runtime.dispose();
+}
+
 export const runtimeTests = [
+  ['a process\'s region clips its graphic', testRegionClipsProcesses],
   ['scroll processes are ordered by z with the others (decision)', testScrollProcessesAreOrderedByZWithTheOthers],
   ['save_data/load_data and DIV save/load keep data between runs', testSaveAndLoadData],
   ['draw_z puts circle/text/draw_rect among the processes', testDrawZPutsPrimitivesAmongProcesses],
