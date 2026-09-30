@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS API Tutorial 07 - Text & Fonts</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.5;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="480"></canvas>
+  <p>
+    Tutorial 07: mostra texto com fonte de sistema e bitmap carregada do <code>help.fnt</code>.<br>
+    APIs: <code>write()</code>, <code>write_int()</code>, <code>delete_text()</code>, <code>load_fnt()</code>.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM tutor_api_07;
+
+GLOBAL g_fnt = 0;
+GLOBAL g_counter = 0;
+GLOBAL g_text_id = 0;
+
+BEGIN
+  set_mode(640, 480);
+  screen_color('#0e1a29');
+
+  load_fpg('../assets/div-support/help.fpg');
+  put_screen(0, 5);   // Fondo negro
+  g_fnt = load_fnt('../assets/div-support/help.fnt');
+
+  LOOP
+    g_counter = g_counter + 1;
+
+    // System font (font 0)
+    set_color('#9bc8f2');
+    text(12, 8, "Tutorial 07 - write / write_int / delete_text");
+
+    // Bitmap font
+    write(g_fnt, 320, 60, 1, "HELLO FROM help.fnt");
+    write(g_fnt, 320, 90, 1, "use delete_text() to refresh");
+
+    // Live integer display
+    IF (g_text_id <> 0) delete_text(g_text_id); END
+    g_text_id = write_int(g_fnt, 320, 130, 1, g_counter);
+
+    write(g_fnt, 320, 170, 1, "frame counter:");
+
+    FRAME;
+  END
+END`;
+
+    const log = document.getElementById('log');
+    runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      clearColor: '#0e1a29',
+      onLog: (line) => { log.textContent = line; },
+      onError: (err) => { log.textContent = 'error: ' + (err?.message || String(err)); }
+    });
+  </script>
+</body>
+</html>

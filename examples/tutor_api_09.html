@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS API Tutorial 09 - Timers</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.5;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="480"></canvas>
+  <p>
+    Tutorial 09: usa contagem de frames para criar animações e eventos temporizados.<br>
+    APIs: Contagem de frames, IF com condições, animações básicas.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM tutor_api_09;
+
+GLOBAL g_lib = 0;
+GLOBAL g_frame_count = 0;
+GLOBAL g_blink_state = 0;
+GLOBAL g_event_count = 0;
+
+
+PROCESS blinking_ball();
+PRIVATE
+  blink_timer = 0;
+BEGIN
+  x = 200; y = 240;
+  width = 32; height = 32;
+  file = g_lib;
+  graph = 100;
+
+  LOOP
+    // Alterna a cor a cada 18 frames (~300ms a 60fps)
+    blink_timer = blink_timer + 1;
+    IF (blink_timer >= 18)
+      blink_timer = 0;
+      IF (g_blink_state = 0)
+        graph = 100;      // Bola azul
+        g_blink_state = 1;
+      ELSE
+        graph = 103;      // Bola cinza
+        g_blink_state = 0;
+      END
+    END
+    FRAME;
+  END
+END
+
+PROCESS timed_event_ball();
+PRIVATE
+  event_timer = 0;
+  flash_timer = 0;
+BEGIN
+  x = 440; y = 240;
+  width = 32; height = 32;
+  file = g_lib;
+  graph = 100;
+
+  LOOP
+    // Dispara um evento a cada 30 frames (~500ms a 60fps)
+    event_timer = event_timer + 1;
+    IF (event_timer >= 30)
+      event_timer = 0;
+      g_event_count = g_event_count + 1;
+      
+      // Flash visual quando evento dispara
+      graph = 103;
+      flash_timer = 0;
+      REPEAT
+        flash_timer = flash_timer + 1;
+        FRAME;
+      UNTIL (flash_timer >= 6)
+      graph = 100;
+    END
+    FRAME;
+  END
+END
+
+PROCESS pulsating_ball();
+PRIVATE
+  pulse_timer = 0;
+BEGIN
+  x = 320; y = 380;
+  width = 32; height = 32;
+  file = g_lib;
+  graph = 100;
+
+  LOOP
+    // Pulsa o tamanho usando seno
+    pulse_timer = pulse_timer + 1;
+    size = 100 + (sin(pulse_timer / 10.0) * 20);
+
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(640, 480);
+  screen_color('#0e1a29');
+
+  g_lib = load_fpg('../assets/div-support/help.fpg');
+  put_screen(g_lib, 1);
+
+  blinking_ball();
+  timed_event_ball();
+  pulsating_ball();
+
+  LOOP
+    g_frame_count = g_frame_count + 1;
+
+    set_color('#9bc8f2');
+    text(12, 8, "Tutorial 09 - frame counting / animations");
+    
+    set_color('#93aecd');
+    text(12, 440, "frames: " + g_frame_count);
+    text(12, 455, "events: " + g_event_count);
+
+    FRAME;
+  END
+END`;
+
+    const log = document.getElementById('log');
+    runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      clearColor: '#0e1a29',
+      onLog: (line) => { log.textContent = line; },
+      onError: (err) => { log.textContent = 'error: ' + (err?.message || String(err)); }
+    });
+  </script>
+</body>
+</html>

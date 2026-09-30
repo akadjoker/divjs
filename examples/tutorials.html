@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS Tutorials Index</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 20px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    h1 {
+      color: #9bc8f2;
+      margin-bottom: 30px;
+      text-align: center;
+      border-bottom: 2px solid #2b4158;
+      padding-bottom: 15px;
+    }
+    h2 {
+      color: #93aecd;
+      margin-top: 30px;
+      margin-bottom: 15px;
+      font-size: 1.2em;
+    }
+    .tutorial-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+    .tutorial-card {
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      border-radius: 8px;
+      padding: 15px;
+      transition: all 0.3s ease;
+    }
+    .tutorial-card:hover {
+      border-color: #9bc8f2;
+      box-shadow: 0 4px 15px rgba(155, 200, 242, 0.2);
+    }
+    .tutorial-title {
+      color: #9bc8f2;
+      font-size: 1.1em;
+      margin-bottom: 10px;
+      font-weight: 600;
+    }
+    .tutorial-description {
+      color: #93aecd;
+      font-size: 0.9em;
+      margin-bottom: 10px;
+      line-height: 1.5;
+    }
+    .tutorial-apis {
+      color: #5a6a7a;
+      font-size: 0.8em;
+      font-family: "JetBrains Mono", "Consolas", monospace;
+    }
+    .tutorial-link {
+      display: inline-block;
+      margin-top: 10px;
+      color: #ffd93d;
+      text-decoration: none;
+      font-size: 0.85em;
+    }
+    .tutorial-link:hover {
+      text-decoration: underline;
+    }
+    .category-section {
+      margin-bottom: 40px;
+    }
+    .category-badge {
+      display: inline-block;
+      background: #2a3f55;
+      color: #93aecd;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75em;
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎮 DivJS Tutorials</h1>
+  
+  <p style="text-align: center; color: #93aecd; margin-bottom: 30px;">
+    Comprehensive tutorials covering the DivJS API, from basics to advanced features.
+  </p>
+
+  <div class="category-section">
+    <span class="category-badge">BASICS</span>
+    <h2>Getting Started</h2>
+    <div class="tutorial-grid">
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 01 - FPG, Processes & Movement</div>
+        <div class="tutorial-description">
+          Load FPG files, place backgrounds, create processes, and move objects with keyboard controls.
+        </div>
+        <div class="tutorial-apis">load_fpg, put_screen, process, graph, x/y, key</div>
+        <a href="tutor_api_01.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 02 - Angles & advance()</div>
+        <div class="tutorial-description">
+          Rotate objects with arrow keys and move them in the direction of their angle.
+        </div>
+        <div class="tutorial-apis">angle, advance(), fget_angle(), get_distx(), get_disty()</div>
+        <a href="tutor_api_02.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 03 - Basic Collisions</div>
+        <div class="tutorial-description">
+          Move objects and detect collisions with targets using collision detection.
+        </div>
+        <div class="tutorial-apis">collision(), get_id(), signal()</div>
+        <a href="tutor_api_03.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="category-section">
+    <span class="category-badge">GRAPHICS</span>
+    <h2>Graphics & Rendering</h2>
+    <div class="tutorial-grid">
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 04 - Procedural Graphics</div>
+        <div class="tutorial-description">
+          Create graphics in real-time using the gfx_* API for drawing shapes and primitives.
+        </div>
+        <div class="tutorial-apis">new_graphic(), gfx_line(), gfx_rect(), gfx_circle(), gfx_pixel()</div>
+        <a href="tutor_api_04.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 05 - Scroll & Regions</div>
+        <div class="tutorial-description">
+          Implement horizontal scrolling using graphics and define screen regions.
+        </div>
+        <div class="tutorial-apis">define_region(), start_scroll(), stop_scroll()</div>
+        <a href="tutor_api_05.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 07 - Text & Fonts</div>
+        <div class="tutorial-description">
+          Display text using system fonts and bitmap fonts loaded from FNT files.
+        </div>
+        <div class="tutorial-apis">write(), write_int(), delete_text(), load_fnt()</div>
+        <a href="tutor_api_07.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 13 - Drawing Primitives</div>
+        <div class="tutorial-description">
+          Draw geometric shapes directly on screen with various primitive functions.
+        </div>
+        <div class="tutorial-apis">draw_rect(), draw_line(), draw_circle(), draw_fput(), clear_screen()</div>
+        <a href="tutor_api_13.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="category-section">
+    <span class="category-badge">ADVANCED</span>
+    <h2>Advanced Features</h2>
+    <div class="tutorial-grid">
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 06 - Pathfinding</div>
+        <div class="tutorial-description">
+          Click to set destinations; agents calculate A* paths through obstacles.
+        </div>
+        <div class="tutorial-apis">path_find(), path_assign(), path_step(), path_length()</div>
+        <a href="tutor_api_06.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 08 - Collision Shapes</div>
+        <div class="tutorial-description">
+          Define custom collision boxes and circles for precise collision detection.
+        </div>
+        <div class="tutorial-apis">set_collision_shape(), add_collision_box(), add_collision_circle(), collision()</div>
+        <a href="tutor_api_08.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 12 - Regions Advanced</div>
+        <div class="tutorial-description">
+          Advanced usage of regions for detecting objects in specific screen areas.
+        </div>
+        <div class="tutorial-apis">define_region(), region_in(), region_out(), region_center()</div>
+        <a href="tutor_api_12.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="category-section">
+    <span class="category-badge">SYSTEM</span>
+    <h2>System & Input</h2>
+    <div class="tutorial-grid">
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 09 - Timers</div>
+        <div class="tutorial-description">
+          Use timer() for creating animations and timed events in your games.
+        </div>
+        <div class="tutorial-apis">timer(), animations, timed events</div>
+        <a href="tutor_api_09.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 10 - Sound & Music</div>
+        <div class="tutorial-description">
+          Load and play PCM sounds and background music with volume control.
+        </div>
+        <div class="tutorial-apis">load_pcm(), play_pcm(), is_playing_pcm(), stop_pcm(), pcm_volume()</div>
+        <a href="tutor_api_10.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 11 - Process Communication</div>
+        <div class="tutorial-description">
+          Communication between processes using signals, flags, and TYPE system.
+        </div>
+        <div class="tutorial-apis">signal(), get_id(), TYPE, flags</div>
+        <a href="tutor_api_11.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 14 - Mouse & Input</div>
+        <div class="tutorial-description">
+          Advanced mouse and keyboard input handling with mouse trails and click tracking.
+        </div>
+        <div class="tutorial-apis">mouse.x, mouse.y, mouse.left, mouse.right, mouse.scroll, scan_code(), key()</div>
+        <a href="tutor_api_14.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="category-section">
+    <span class="category-badge">MATH</span>
+    <h2>Mathematics</h2>
+    <div class="tutorial-grid">
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 15 - Math & Trigonometry</div>
+        <div class="tutorial-description">
+          Mathematical and trigonometric functions for movements and calculations.
+        </div>
+        <div class="tutorial-apis">sin(), cos(), atan2(), sqrt(), abs(), min(), max(), rand(), pow()</div>
+        <a href="tutor_api_15.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="category-section">
+    <span class="category-badge">CLASSICS</span>
+    <h2>Classic Tutorials</h2>
+    <div class="tutorial-grid">
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 0a - Basic Concepts</div>
+        <div class="tutorial-description">
+          Introduction to DivJS with basic ship movement and shooting mechanics.
+        </div>
+        <div class="tutorial-apis">load_fpg, put_screen, process, mouse, LOOP, REPEAT</div>
+        <a href="tutor0a.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 0b - Extended Basics</div>
+        <div class="tutorial-description">
+          Extended introduction covering additional basic DivJS concepts.
+        </div>
+        <div class="tutorial-apis">Extended basics, process management</div>
+        <a href="tutor0b.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 1a - Fundamentals</div>
+        <div class="tutorial-description">
+          Fundamental programming concepts in DivJS.
+        </div>
+        <div class="tutorial-apis">Variables, control structures, basic I/O</div>
+        <a href="tutor1a.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 1b - Fundamentals II</div>
+        <div class="tutorial-description">
+          Additional fundamental programming concepts.
+        </div>
+        <div class="tutorial-apis">Advanced control structures, data types</div>
+        <a href="tutor1b.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 2 - Processes</div>
+        <div class="tutorial-description">
+          Deep dive into process creation and management.
+        </div>
+        <div class="tutorial-apis">PROCESS, process lifecycle, communication</div>
+        <a href="tutor2.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 3 - Graphics</div>
+        <div class="tutorial-description">
+          Working with graphics and visual elements.
+        </div>
+        <div class="tutorial-apis">FPG files, graph manipulation, drawing</div>
+        <a href="tutor3.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 4 - Input</div>
+        <div class="tutorial-description">
+          Keyboard and mouse input handling.
+        </div>
+        <div class="tutorial-apis">key(), mouse, input processing</div>
+        <a href="tutor4.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 5 - Sound</div>
+        <div class="tutorial-description">
+          Audio and music in DivJS applications.
+        </div>
+        <div class="tutorial-apis">load_pcm, play_pcm, sound effects</div>
+        <a href="tutor5.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+
+      <div class="tutorial-card">
+        <div class="tutorial-title">Tutorial 6 - Collisions</div>
+        <div class="tutorial-description">
+          Collision detection and response systems.
+        </div>
+        <div class="tutorial-apis">collision(), collision types, response</div>
+        <a href="tutor6.html" class="tutorial-link">→ Open Tutorial</a>
+      </div>
+      </div>
+  </div>
+
+  <div style="margin-top: 40px; padding: 20px; background: #0f1b2a; border: 1px solid #2a3f55; border-radius: 8px; text-align: center;">
+    <p style="color: #93aecd; margin-bottom: 10px;">
+      <strong>Total:</strong> 24 tutorials covering all major DivJS API features
+    </p>
+    <p style="color: #5a6a7a; font-size: 0.9em;">
+      Each tutorial includes working code examples and detailed API documentation
+    </p>
+  </div>
+</body>
+</html>

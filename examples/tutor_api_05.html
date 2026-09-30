@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS API Tutorial 05 - Scroll & Regions</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.5;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="480"></canvas>
+  <p>
+    Tutorial 05: scroll horizontal usando gráficos do help.fpg.<br>
+    APIs: <code>define_region()</code>, <code>start_scroll()</code>, <code>stop_scroll()</code>.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM tutor_api_05;
+
+GLOBAL g_lib = 0;
+GLOBAL g_scroll_x = 0;
+
+PROCESS cursor();
+BEGIN
+  x = 320; y = 240;
+  width = 9; height = 9;
+  file = g_lib;
+  graph = 200;       // Cursor cruz do help.fpg
+  LOOP
+    x = mouse.x;
+    y = mouse.y;
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(640, 480);
+  screen_color('#0e1a29');
+
+  g_lib = load_fpg('../assets/div-support/help.fpg');
+
+  // Region 1: central area where the scroll is shown
+  define_region(1, 40, 40, 560, 320);
+
+  // Scroll 0: foreground = graph 102, background = graph 103, region = 1
+  start_scroll(0, g_lib, 102, 103, 1, 3);
+
+  cursor();
+
+  LOOP
+    g_scroll_x = g_scroll_x + 1;
+    IF (g_scroll_x > 1000) g_scroll_x = 0; END
+
+    scroll[0].x0 = g_scroll_x;
+    scroll[0].x1 = g_scroll_x / 2;
+
+    set_color('#9bc8f2');
+    text(12, 8, "Tutorial 05 - define_region / start_scroll");
+    text(12, 450, "scroll.x0=" + g_scroll_x);
+    FRAME;
+  END
+END`;
+
+    const log = document.getElementById('log');
+    runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      clearColor: '#0e1a29',
+      onLog: (line) => { log.textContent = line; },
+      onError: (err) => { log.textContent = 'error: ' + (err?.message || String(err)); }
+    });
+  </script>
+</body>
+</html>

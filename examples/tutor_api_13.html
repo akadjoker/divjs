@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS API Tutorial 13 - Drawing Primitives</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.5;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="480"></canvas>
+  <p>
+    Tutorial 13: demonstra uso básico de desenho e cores.<br>
+    APIs: <code>set_color()</code>, <code>text()</code>, cores hexadecimais.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM tutor_api_13;
+
+GLOBAL g_lib = 0;
+GLOBAL g_demo_mode = 0;
+GLOBAL g_anim_frame = 0;
+
+PROCESS draw_demo();
+BEGIN
+  LOOP
+    g_anim_frame = g_anim_frame + 1;
+
+    // Limpa a tela
+    clear_screen('#0e1a29');
+
+    set_color('#9bc8f2');
+    text(12, 8, "Tutorial 13 - drawing primitives");
+
+    // Modo 0: Retângulos
+    IF (g_demo_mode = 0)
+      set_color('#93aecd');
+      text(12, 30, "Mode 0: draw_rect()");
+      
+      // Desenha grade de retângulos
+      g_i = 0;
+      g_j = 0;
+      FOR (g_j = 0; g_j < 5; g_j = g_j + 1)
+        FOR (g_i = 0; g_i < 8; g_i = g_i + 1)
+          g_red = 100 + (g_i * 20);
+          g_green = 150 + (g_j * 20);
+          g_blue = 200 + (g_i * 10);
+          set_color(g_red, g_green, g_blue);
+          draw_rect(80 + g_i * 60, 60 + g_j * 40, 50, 30);
+        END
+      END
+
+    ELSE IF (g_demo_mode = 1)
+      // Modo 1: Linhas
+      set_color('#93aecd');
+      text(12, 30, "Mode 1: draw_line()");
+      
+      // Desenha padrão de linhas animado
+      g_i = 0;
+      FOR (g_i = 0; g_i < 20; g_i = g_i + 1)
+        g_angle = (g_anim_frame * 100 + g_i * 18000) / 100000.0;
+        g_x1 = 320 + cos(g_angle) * 150;
+        g_y1 = 240 + sin(g_angle) * 100;
+        g_x2 = 320 + cos(g_angle + 3.14159) * 150;
+        g_y2 = 240 + sin(g_angle + 3.14159) * 100;
+        
+        set_color(100 + g_i * 8, 150, 200 + g_i * 2);
+        draw_line(g_x1, g_y1, g_x2, g_y2);
+      END
+
+    ELSE IF (g_demo_mode = 2)
+      // Modo 2: Círculos
+      set_color('#93aecd');
+      text(12, 30, "Mode 2: draw_circle()");
+      
+      // Desenha círculos concêntricos animados
+      g_i = 0;
+      FOR (g_i = 0; g_i < 10; g_i = g_i + 1)
+        g_radius = 20 + g_i * 15 + sin(g_anim_frame / 30.0 + g_i) * 5;
+        set_color(100 + g_i * 15, 150 + g_i * 10, 200 - g_i * 10);
+        draw_circle(320, 240, g_radius);
+      END
+
+    ELSE IF (g_demo_mode = 3)
+      // Modo 3: Desenho livre
+      set_color('#93aecd');
+      text(12, 30, "Mode 3: free drawing (hold left mouse)");
+      
+      // Desenha shape seguinte o mouse
+      IF (g_mouse_down = 1)
+        set_color('#ff6b6b');
+        draw_circle(mouse.x, mouse.y, 10);
+      END
+
+      // Desenha linhas conectando pontos do mouse
+      IF (g_mouse_down = 1)
+        set_color('#ffd93d');
+        draw_line(mouse.x, mouse.y, mouse.x - 20, mouse.y - 20);
+        draw_line(mouse.x, mouse.y, mouse.x + 20, mouse.y - 20);
+        draw_line(mouse.x, mouse.y, mouse.x, mouse.y + 20);
+      END
+    END
+
+    // Instruções
+    set_color('#5a6a7a');
+    text(12, 440, "Press SPACE to change mode (0-3)");
+
+    // Controle de modo
+    IF (key(_space))
+      g_demo_mode = g_demo_mode + 1;
+      IF (g_demo_mode > 3) g_demo_mode = 0; END
+      // Aguarda release da tecla
+      REPEAT FRAME UNTIL (NOT key(_space))
+    END
+
+    // Controle de mouse
+    IF (mouse_button(0) = 1)
+      g_mouse_down = 1;
+    ELSE
+      g_mouse_down = 0;
+    END
+
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(640, 480);
+  screen_color('#0e1a29');
+
+  g_lib = load_fpg('../assets/div-support/help.fpg');
+  put_screen(g_lib, 1);
+
+  draw_demo();
+
+  LOOP FRAME; END
+END`;
+
+    const log = document.getElementById('log');
+    runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      clearColor: '#0e1a29',
+      onLog: (line) => { log.textContent = line; },
+      onError: (err) => { log.textContent = 'error: ' + (err?.message || String(err)); }
+    });
+  </script>
+</body>
+</html>

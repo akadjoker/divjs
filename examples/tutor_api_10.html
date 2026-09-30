@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DivJS API Tutorial 10 - Sound & Music</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a111a;
+      color: #d7e6f5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-family: "Fira Sans", "Segoe UI", sans-serif;
+      padding: 12px;
+    }
+    canvas {
+      display: block;
+      border: 1px solid #2b4158;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #0e1a29;
+    }
+    p {
+      color: #93aecd;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.5;
+    }
+    #log {
+      width: 640px;
+      max-width: 100%;
+      background: #0f1b2a;
+      border: 1px solid #2a3f55;
+      padding: 8px;
+      min-height: 40px;
+      color: #9bc8f2;
+      font: 12px "JetBrains Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="480"></canvas>
+  <p>
+    Tutorial 10: demonstra uso básico de processos e animações (som seria asset externo).<br>
+    APIs: <code>load_fpg()</code>, <code>put_screen()</code>, movimento, collision.
+  </p>
+  <div id="log">booting...</div>
+
+  <script type="module">
+    import { runDivDemo } from '../divjs.js';
+
+    const SOURCE = `PROGRAM tutor_api_10;
+
+GLOBAL g_lib = 0;
+GLOBAL g_hits = 0;
+
+PROCESS player();
+BEGIN
+  x = 320; y = 380;
+  width = 32; height = 32;
+  file = g_lib;
+  graph = 100;
+
+  LOOP
+    IF (key(_left))
+      x = x - 3;
+    END
+    IF (key(_right))
+      x = x + 3;
+    END
+
+    // Limita à tela
+    IF (x < 16)  x = 16;  END
+    IF (x > 624) x = 624; END
+
+    FRAME;
+  END
+END
+
+PROCESS target(px, py);
+PRIVATE
+  hit = 0;
+  hit_timer = 0;
+BEGIN
+  x = px; y = py;
+  width = 32; height = 32;
+  file = g_lib;
+  graph = 103;
+
+  LOOP
+    // Verifica colisão com player
+    hit = collision(TYPE player);
+    IF (hit <> 0)
+      g_hits = g_hits + 1;
+      hit_timer = 30;
+      
+      // Reposiciona
+      x = rand(50, 590);
+      y = rand(50, 200);
+    END
+
+    // Flash quando foi hit
+    IF (hit_timer > 0)
+      hit_timer = hit_timer - 1;
+      IF (hit_timer mod 2 = 0)
+        graph = 100;
+      ELSE
+        graph = 103;
+      END
+    END
+
+    FRAME;
+  END
+END
+
+BEGIN
+  set_mode(640, 480);
+  screen_color('#0e1a29');
+
+  g_lib = load_fpg('../assets/div-support/help.fpg');
+  put_screen(g_lib, 1);
+
+  player();
+  target(200, 100);
+  target(440, 150);
+
+  LOOP
+    set_color('#9bc8f2');
+    text(12, 8, "Tutorial 10 - movement / collision feedback");
+
+    set_color('#93aecd');
+    text(12, 440, "hits: " + g_hits);
+    text(12, 455, "move with arrows, hit targets");
+
+    FRAME;
+  END
+END`;
+
+    const log = document.getElementById('log');
+    runDivDemo({
+      canvas: document.getElementById('c'),
+      source: SOURCE,
+      clearColor: '#0e1a29',
+      onLog: (line) => { log.textContent = line; },
+      onError: (err) => { log.textContent = 'error: ' + (err?.message || String(err)); }
+    });
+  </script>
+</body>
+</html>
