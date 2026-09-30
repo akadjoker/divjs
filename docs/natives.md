@@ -264,10 +264,11 @@ layout for the next runs.
 | `gfx_circle` | `graph, cx, cy, radius, r, g, b` | — | Draws a filled circle. |
 | `gfx_circle_outline` | `graph, cx, cy, radius, r, g, b` | — | Draws a circle outline. |
 | `gfx_text` | `graph, x, y, text, r, g, b, size` | — | Draws text with the browser's monospace font. |
-| `circle` | `x, y, radius` | — | Draws a filled circle on screen for this frame, in the `set_color` colour. |
-| `draw_rect` | `x, y, width, height[, color]` | — | Draws a filled rectangle on screen for this frame. |
-| `text` | `x, y, text` | — | Draws text with the system font for this frame. |
+| `circle` | `x, y, radius` | — | Draws a filled circle on screen for this frame, in the `set_color` colour, on top of the processes (see `draw_z`). |
+| `draw_rect` | `x, y, width, height[, color]` | — | Draws a filled rectangle on screen for this frame, on top of the processes (see `draw_z`). |
+| `text` | `x, y, text` | — | Draws text with the system font for this frame, on top of the processes (see `draw_z`). |
 | `set_color` | `color` | — | Colour of later `write`, `text`, `circle`, `draw_rect`. |
+| `draw_z` | `[z]` | — | Depth plane of later `circle`, `text` and `draw_rect` calls, like a process's `z`: they are painted over the processes of a greater or equal `z` and under those of a smaller one, so an overlay can go behind sprites (`draw_z(1)` is behind processes at the default `z` 0). Without an argument (the start) they are painted on top of every process, as before. Like `set_color` it stays set until changed, for every process. Not a DIV function. |
 | `clear` | — | — | Drops this frame's `circle`/`text`/`draw_rect` drawings (`write` texts stay). |
 | `fade_off` | `[speed]` | — | Fades the screen to black (speed 1-64, default 8 = 8 frames). |
 | `fade_on` | `[speed]` | — | Fades back in. |

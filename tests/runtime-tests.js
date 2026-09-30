@@ -933,7 +933,44 @@ END`;
   runtime.dispose();
 }
 
+async function testDrawZPutsPrimitivesAmongProcesses()
+{
+  // circle/text/draw_rect were always painted over every process, so an
+  // overlay could not go behind a sprite. draw_z(z) gives the following
+  // ones a depth like a process's z; without it nothing changes.
+  const source = `PROGRAM t;
+GLOBAL g_blue;
+PROCESS sprite(x, y, z) BEGIN graph = g_blue; LOOP FRAME; END END
+BEGIN
+  g_blue = new_graphic(20, 20); gfx_fill(g_blue, 0, 0, 255);
+  sprite(30, 30, -100);
+  sprite(80, 30, 0);
+  sprite(130, 30, 10);
+  sprite(180, 30, 0);
+  LOOP
+    draw_rect(20, 20, 20, 20, '#ff0000');
+    draw_z(5);
+    draw_rect(70, 20, 20, 20, '#ff0000');
+    draw_rect(120, 20, 20, 20, '#ff0000');
+    set_color('#00ff00'); circle(180, 30, 8);
+    draw_z();
+    draw_rect(180, 40, 4, 4, '#ffff00');
+    FRAME;
+  END
+END`;
+  const { runtime, frame } = startProgram(source);
+  await frame(2);
+  const at = (x, y) => pixelAt(runtime, x, y).slice(0, 3).join(',');
+  assert(at(30, 30) === '255,0,0', `sem draw_z o rect fica por cima de tudo (z=-100), obtido ${at(30, 30)}`);
+  assert(at(80, 30) === '0,0,255', `draw_z(5) fica atras de um processo de z 0, obtido ${at(80, 30)}`);
+  assert(at(130, 30) === '255,0,0', `draw_z(5) fica a frente de um processo de z 10, obtido ${at(130, 30)}`);
+  assert(at(180, 30) === '0,0,255', `circle com draw_z(5) atras do processo, obtido ${at(180, 30)}`);
+  assert(at(181, 41) === '255,255,0', `draw_z() volta a por por cima, obtido ${at(181, 41)}`);
+  runtime.dispose();
+}
+
 export const runtimeTests = [
+  ['draw_z puts circle/text/draw_rect among the processes', testDrawZPutsPrimitivesAmongProcesses],
   ['string functions: strlen, char, asc, chr, substr, upper, lower, strstr, strchr, strcmp, strdel, itoa', testStringFunctions],
   ['new_graphic is drawn at its real size', testNewGraphicIsDrawnAtItsRealSize],
   ['load_graphic is drawn at its real size', testLoadGraphicIsDrawnAtItsRealSize],

@@ -12796,6 +12796,7 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     this.keyQueryCache = /* @__PURE__ */ new Map();
     this.drawCommands = [];
     this.currentColor = "#ffffff";
+    this.drawZ = null;
     this.cameraX = 0;
     this.cameraY = 0;
     this.totalTime = 0;
@@ -13362,6 +13363,13 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       }
     }
     return false;
+  }
+  // Not a DIV function: the depth plane (like a process's z) of the
+  // circle/text/draw_rect calls that follow, so they can sit between
+  // processes. Without an argument they go back on top of everything.
+  drawZNative(z2) {
+    this.drawZ = z2 === void 0 ? null : Number(z2) || 0;
+    return 0;
   }
   setColorNative(color) {
     this.currentColor = String(color);
@@ -14225,7 +14233,8 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       y: Number(y),
       r: Math.max(0, Number(radius)),
       color: this.currentColor,
-      ctype: this.getCurrentCType()
+      ctype: this.getCurrentCType(),
+      z: this.drawZ
     });
     return 0;
   }
@@ -14236,7 +14245,8 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       y: Number(y),
       text: String(text2),
       color: this.currentColor,
-      ctype: this.getCurrentCType()
+      ctype: this.getCurrentCType(),
+      z: this.drawZ
     });
     return 0;
   }
@@ -14248,7 +14258,8 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       width: Number(width),
       height: Number(height),
       color: color !== void 0 ? String(color) : this.currentColor,
-      ctype: this.getCurrentCType()
+      ctype: this.getCurrentCType(),
+      z: this.drawZ
     });
     return 0;
   }
@@ -15568,6 +15579,7 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
     this.vm.registerNative("write_int", this.writeIntNative.bind(this));
     this.vm.registerNative("delete_text", this.deleteTextNative.bind(this));
     this.vm.registerNative("set_color", this.setColorNative.bind(this));
+    this.vm.registerNative("draw_z", this.drawZNative.bind(this));
     this.vm.registerNative("clear", this.clearNative.bind(this));
     this.vm.registerNative("circle", this.circleNative.bind(this));
     this.vm.registerNative("text", this.textNative.bind(this));
@@ -16236,7 +16248,20 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
   drawProcessesFallback() {
     const processes = this.vm.processManager.getDrawList();
     const activeScrollEntries = this.state.scroll.map((entry, index) => ({ entry, index })).filter(({ entry }) => entry && entry.active);
+    const layered = this.drawCommands.filter((cmd) => cmd.z !== null && cmd.z !== void 0).sort((a2, b) => b.z - a2.z);
+    let nextLayered = 0;
+    const drawLayeredDeeperThan = (z2) => {
+      if (nextLayered >= layered.length || !(layered[nextLayered].z > z2)) {
+        return;
+      }
+      this.beginCommandDrawing();
+      while (nextLayered < layered.length && layered[nextLayered].z > z2) {
+        this.drawCommand(layered[nextLayered++]);
+      }
+      this.ctx.restore();
+    };
     for (const process of processes) {
+      drawLayeredDeeperThan(process.z || 0);
       if (process.sleeping) {
         continue;
       }
@@ -16257,12 +16282,16 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
       }
       this.drawProcessAt(process, 0, 0);
     }
+    drawLayeredDeeperThan(-Infinity);
   }
-  drawCommandsToCanvas() {
+  // Canvas state for drawing commands; the caller restores it.
+  beginCommandDrawing() {
     this.ctx.save();
     this.ctx.font = "8px JetBrains Mono, Consolas, monospace";
     this.ctx.textBaseline = "top";
-    const drawXput = (cmd, px, py) => {
+  }
+  drawCommand(cmd) {
+    const drawXput = (px, py) => {
       const drewSprite = this.drawGraphSprite(
         cmd.fileId,
         cmd.graphId,
@@ -16277,61 +16306,68 @@ var CanvasEngineRuntime = class _CanvasEngineRuntime {
         this.drawGraphPlaceholder(px, py, cmd.angle, cmd.size, cmd.size, cmd.color);
       }
     };
+    this.ctx.fillStyle = cmd.color;
+    this.ctx.strokeStyle = cmd.color;
+    const drawOne = (offsetX, offsetY) => {
+      const pos = {
+        x: cmd.x - offsetX,
+        y: cmd.y - offsetY
+      };
+      if (cmd.type === "circle") {
+        this.ctx.beginPath();
+        this.ctx.arc(pos.x, pos.y, cmd.r, 0, Math.PI * 2);
+        this.ctx.fill();
+        return;
+      }
+      if (cmd.type === "text") {
+        let text2 = cmd.text;
+        if (this.isOffsetRef(text2)) {
+          const value = this.resolveOffsetRef(text2);
+          text2 = text2.asInt ? String(Math.floor(Number(value) || 0)) : String(value);
+        }
+        const drewBitmap = cmd.fontId > 0 ? this.drawBitmapText(cmd.fontId, pos.x, pos.y, cmd.align || 0, text2, cmd.color) : false;
+        if (!drewBitmap) {
+          this.drawSystemText(pos.x, pos.y, cmd.align || 0, text2, cmd.color);
+        }
+        return;
+      }
+      if (cmd.type === "rect") {
+        this.ctx.fillRect(pos.x, pos.y, cmd.width, cmd.height);
+      }
+      if (cmd.type === "xput") {
+        drawXput(pos.x, pos.y);
+      }
+    };
+    const drawWithCommandRegion = (offsetX, offsetY) => {
+      if (cmd.region && cmd.region > 0) {
+        const regionRect = this.getRegionRect(cmd.region);
+        this.withRegionClip(regionRect, () => drawOne(offsetX, offsetY));
+        return;
+      }
+      drawOne(offsetX, offsetY);
+    };
+    if ((cmd.ctype ?? CType.C_SCREEN) === CType.C_SCROLL) {
+      const activeScrollEntries = this.state.scroll.map((entry, index) => ({ entry, index })).filter(({ entry }) => entry && entry.active);
+      if (activeScrollEntries.length === 0) {
+        drawWithCommandRegion(this.cameraX, this.cameraY);
+        return;
+      }
+      for (const { entry, index } of activeScrollEntries) {
+        const region = this.getRegionRect(entry.region);
+        const cam = this.getScrollCamera(index);
+        this.withRegionClip(region, () => drawWithCommandRegion(cam.x - region.x, cam.y - region.y));
+      }
+      return;
+    }
+    drawWithCommandRegion(0, 0);
+  }
+  drawCommandsToCanvas() {
+    this.beginCommandDrawing();
     for (const cmd of this.drawCommands) {
-      this.ctx.fillStyle = cmd.color;
-      this.ctx.strokeStyle = cmd.color;
-      const drawOne = (offsetX, offsetY) => {
-        const pos = {
-          x: cmd.x - offsetX,
-          y: cmd.y - offsetY
-        };
-        if (cmd.type === "circle") {
-          this.ctx.beginPath();
-          this.ctx.arc(pos.x, pos.y, cmd.r, 0, Math.PI * 2);
-          this.ctx.fill();
-          return;
-        }
-        if (cmd.type === "text") {
-          let text2 = cmd.text;
-          if (this.isOffsetRef(text2)) {
-            const value = this.resolveOffsetRef(text2);
-            text2 = text2.asInt ? String(Math.floor(Number(value) || 0)) : String(value);
-          }
-          const drewBitmap = cmd.fontId > 0 ? this.drawBitmapText(cmd.fontId, pos.x, pos.y, cmd.align || 0, text2, cmd.color) : false;
-          if (!drewBitmap) {
-            this.drawSystemText(pos.x, pos.y, cmd.align || 0, text2, cmd.color);
-          }
-          return;
-        }
-        if (cmd.type === "rect") {
-          this.ctx.fillRect(pos.x, pos.y, cmd.width, cmd.height);
-        }
-        if (cmd.type === "xput") {
-          drawXput(cmd, pos.x, pos.y);
-        }
-      };
-      const drawWithCommandRegion = (offsetX, offsetY) => {
-        if (cmd.region && cmd.region > 0) {
-          const regionRect = this.getRegionRect(cmd.region);
-          this.withRegionClip(regionRect, () => drawOne(offsetX, offsetY));
-          return;
-        }
-        drawOne(offsetX, offsetY);
-      };
-      if ((cmd.ctype ?? CType.C_SCREEN) === CType.C_SCROLL) {
-        const activeScrollEntries = this.state.scroll.map((entry, index) => ({ entry, index })).filter(({ entry }) => entry && entry.active);
-        if (activeScrollEntries.length === 0) {
-          drawWithCommandRegion(this.cameraX, this.cameraY);
-          continue;
-        }
-        for (const { entry, index } of activeScrollEntries) {
-          const region = this.getRegionRect(entry.region);
-          const cam = this.getScrollCamera(index);
-          this.withRegionClip(region, () => drawWithCommandRegion(cam.x - region.x, cam.y - region.y));
-        }
+      if (cmd.z !== null && cmd.z !== void 0) {
         continue;
       }
-      drawWithCommandRegion(0, 0);
+      this.drawCommand(cmd);
     }
     this.ctx.restore();
     this.drawCommands = this.drawCommands.filter((cmd) => cmd.persistent);
