@@ -522,6 +522,24 @@ BEGIN
 END`, 'parser', 6, 5, 'Expected END to close this CASE');
 }
 
+async function testNamesDifferingOnlyInCaseAreOneName()
+{
+  // Report: ST_CELEB and st_celeb clash. That is DIV ("ABc or abC are
+  // the same name", DIV 2 manual 5.5): declaring both is a duplicate, and
+  // a PRIVATE spelt the other way hides the GLOBAL inside its process.
+  expectDivError('ST_CELEB e st_celeb', `PROGRAM t;
+GLOBAL ST_CELEB = 1;
+GLOBAL st_celeb = 2;
+BEGIN END`, 'compiler', 3, 8, 'Duplicate GLOBAL name: "st_celeb"');
+  const { said } = runSource(`PROGRAM t;
+GLOBAL ST_CELEB = 3;
+PROCESS p()
+PRIVATE st_celeb = 9;
+BEGIN say(ST_CELEB); END
+BEGIN p(); FRAME; say(st_celeb); END`);
+  assert(said.join(' ') === '9 3', `PRIVATE st_celeb esconde a GLOBAL ST_CELEB no processo: ${said.join(' ')}`);
+}
+
 export const compilerTests = [
   ['parser: SWITCH takes DIV\'s CASE ...: END arms and ranges', testSwitchDivForm],
   ['compiler: / with a float-typed side is a float division', testFloatDivision],
@@ -534,6 +552,7 @@ export const compilerTests = [
   ['compiler: LOCAL section initializers', testLocalSectionInitializers],
   ['lexer: -- comment after ), a number or a name', testDashDashCommentAfterValue],
   ['compiler: names are case-insensitive', testNamesAreCaseInsensitive],
+  ['compiler: ST_CELEB and st_celeb are one name (decision)', testNamesDifferingOnlyInCaseAreOneName],
   ['compiler: STRUCT initializer compiles expressions', testStructInitializerCompilesExpressions],
   ['compiler: PRIVATE named like a parameter is an error', testPrivateNamedLikeParameterIsError],
   ['compiler: GLOBAL named like a process field is an error', testGlobalNamedLikeProcessFieldIsError],

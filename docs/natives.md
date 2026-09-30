@@ -30,11 +30,15 @@ Conventions used below:
 Behaviour of the language itself that the function tables below rely on.
 
 - **Names are case-insensitive**, as in DIV (DIV 2 manual 5.5: "ABc or abC
-  are the same name"): keywords, variables, constants, processes and
-  natives. `ST_CELEB` and `st_celeb` are the same name, so declaring both
-  (for example a `GLOBAL` and a `PRIVATE`, or a constant and a variable) is
-  a duplicate name, and a `PRIVATE st_celeb` hides a `GLOBAL ST_CELEB`.
-  Strings keep their case.
+  are the same name"): keywords, variables, constants, `STRUCT`s,
+  processes, functions and natives. `ST_CELEB`, `St_Celeb` and `st_celeb`
+  are one name: declaring two of them as `GLOBAL`s is a duplicate name
+  (the error shows the name in small letters), a `PRIVATE`, parameter or
+  process variable `st_celeb` hides a `GLOBAL ST_CELEB` inside its process,
+  and assigning `ST_CELEB = 4` in a process that declared neither creates
+  one variable that `st_celeb` also reads. Give different things names
+  that differ in more than case (a common pattern: `ST_CELEB` for a state
+  constant and `celeb_t` for a counter). Strings keep their case.
 - **Fields of another process** are read and written through anything
   holding its id: a variable (`enemy.x`), an array cell (`enemies[i].x`)
   or a `STRUCT` field (`squad[i].leader.x`), as well as `father`, `son`,
