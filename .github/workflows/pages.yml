@@ -5,7 +5,7 @@ name: Tests and Pages
 
 on:
   push:
-  pull_request:
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
